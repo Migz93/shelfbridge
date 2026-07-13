@@ -3,8 +3,7 @@
     "target": "ES2022",
     "lib": ["ES2022"],
     "module": "ESNext",
-    "moduleResolution": "node",
-    "ignoreDeprecations": "6.0",
+    "moduleResolution": "bundler",
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
@@ -12,8 +11,7 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "rootDir": "src",
-    "outDir": "dist/server",
-    "baseUrl": "."
+    "outDir": "dist/server"
   },
   "include": ["src/server", "src/shared"],
   "exclude": ["node_modules", "dist"]
