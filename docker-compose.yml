@@ -1,0 +1,15 @@
+services:
+  shelfbridge:
+    image: shelfbridge
+    container_name: shelfbridge
+    build: .
+    ports:
+      - "9303:9303"
+    volumes:
+      - /opt/shelfbridge:/config
+    environment:
+      - NODE_ENV=production
+      - DATA_DIR=/config
+      - TZ=UTC
+    network_mode: bridge
+    restart: unless-stopped

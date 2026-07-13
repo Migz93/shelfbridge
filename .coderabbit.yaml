@@ -1,0 +1,75 @@
+language: "en-US"
+tone_instructions: "Be direct and concise. Focus on correctness, security, and maintainability. Skip compliments and filler. Use plain language."
+
+reviews:
+  profile: "assertive"
+  high_level_summary: true
+  collapse_walkthrough: true
+  changed_files_summary: true
+  estimate_code_review_effort: true
+  assess_linked_issues: true
+  related_issues: true
+  related_prs: true
+  suggested_labels: true
+  auto_apply_labels: false
+  suggested_reviewers: false
+  poem: false
+  in_progress_fortune: false
+  sequence_diagrams: false
+  abort_on_close: true
+  commit_status: true
+
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+    base_branches:
+      - "develop"
+    auto_pause_after_reviewed_commits: 0
+
+  path_filters:
+    - "!package-lock.json"
+
+  path_instructions:
+    - path: "src/server/**"
+      instructions: "This is a Node.js/Express backend. Focus on auth bypasses, credential handling, async error handling, missing awaits, and unhandled promise rejections."
+    - path: "src/server/sync/**"
+      instructions: "This code talks to third-party services. Check for token leaks, unsafe retries, partial writes, and poor error isolation."
+    - path: "docs/**"
+      instructions: "Check that technical docs match the implementation and deployment guidance."
+
+  pre_merge_checks:
+    title:
+      mode: "warning"
+      requirements: "PR title must start with a conventional commit type: feat:, fix:, chore:, docs:, refactor:, ci:"
+    description:
+      mode: "warning"
+
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: true
+
+  tools:
+    eslint:
+      enabled: true
+    markdownlint:
+      enabled: true
+    actionlint:
+      enabled: true
+    hadolint:
+      enabled: true
+    gitleaks:
+      enabled: true
+    shellcheck:
+      enabled: true
+
+knowledge_base:
+  opt_out: false
+  learnings:
+    scope: "local"
+  issues:
+    scope: "local"
+  pull_requests:
+    scope: "local"

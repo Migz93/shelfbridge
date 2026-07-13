@@ -1,0 +1,31 @@
+node_modules
+dist
+data
+.env
+.env.*
+!.env.*.example
+*.log
+npm-debug.log*
+.DS_Store
+.vscode/
+.idea/
+coverage/
+.nyc_output/
+.eslintcache
+.claude/
+LOCAL.md
+
+# Playwright / future E2E artifacts
+tests/playwright/.auth/
+tests/test-results/
+tests/playwright-report/
+
+# Local devcontainer overrides may contain host-specific mounts or credentials.
+.devcontainer/devcontainer.json
+
+# Scratch/debug artifacts
+.debug/
+plans/
+
+# Reference-only clone of another repo, not part of this project
+hubarr/

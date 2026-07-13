@@ -1,0 +1,61 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=Inter:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-headline: "Manrope", sans-serif;
+
+  --color-background: #0d0e12;
+  --color-background-container-low: #121318;
+  --color-background-container: #18191e;
+  --color-background-container-high: #1e1f25;
+  --color-background-container-highest: #24252b;
+  --color-background-bright: #2a2c32;
+
+  --color-primary: #e50914;
+  --color-primary-dim: #ae0610;
+
+  --color-on-surface: #faf8fe;
+  --color-on-surface-variant: #abaab0;
+
+  --color-outline-variant: #47484c;
+
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-error: #f07070;
+}
+
+:root {
+  --overlay-glass: rgba(24, 25, 30, 0.6);
+  --overlay-poster: rgba(13, 14, 18, 0.95);
+  --overlay-poster-transparent: rgba(13, 14, 18, 0);
+  --poster-halo-success: #0a3d1f;
+  --poster-halo-warning: #3d2a00;
+  --poster-halo-error: #3d0a0a;
+}
+
+@layer base {
+  html {
+    overflow-y: scroll;
+  }
+
+  body {
+    @apply bg-background text-on-surface font-sans;
+  }
+
+  * {
+    @apply border-outline-variant/20;
+  }
+}
+
+.glass-panel {
+  background: var(--overlay-glass);
+  backdrop-filter: blur(20px);
+}
+
+.poster-gradient {
+  background: linear-gradient(to top, var(--overlay-poster) 0%, var(--overlay-poster-transparent) 60%);
+}
+
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
