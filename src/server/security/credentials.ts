@@ -31,15 +31,18 @@ function loadMasterKey(): Buffer {
 
   fs.mkdirSync(DATA_DIR, { recursive: true });
 
-  if (fs.existsSync(KEY_FILE)) {
+  // Create the key file exclusively so two processes racing to initialise it can't
+  // clobber each other's key. If it already exists, read it instead of the one we generated.
+  try {
+    cachedKey = crypto.randomBytes(32);
+    fs.writeFileSync(KEY_FILE, `${cachedKey.toString("base64")}\n`, { mode: 0o600, flag: "wx" });
+    logger.info("Generated credential encryption key", { keyFile: KEY_FILE });
+    return cachedKey;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
     cachedKey = parseConfiguredKey(fs.readFileSync(KEY_FILE, "utf8"));
     return cachedKey;
   }
-
-  cachedKey = crypto.randomBytes(32);
-  fs.writeFileSync(KEY_FILE, `${cachedKey.toString("base64")}\n`, { mode: 0o600 });
-  logger.info("Generated credential encryption key", { keyFile: KEY_FILE });
-  return cachedKey;
 }
 
 export function isEncryptedCredential(value: string | null | undefined): boolean {

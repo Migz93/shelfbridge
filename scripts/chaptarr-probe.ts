@@ -320,7 +320,7 @@ async function main() {
     let method = "none";
 
     // Try matching by every available identifier, most-confident first
-    if (!dbRow && foreignBookId) {
+    if (foreignBookId) {
       // Could be Hardcover ID, Goodreads ID, or something else — try all
       const fid = String(foreignBookId);
       if (byHardcoverId.has(fid)) { dbRow = byHardcoverId.get(fid)!; method = "foreignBookId→hardcover_id"; }

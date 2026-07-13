@@ -27,9 +27,35 @@ if (getSetting("app.trustProxy", "false") === "true") {
   app.set("trust proxy", 1);
   logger.info("Trust proxy enabled — using one trusted proxy hop for client IP identification");
 }
-app.use(helmet({ contentSecurityPolicy: false }));
+// The client is a same-origin Vite/React bundle with no inline scripts, but it does use
+// inline `style` attributes and loads Google Fonts via @import, so those need explicit allowances.
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
+      imgSrc: ["'self'", "data:"],
+      connectSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      frameAncestors: ["'self'"]
+    }
+  }
+}));
 app.use(express.json());
 app.use(sessionMiddleware);
+// Applies to every route (including /images and the static/catch-all client routes below),
+// so file-serving and auth-checked routes outside /api aren't left unlimited.
+const globalLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 600,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+app.use(globalLimiter);
+
 const apiLimiter = rateLimit({
   windowMs: 60_000,
   max: 300,

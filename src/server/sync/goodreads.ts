@@ -25,15 +25,23 @@ function extractXmlField(xml: string, tag: string): string | null {
   return val || null;
 }
 
+const XML_NAMED_ENTITIES: Record<string, string> = {
+  quot: "\"",
+  apos: "'",
+  amp: "&",
+  lt: "<",
+  gt: ">"
+};
+
+// Decodes all entities in a single left-to-right pass so a literal sequence like
+// "&amp;lt;" (the escaped form of the text "&lt;") isn't re-scanned and unescaped
+// a second time into "<".
 function decodeXmlEntities(value: string): string {
-  return value
-    .replace(/&quot;/g, "\"")
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, code: string) => String.fromCodePoint(parseInt(code, 16)));
+  return value.replace(/&(?:(quot|apos|amp|lt|gt)|#(\d+)|#x([0-9a-f]+));/gi, (_match, name?: string, dec?: string, hex?: string) => {
+    if (name) return XML_NAMED_ENTITIES[name.toLowerCase()] ?? _match;
+    if (dec) return String.fromCodePoint(Number(dec));
+    return String.fromCodePoint(parseInt(hex!, 16));
+  });
 }
 
 function parseGoodreadsItems(xml: string, fetchedShelf?: string): GoodreadsBook[] {
