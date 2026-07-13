@@ -11,10 +11,8 @@
     "noFallthroughCasesInSwitch": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "ignoreDeprecations": "6.0",
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["./src/*"]
     }
   },
   "include": ["src/client", "src/shared", "src/vite-env.d.ts"],
