@@ -952,7 +952,7 @@ function HardcoverTabContent({
             Choose an optional import list, an optional destination shelf for all matched books, and then any per-list mappings you want to keep in sync.
           </div>
 
-          {!hardcoverEnabled || !profile?.hardcover ? (
+          {!profile?.hardcover ? (
             <div className="text-sm text-on-surface-variant bg-background-container rounded-xl px-4 py-3 border border-outline-variant/20">
               Connect Hardcover first to configure list mappings.
             </div>

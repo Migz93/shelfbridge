@@ -11,10 +11,15 @@ router.get("/status", (_req, res) => {
 
 // POST /api/sync/run  — manual sync (all profiles or single profile)
 router.post("/run", async (req, res) => {
-  const { profileId, dryRun } = req.body as { profileId?: number; dryRun?: boolean };
+  const body = req.body as { profileId?: unknown; dryRun?: unknown };
+  const profileId = typeof body.profileId === "number" ? body.profileId : undefined;
+  if (body.profileId !== undefined && profileId === undefined) {
+    res.status(400).json({ ok: false, message: "profileId must be a number" });
+    return;
+  }
   const db = getDb();
 
-  const isDryRun = dryRun ?? false;
+  const isDryRun = body.dryRun === true;
   const currentStatus = getActiveSyncStatus();
   if (currentStatus.isRunning) {
     logger.warn("Manual sync request ignored because a sync is already running", {
