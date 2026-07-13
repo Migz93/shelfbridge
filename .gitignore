@@ -26,6 +26,3 @@ tests/playwright-report/
 # Scratch/debug artifacts
 .debug/
 plans/
-
-# Reference-only clone of another repo, not part of this project
-hubarr/
