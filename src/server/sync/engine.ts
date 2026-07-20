@@ -984,6 +984,9 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
           ? (editionAsin ?? hcBook.book.default_audio_edition?.asin ?? null)
           : hcBook.book.default_audio_edition?.asin ?? null;
         const hcAudioSeconds = userEdition?.audio_seconds ?? null;
+        // For shared Hardcover books, keep the row edition-neutral as well as
+        // book-bucketed; otherwise whichever HC edition syncs last can flip the
+        // identity fields for every local sibling.
         const sourceId = upsertBookSource(db, "hardcover", hcBook.book.id, {
           title,
           author,
@@ -2476,6 +2479,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
                 : Math.round((absSourcePct / 100) * (absDuration ?? 0));
               const direction = "abs_to_hardcover";
               const decision = "abs_newer_progress";
+              const desiredStatusText = desiredStatusId === 3 ? "READ" : "READING";
               const readFields: HardcoverReadFields = {
                 edition_id: preferredEditionId ?? undefined,
                 progress_pages: 0,
@@ -2501,10 +2505,10 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
                   }
                   db.prepare(`
                     UPDATE user_book_states
-                    SET progress = NULL, progress_seconds = ?, hardcover_status_id = ?,
+                    SET status = ?, progress = NULL, progress_seconds = ?, hardcover_status_id = ?,
                         last_sync_at = datetime('now'), last_sync_decision = ?
                     WHERE book_id = ? AND profile_id = ? AND source_type = 'hardcover'
-                  `).run(progressSeconds, desiredStatusId, decision, absSource.book_id, profileId);
+                  `).run(desiredStatusText, progressSeconds, desiredStatusId, decision, absSource.book_id, profileId);
                   logger.info("Wrote audio progress to Hardcover", { profileId, bookId: absSource.book_id, source: "abs", pct: absSourcePct, progressSeconds, preferredEditionId });
                   recordEvent(db, runId, profileId, "", "written", direction, decision, { pct: absSourcePct, progressSeconds, preferredEditionId });
                   counters.written++;
