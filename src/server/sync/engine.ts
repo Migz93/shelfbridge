@@ -948,6 +948,10 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
           ? activeGrimmorySiblingsForHardcover(grimmoryBooks, hcBook.book.id)
           : { book: null, audiobook: null };
         const bookOwnsSharedHardcover = preferredSiblings.book !== null && preferredSiblings.audiobook !== null;
+        // Hardcover uses one book ID for multiple active editions, while our
+        // book_sources row is keyed by that book ID. Keep the row in the book
+        // bucket and clear edition-specific fields so HC iteration order cannot
+        // flip the local identity between book and audiobook.
         const mediaType = bookOwnsSharedHardcover
           ? "physical"
           : inferHardcoverMediaType(hcBook, userEdition);
@@ -2490,6 +2494,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
                 const decision = "abs_newer_progress";
                 if (!dryRun) {
                   try {
+                    const desiredStatusText = desiredStatusId === 3 ? "READ" : "READING";
                     const newUserBookId = await insertHardcoverUserBook(hardcoverToken, {
                       book_id: hcBookId,
                       status_id: desiredStatusId,
@@ -2509,10 +2514,10 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
                          progress_seconds, sync_health, hardcover_status_id, hardcover_read_id,
                          hardcover_user_book_id, hardcover_edition_id, last_sync_at,
                          last_sync_decision, last_modified_at)
-                      VALUES (?, ?, 'hardcover', 'READING', NULL, 0, ?, 'synced', ?, ?, ?, ?,
+                      VALUES (?, ?, 'hardcover', ?, NULL, 0, ?, 'synced', ?, ?, ?, ?,
                               datetime('now'), ?, datetime('now'))
                       ON CONFLICT(book_id, profile_id, source_type) DO UPDATE SET
-                        status = 'READING',
+                        status = excluded.status,
                         progress = NULL,
                         progress_pages = 0,
                         progress_seconds = excluded.progress_seconds,
@@ -2525,7 +2530,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
                         last_sync_decision = excluded.last_sync_decision,
                         last_modified_at = datetime('now')
                     `).run(
-                      absSource.book_id, profileId, progressSeconds, desiredStatusId,
+                      absSource.book_id, profileId, desiredStatusText, progressSeconds, desiredStatusId,
                       newReadId, newUserBookId, preferredEditionId, decision
                     );
                     logger.info("Created HC user_book and wrote audio progress", {
