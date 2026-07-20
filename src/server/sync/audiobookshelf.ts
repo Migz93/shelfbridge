@@ -59,10 +59,13 @@ export interface AbsLibraryItem {
       seriesName: string | null;
       asin: string | null;
       isbn: string | null;
-      narrator: string | null;
-      duration: number;   // seconds
+      narrator?: string | null;
+      narratorName?: string | null;
+      duration?: number | null;   // seconds
     };
+    duration?: number | null;
   };
+  path?: string | null;
   libraryFiles?: {
     ino: string;
     metadata: {

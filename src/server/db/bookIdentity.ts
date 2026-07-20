@@ -40,6 +40,17 @@ interface BookSourceRow {
   created_at: string | null;
 }
 
+interface UserBookStateMoveRow {
+  id: number;
+  profile_id: number;
+  source_type: string;
+  progress: number | null;
+  progress_seconds: number | null;
+  grimmory_book_id: number | null;
+  audiobookshelf_item_id: string | null;
+  last_modified_at: string | null;
+}
+
 type IdentityKey = `${string}:${string}`;
 type FormatBucket = "book" | "audiobook" | "unknown";
 
@@ -162,10 +173,12 @@ function inferEditionFormatBucket(format: string | null | undefined): FormatBuck
 function rowFormatBucket(row: Pick<BookSourceRow,
   "source_type" | "source_media_type" | "source_edition_format" | "source_narrator" | "grimmory_primary_file_path" | "chaptarr_primary_file_path"
 >): FormatBucket {
+  const editionBucket = inferEditionFormatBucket(row.source_edition_format);
+  if (row.source_type === "hardcover" && editionBucket !== "unknown") return editionBucket;
+
   if (row.source_media_type === "audiobook") return "audiobook";
   if (row.source_media_type === "ebook" || row.source_media_type === "physical" || row.source_media_type === "book") return "book";
 
-  const editionBucket = inferEditionFormatBucket(row.source_edition_format);
   if (editionBucket !== "unknown") return editionBucket;
 
   const pathBucket = inferPathFormatBucket(row.grimmory_primary_file_path ?? row.chaptarr_primary_file_path);
@@ -262,9 +275,9 @@ function highKeyConflict(keysA: Set<IdentityKey>, keysB: Set<IdentityKey>): bool
 function titleAuthorKey(row: BookSourceRow): IdentityKey | null {
   const title = normalizeTitle(row.title);
   const author = normalizeTitle(row.author);
-  // Format-agnostic: physical, ebook, and audiobook editions of the same work
-  // should merge into one book record.
-  return title && author ? `title_author:${title}||${author}` : null;
+  const bucket = rowFormatBucket(row);
+  if (bucket === "unknown") return null;
+  return title && author ? `${bucket}.title_author:${title}||${author}` : null;
 }
 
 function seriesCompatible(rows: BookSourceRow[], uf: UnionFind, rootA: number, rootB: number): boolean {
@@ -378,6 +391,19 @@ function canonicalValues(rows: BookSourceRow[]) {
   };
 }
 
+function stateHasProgress(row: Pick<UserBookStateMoveRow, "progress" | "progress_seconds" | "audiobookshelf_item_id">): boolean {
+  return row.audiobookshelf_item_id !== null
+    || row.progress_seconds !== null
+    || (row.progress !== null && Math.abs(row.progress) > 0.001);
+}
+
+function shouldMoveState(source: UserBookStateMoveRow, existing: UserBookStateMoveRow): boolean {
+  const sourceHasProgress = stateHasProgress(source);
+  const existingHasProgress = stateHasProgress(existing);
+  if (sourceHasProgress !== existingHasProgress) return sourceHasProgress;
+  return (source.last_modified_at ?? "") >= (existing.last_modified_at ?? "");
+}
+
 export function reconcileBookIdentities(db: Database.Database): void {
   const rows = db.prepare(`SELECT * FROM book_sources ORDER BY id`).all() as BookSourceRow[];
   if (rows.length === 0) {
@@ -473,10 +499,86 @@ export function reconcileBookIdentities(db: Database.Database): void {
     WHERE id = ?
   `);
   const updateSource = db.prepare("UPDATE book_sources SET book_id = ? WHERE id = ?");
-  const updateUserStates = db.prepare("UPDATE OR IGNORE user_book_states SET book_id = ? WHERE book_id = ?");
+  const updateSourcesByBookId = db.prepare("UPDATE book_sources SET book_id = ? WHERE book_id = ?");
   const deleteBook = db.prepare("DELETE FROM books WHERE id = ?");
+  const deleteUserState = db.prepare("DELETE FROM user_book_states WHERE id = ?");
+  const updateUserStateBook = db.prepare("UPDATE user_book_states SET book_id = ? WHERE id = ?");
+  const selectUserStatesForBook = db.prepare("SELECT * FROM user_book_states WHERE book_id = ?");
+  const selectUserStateConflict = db.prepare(`
+    SELECT * FROM user_book_states
+    WHERE book_id = ? AND profile_id = ? AND source_type = ?
+  `);
   const clearKeys = db.prepare("DELETE FROM book_identity_keys");
   const insertKey = db.prepare("INSERT OR IGNORE INTO book_identity_keys (book_id, key_type, key_value) VALUES (?, ?, ?)");
+
+  const moveUserStates = (targetBookId: number, sourceBookId: number): void => {
+    const states = selectUserStatesForBook.all(sourceBookId) as UserBookStateMoveRow[];
+    for (const state of states) {
+      const conflict = selectUserStateConflict.get(
+        targetBookId,
+        state.profile_id,
+        state.source_type
+      ) as UserBookStateMoveRow | undefined;
+      if (!conflict) {
+        updateUserStateBook.run(targetBookId, state.id);
+        continue;
+      }
+      if (shouldMoveState(state, conflict)) {
+        deleteUserState.run(conflict.id);
+        updateUserStateBook.run(targetBookId, state.id);
+      } else {
+        deleteUserState.run(state.id);
+      }
+    }
+  };
+
+  const repairAudiobookshelfStates = (): void => {
+    const rows = db.prepare(`
+      SELECT ubs.*, bs.book_id AS source_book_id
+      FROM user_book_states ubs
+      JOIN book_sources bs
+        ON bs.source_type = 'audiobookshelf'
+       AND bs.external_id = ubs.audiobookshelf_item_id
+      WHERE ubs.source_type = 'audiobookshelf'
+        AND ubs.audiobookshelf_item_id IS NOT NULL
+        AND bs.book_id IS NOT NULL
+        AND ubs.book_id != bs.book_id
+    `).all() as Array<UserBookStateMoveRow & { source_book_id: number }>;
+
+    for (const row of rows) {
+      const conflict = selectUserStateConflict.get(
+        row.source_book_id,
+        row.profile_id,
+        row.source_type
+      ) as UserBookStateMoveRow | undefined;
+      if (conflict && conflict.id !== row.id) deleteUserState.run(conflict.id);
+      updateUserStateBook.run(row.source_book_id, row.id);
+    }
+  };
+
+  const repairGrimmoryStates = (): void => {
+    const rows = db.prepare(`
+      SELECT ubs.*, bs.book_id AS source_book_id
+      FROM user_book_states ubs
+      JOIN book_sources bs
+        ON bs.source_type = 'grimmory'
+       AND CAST(bs.external_id AS INTEGER) = ubs.grimmory_book_id
+      WHERE ubs.source_type = 'grimmory'
+        AND ubs.grimmory_book_id IS NOT NULL
+        AND bs.book_id IS NOT NULL
+        AND ubs.book_id != bs.book_id
+    `).all() as Array<UserBookStateMoveRow & { source_book_id: number }>;
+
+    for (const row of rows) {
+      const conflict = selectUserStateConflict.get(
+        row.source_book_id,
+        row.profile_id,
+        row.source_type
+      ) as UserBookStateMoveRow | undefined;
+      if (conflict && conflict.id !== row.id) deleteUserState.run(conflict.id);
+      updateUserStateBook.run(row.source_book_id, row.id);
+    }
+  };
 
   const claimedBookIds = new Set<number>();
   let created = 0;
@@ -541,8 +643,10 @@ export function reconcileBookIdentities(db: Database.Database): void {
       if (existingIds.length > 1) {
         for (const duplicateId of existingIds.slice(1)) {
           if (duplicateId === bookId || claimedBookIds.has(duplicateId)) continue;
-          // Reassign user_book_states to surviving book before deleting duplicate
-          updateUserStates.run(bookId, duplicateId);
+          // Reassign dependent rows before deleting the duplicate book. The
+          // foreign key cascades, so deleting first would erase source rows.
+          updateSourcesByBookId.run(bookId, duplicateId);
+          moveUserStates(bookId, duplicateId);
           deleteBook.run(duplicateId);
           validBookIds.delete(duplicateId);
           merged++;
@@ -567,6 +671,9 @@ export function reconcileBookIdentities(db: Database.Database): void {
       WHERE bs.id IS NULL
     `).all() as { id: number }[];
     for (const stale of staleBooks) deleteBook.run(stale.id);
+
+    repairAudiobookshelfStates();
+    repairGrimmoryStates();
   });
 
   transaction();

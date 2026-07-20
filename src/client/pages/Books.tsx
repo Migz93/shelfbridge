@@ -561,6 +561,8 @@ export function BookDetailPage() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [dismissingDuplicateId, setDismissingDuplicateId] = useState<number | null>(null);
   const [duplicateError, setDuplicateError] = useState<string | null>(null);
+  const [dismissingChaptarrId, setDismissingChaptarrId] = useState(false);
+  const [chaptarrDismissError, setChaptarrDismissError] = useState<string | null>(null);
   const [coverFailed, setCoverFailed] = useState(false);
   const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
   const detailMediaType = detail?.mediaType ?? "book";
@@ -637,6 +639,21 @@ export function BookDetailPage() {
       setDuplicateError(err instanceof Error ? err.message : String(err));
     } finally {
       setDismissingDuplicateId(null);
+    }
+  }
+
+  async function dismissChaptarrIdMismatch() {
+    if (dismissingChaptarrId) return;
+    setDismissingChaptarrId(true);
+    setChaptarrDismissError(null);
+    try {
+      await apiPost(`/api/books/${bookId}/chaptarr-id-mismatch/dismiss`, {});
+      const updated = await apiGet<BookDetail>(`/api/books/${bookId}`);
+      setDetail(updated);
+    } catch (err) {
+      setChaptarrDismissError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDismissingChaptarrId(false);
     }
   }
 
@@ -782,6 +799,33 @@ export function BookDetailPage() {
                 <div className="bg-warning/10 border border-warning/20 rounded-xl px-4 py-3 text-xs leading-relaxed text-warning">
                   This book has superseded events. A write was skipped because the incoming data was older than what was already stored.
                 </div>
+              )}
+
+              {detail.hasActiveChaptarrIdMismatch && (
+                <section className="rounded-lg border border-warning/25 bg-warning/8 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-start gap-3">
+                      <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" />
+                      <div>
+                        <div className="text-[11px] font-medium text-warning/80 uppercase tracking-wide">Bad Chaptarr ID</div>
+                        <h2 className="mt-1 font-headline text-lg font-bold text-on-surface">Dismiss Chaptarr warning</h2>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => void dismissChaptarrIdMismatch()}
+                      disabled={dismissingChaptarrId}
+                      className="inline-flex items-center gap-2 rounded-lg border border-warning/30 bg-background-container px-3 py-2 text-sm font-semibold text-warning transition-colors hover:bg-background-container-high disabled:opacity-50"
+                    >
+                      <CheckCircle size={16} />
+                      {dismissingChaptarrId ? "Dismissing..." : "Dismiss"}
+                    </button>
+                  </div>
+                  {chaptarrDismissError && (
+                    <div className="mt-3 rounded-lg border border-error/25 bg-error/10 px-3 py-2 text-xs text-error">
+                      {chaptarrDismissError}
+                    </div>
+                  )}
+                </section>
               )}
 
               {detail.duplicateCandidates.length > 0 && (
