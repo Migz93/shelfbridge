@@ -2087,6 +2087,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
             items = await fetchAudiobookshelfLibraryItems(absBaseUrl, absApiKey!, library.id);
           } catch (libraryErr) {
             absSnapshotComplete = false;
+            counters.sourceFailures++;
             logger.warn("Audiobookshelf library items fetch failed; continuing with remaining libraries", {
               profileId,
               libraryId: library.id,
