@@ -1094,6 +1094,10 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
 
       const hcStatusId = hcBook.status_id;
       const grStatus = grBook?.readStatus ?? null;
+      const projectedHcStatus = grStatus
+        ?? localIdentityGrimmoryBook?.readStatus
+        ?? prevHcState?.status
+        ?? null;
       const audiobookRuntimeSeconds = audiobookRuntimeForBook(db, bookId);
 
       const { decision, syncHealth, writeGrimmory, writeHardcover } = localIdentityGrimmoryBook
@@ -1150,7 +1154,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
 
       // Upsert user_book_states (hardcover)
       const hcStateFields: Record<string, unknown> = {
-        status: grStatus ?? null,  // canonical status from Grimmory if matched
+        status: projectedHcStatus,
         rating: hcBook.rating ?? null,
         progress: hcProgress,
         progress_pages: hcRead?.progress_pages ?? null,
@@ -2071,10 +2075,27 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
         const absLibraries = await fetchAudiobookshelfLibraries(absBaseUrl, absApiKey!);
         const bookLibraries = absLibraries.filter((lib) => lib.mediaType === "book");
         const liveAbsIds = new Set<string>();
+        let absSnapshotComplete = true;
         logger.info("Audiobookshelf libraries fetched", { profileId, total: absLibraries.length, bookLibraries: bookLibraries.length });
 
         for (const library of bookLibraries) {
-          const items = await fetchAudiobookshelfLibraryItems(absBaseUrl, absApiKey!, library.id);
+          let items: Awaited<ReturnType<typeof fetchAudiobookshelfLibraryItems>>;
+          try {
+            items = await fetchAudiobookshelfLibraryItems(absBaseUrl, absApiKey!, library.id);
+          } catch (libraryErr) {
+            absSnapshotComplete = false;
+            logger.warn("Audiobookshelf library items fetch failed; continuing with remaining libraries", {
+              profileId,
+              libraryId: library.id,
+              libraryName: library.name,
+              error: libraryErr
+            });
+            recordEvent(db, runId, profileId, library.name, "api_failure", "audiobookshelf", "library_items_unavailable", {
+              libraryId: library.id,
+              error: String(libraryErr)
+            });
+            continue;
+          }
           logger.info("Audiobookshelf library items fetched", { profileId, libraryId: library.id, libraryName: library.name, count: items.length });
 
           for (const item of items) {
@@ -2163,7 +2184,12 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
           }
         }
 
-        if (liveAbsIds.size > 0) {
+        if (!absSnapshotComplete) {
+          logger.warn("Skipped Audiobookshelf stale-state pruning because library snapshot was incomplete", {
+            profileId,
+            liveItemCount: liveAbsIds.size
+          });
+        } else if (liveAbsIds.size > 0) {
           const placeholders = Array.from(liveAbsIds).map(() => "?").join(",");
           db.prepare(`
             DELETE FROM user_book_states
@@ -2172,6 +2198,13 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
               AND audiobookshelf_item_id IS NOT NULL
               AND audiobookshelf_item_id NOT IN (${placeholders})
           `).run(profileId, ...Array.from(liveAbsIds));
+        } else {
+          db.prepare(`
+            DELETE FROM user_book_states
+            WHERE profile_id = ?
+              AND source_type = 'audiobookshelf'
+              AND audiobookshelf_item_id IS NOT NULL
+          `).run(profileId);
         }
         reconcileBookIdentities(db);
       } catch (err) {
