@@ -42,6 +42,7 @@ interface BookSourceRow {
 
 interface UserBookStateMoveRow {
   id: number;
+  book_id: number;
   profile_id: number;
   source_type: string;
   progress: number | null;
@@ -532,6 +533,45 @@ export function reconcileBookIdentities(db: Database.Database): void {
     }
   };
 
+  const repairLinkedState = (
+    row: UserBookStateMoveRow & { source_book_id: number },
+    sourceLabel: "Audiobookshelf" | "Grimmory"
+  ): void => {
+    const conflict = selectUserStateConflict.get(
+      row.source_book_id,
+      row.profile_id,
+      row.source_type
+    ) as UserBookStateMoveRow | undefined;
+
+    if (!conflict || conflict.id === row.id) {
+      updateUserStateBook.run(row.source_book_id, row.id);
+      return;
+    }
+
+    if (shouldMoveState(row, conflict)) {
+      deleteUserState.run(conflict.id);
+      updateUserStateBook.run(row.source_book_id, row.id);
+      logger.warn(`Replaced conflicting ${sourceLabel} user state during identity repair`, {
+        keptId: row.id,
+        discardedId: conflict.id,
+        profileId: row.profile_id,
+        sourceBookId: row.book_id,
+        targetBookId: row.source_book_id,
+        sourceType: row.source_type
+      });
+    } else {
+      deleteUserState.run(row.id);
+      logger.warn(`Discarded stale ${sourceLabel} user state during identity repair`, {
+        keptId: conflict.id,
+        discardedId: row.id,
+        profileId: row.profile_id,
+        sourceBookId: row.book_id,
+        targetBookId: row.source_book_id,
+        sourceType: row.source_type
+      });
+    }
+  };
+
   const repairAudiobookshelfStates = (): void => {
     const rows = db.prepare(`
       SELECT ubs.*, bs.book_id AS source_book_id
@@ -546,13 +586,7 @@ export function reconcileBookIdentities(db: Database.Database): void {
     `).all() as Array<UserBookStateMoveRow & { source_book_id: number }>;
 
     for (const row of rows) {
-      const conflict = selectUserStateConflict.get(
-        row.source_book_id,
-        row.profile_id,
-        row.source_type
-      ) as UserBookStateMoveRow | undefined;
-      if (conflict && conflict.id !== row.id) deleteUserState.run(conflict.id);
-      updateUserStateBook.run(row.source_book_id, row.id);
+      repairLinkedState(row, "Audiobookshelf");
     }
   };
 
@@ -570,13 +604,7 @@ export function reconcileBookIdentities(db: Database.Database): void {
     `).all() as Array<UserBookStateMoveRow & { source_book_id: number }>;
 
     for (const row of rows) {
-      const conflict = selectUserStateConflict.get(
-        row.source_book_id,
-        row.profile_id,
-        row.source_type
-      ) as UserBookStateMoveRow | undefined;
-      if (conflict && conflict.id !== row.id) deleteUserState.run(conflict.id);
-      updateUserStateBook.run(row.source_book_id, row.id);
+      repairLinkedState(row, "Grimmory");
     }
   };
 

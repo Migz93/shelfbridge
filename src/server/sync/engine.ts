@@ -1072,6 +1072,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
         ? localGrimmoryBookForBookId(db, bookId, grimmoryBooks)
         : null;
       if (grBook) matchedGrimmoryIds.add(grBook.id);
+      if (localIdentityGrimmoryBook) matchedGrimmoryIds.add(localIdentityGrimmoryBook.id);
 
       const title = hcBook.book.title ?? grBook?.title ?? localIdentityGrimmoryBook?.title ?? "";
 
@@ -1356,6 +1357,9 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
         let progressDecision = "progress_already_synced";
 
         if (bookOwnsSharedHardcover && grProgress !== null && !progressAlreadySynced) {
+          // Hardcover only exposes one current-progress slot per work. When a
+          // book and audiobook are both active, the book edition owns that slot
+          // even if the profile's general conflict strategy is Hardcover-wins.
           progressDirection = "grimmory_to_hardcover";
           progressDecision = "book_progress_wins_shared_hardcover";
         } else if (!progressAlreadySynced) {
@@ -1614,6 +1618,11 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
           const bookOwnsSharedHardcover = grBook.mediaType === "audiobook"
             && shouldBookProgressOwnSharedHardcover(grimmoryBooks, grBook.hardcoverBookId);
           if (bookOwnsSharedHardcover) {
+            logger.info("Skipped Grimmory-to-Hardcover status write because book edition owns shared Hardcover progress", {
+              profileId,
+              grimmoryBookId: grBook.id,
+              hardcoverBookId: Number.isInteger(hardcoverBookId) ? hardcoverBookId : null
+            });
             recordEvent(db, runId, profileId, grBook.title ?? "", "skipped_no_change", "grimmory_to_hardcover", "book_progress_wins_shared_hardcover", {
               grimmoryBookId: grBook.id,
               hardcoverBookId: Number.isInteger(hardcoverBookId) ? hardcoverBookId : null
@@ -2332,6 +2341,12 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
 
           // ── Write to Hardcover ──
           if (bookOwnsSharedHardcover) {
+            logger.info("Skipped ABS-to-Hardcover progress write because book edition owns shared Hardcover progress", {
+              profileId,
+              bookId: absSource.book_id,
+              grimmoryBookId: grBook?.id ?? null,
+              pct: absSourcePct
+            });
             recordEvent(db, runId, profileId, grBook?.title ?? "", "skipped_no_change", "abs_to_hardcover", "book_progress_wins_shared_hardcover", {
               pct: absSourcePct,
               grimmoryBookId: grBook?.id ?? null
@@ -2374,34 +2389,43 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
             let preferredEditionId: number | null = null;
             const desiredStatusId = absSourcePct >= 98 ? 3 : 2;
 
-            if (hardcoverToken && hcBookId !== null) {
-              const candidateAsins = new Set([
-                audiobookIdentityRow?.audiobookshelf_asin,
-                audiobookIdentityRow?.grimmory_audible_asin,
-                hcSourceRow?.source_audible_asin
-              ].filter((value): value is string => Boolean(value?.trim())).map((value) => value.trim().toLowerCase()));
-              const editions = await fetchEditionsForBook(hardcoverToken, hcBookId);
-              const asinMatch = editions.find((edition) => edition.asin && candidateAsins.has(edition.asin.trim().toLowerCase()));
-              const runtimeMatch = !asinMatch && absDuration
-                ? editions.find((edition) => edition.audio_seconds && Math.abs(edition.audio_seconds - absDuration) / absDuration <= 0.05)
-                : undefined;
-              const formatMatch = !asinMatch && !runtimeMatch
-                ? editions.find((edition) => edition.edition_format?.toLowerCase().includes("audio"))
-                : undefined;
-              preferredEditionId = asinMatch?.id ?? runtimeMatch?.id ?? formatMatch?.id ?? null;
-              if (preferredEditionId) {
-                logger.info("Resolved Hardcover audio edition for ABS progress", {
+            if (hcSourceRow?.source_edition_id != null && hcSourceRow.source_media_type === "audiobook") {
+              preferredEditionId = parseInt(String(hcSourceRow.source_edition_id), 10) || null;
+            }
+
+            if (!preferredEditionId && hardcoverToken && hcBookId !== null) {
+              try {
+                const candidateAsins = new Set([
+                  audiobookIdentityRow?.audiobookshelf_asin,
+                  audiobookIdentityRow?.grimmory_audible_asin,
+                  hcSourceRow?.source_audible_asin
+                ].filter((value): value is string => Boolean(value?.trim())).map((value) => value.trim().toLowerCase()));
+                const editions = await fetchEditionsForBook(hardcoverToken, hcBookId);
+                const asinMatch = editions.find((edition) => edition.asin && candidateAsins.has(edition.asin.trim().toLowerCase()));
+                const runtimeMatch = !asinMatch && absDuration
+                  ? editions.find((edition) => edition.audio_seconds && Math.abs(edition.audio_seconds - absDuration) / absDuration <= 0.05)
+                  : undefined;
+                const formatMatch = !asinMatch && !runtimeMatch
+                  ? editions.find((edition) => edition.edition_format?.toLowerCase().includes("audio"))
+                  : undefined;
+                preferredEditionId = asinMatch?.id ?? runtimeMatch?.id ?? formatMatch?.id ?? null;
+                if (preferredEditionId) {
+                  logger.info("Resolved Hardcover audio edition for ABS progress", {
+                    profileId,
+                    bookId: absSource.book_id,
+                    hcBookId,
+                    preferredEditionId,
+                    matchedBy: asinMatch ? "asin" : runtimeMatch ? "duration" : "format"
+                  });
+                }
+              } catch (editionErr) {
+                logger.warn("Failed to resolve Hardcover audio edition for ABS progress", {
                   profileId,
                   bookId: absSource.book_id,
                   hcBookId,
-                  preferredEditionId,
-                  matchedBy: asinMatch ? "asin" : runtimeMatch ? "duration" : "format"
+                  error: editionErr
                 });
               }
-            }
-
-            if (!preferredEditionId && hcSourceRow?.source_edition_id != null && hcSourceRow.source_media_type === "audiobook") {
-              preferredEditionId = parseInt(String(hcSourceRow.source_edition_id), 10) || null;
             }
             if (!preferredEditionId) {
               preferredEditionId = hcLibraryBook?.book.default_audio_edition_id ?? null;
@@ -2612,7 +2636,9 @@ function pruneGrimmorySourcesMissingFromFetch(db: Db, fetchedGrimmoryIds: Set<nu
   if (fetchedGrimmoryIds.size === 0) return;
   const enabledProfileCount = (db.prepare("SELECT COUNT(*) AS count FROM profiles WHERE enabled = 1").get() as { count: number }).count;
   if (enabledProfileCount > 1) {
-    logger.info("Skipping Grimmory source pruning with multiple enabled profiles", { enabledProfileCount });
+    // book_sources are not profile-scoped yet, so a single profile's Grimmory
+    // fetch cannot safely prove that another profile no longer owns a source.
+    logger.info("Skipping Grimmory source pruning until profile-scoped source ownership is available", { enabledProfileCount });
     return;
   }
   const placeholders = Array.from(fetchedGrimmoryIds).map(() => "?").join(",");
