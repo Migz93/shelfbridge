@@ -3,7 +3,7 @@ import { reconcileBookIdentities } from "./bookIdentity.js";
 import { migrateCredentialStorage } from "../security/credentials.js";
 import { logger } from "../logger.js";
 
-export const CURRENT_SCHEMA_VERSION = 10;
+export const CURRENT_SCHEMA_VERSION = 12;
 
 export function initSchema(db: Database.Database): void {
   db.pragma("journal_mode = WAL");
@@ -204,6 +204,7 @@ export function initSchema(db: Database.Database): void {
       goodreads_match_type TEXT,
       goodreads_book_link  TEXT,
       -- Grimmory-specific
+      grimmory_book_id        INTEGER,
       grimmory_last_read_time TEXT,
       grimmory_primary_file_id INTEGER,
       grimmory_shelves     TEXT,
@@ -228,6 +229,12 @@ export function initSchema(db: Database.Database): void {
       dismissed_at   TEXT NOT NULL DEFAULT (datetime('now')),
       UNIQUE(book_id_low, book_id_high),
       CHECK(book_id_low < book_id_high)
+    );
+
+    CREATE TABLE IF NOT EXISTS chaptarr_id_mismatch_dismissals (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      chaptarr_external_id  TEXT NOT NULL UNIQUE,
+      dismissed_at          TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS shelf_mappings (
@@ -652,6 +659,27 @@ export function initSchema(db: Database.Database): void {
     `);
     db.prepare("UPDATE schema_version SET version = 10").run();
     logger.info("Schema migrated to version 10: added duplicate dismissal tracking");
+  }
+
+  if (!row || row.version < 11) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS chaptarr_id_mismatch_dismissals (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        chaptarr_external_id  TEXT NOT NULL UNIQUE,
+        dismissed_at          TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+    db.prepare("UPDATE schema_version SET version = 11").run();
+    logger.info("Schema migrated to version 11: added Chaptarr ID mismatch dismissal tracking");
+  }
+
+  if (!row || row.version < 12) {
+    const userStateCols = db.prepare("PRAGMA table_info(user_book_states)").all() as { name: string }[];
+    if (!userStateCols.some((col) => col.name === "grimmory_book_id")) {
+      db.exec("ALTER TABLE user_book_states ADD COLUMN grimmory_book_id INTEGER;");
+    }
+    db.prepare("UPDATE schema_version SET version = 12").run();
+    logger.info("Schema migrated to version 12: added Grimmory book identity tracking on user states");
   }
 
   migrateCredentialStorage(db);

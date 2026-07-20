@@ -243,6 +243,7 @@ export interface BookDetail extends BookSummary {
   grimmoryGoodreadsId: string | null;
   goodreadsBookId: string | null;
   hardcoverExpected: boolean;
+  hasActiveChaptarrIdMismatch: boolean;
   duplicateCandidates: BookDuplicateCandidate[];
   relationships: BookRelationship[];
 }

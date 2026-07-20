@@ -201,7 +201,10 @@ const BOOK_EDITIONS_QUERY = `
     books(where: { id: { _eq: $bookId } }) {
       editions(order_by: [{ users_count: desc }]) {
         id
+        edition_format
+        asin
         pages
+        audio_seconds
         users_count
       }
     }
@@ -212,9 +215,25 @@ const BOOK_EDITIONS_QUERY = `
 export async function fetchEditionsForBook(
   token: string,
   bookId: number
-): Promise<Array<{ id: number; pages: number | null; users_count: number | null }>> {
+): Promise<Array<{
+  id: number;
+  edition_format: string | null;
+  asin: string | null;
+  pages: number | null;
+  audio_seconds: number | null;
+  users_count: number | null;
+}>> {
   const data = await hardcoverQuery<{
-    books: Array<{ editions: Array<{ id: number; pages: number | null; users_count: number | null }> }>
+    books: Array<{
+      editions: Array<{
+        id: number;
+        edition_format: string | null;
+        asin: string | null;
+        pages: number | null;
+        audio_seconds: number | null;
+        users_count: number | null;
+      }>
+    }>
   }>(token, BOOK_EDITIONS_QUERY, { bookId });
   return data.books?.[0]?.editions ?? [];
 }

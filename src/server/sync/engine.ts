@@ -210,6 +210,7 @@ interface UserStateSnapshot {
   hardcover_progress?: number | null;
   hardcover_edition_id?: number | null;
   hardcover_edition_pages?: number | null;
+  grimmory_book_id?: number | null;
   grimmory_primary_file_id?: number | null;
   goodreads_shelf?: string | null;
   goodreads_rating?: number | null;
@@ -540,6 +541,38 @@ function hardcoverFieldsFromGrimmory(grBook: GrimmoryBook): { status_id?: number
   };
 }
 
+function isActivelyReadingStatus(status: string | null | undefined): boolean {
+  return status === "READING" || status === "RE_READING" || status === "PARTIALLY_READ";
+}
+
+function hardcoverIdForGrimmoryBook(book: GrimmoryBook): string | null {
+  return normalizeExternalId(book.hardcoverBookId) ?? null;
+}
+
+function activeGrimmorySiblingsForHardcover(grimmoryBooks: GrimmoryBook[], hardcoverBookId: number | string): {
+  book: GrimmoryBook | null;
+  audiobook: GrimmoryBook | null;
+} {
+  const normalizedHardcoverId = normalizeExternalId(hardcoverBookId);
+  if (!normalizedHardcoverId) return { book: null, audiobook: null };
+
+  const active = grimmoryBooks.filter((book) =>
+    hardcoverIdForGrimmoryBook(book) === normalizedHardcoverId
+      && isActivelyReadingStatus(book.readStatus)
+  );
+
+  return {
+    book: active.find((book) => book.mediaType !== "audiobook") ?? null,
+    audiobook: active.find((book) => book.mediaType === "audiobook") ?? null
+  };
+}
+
+function shouldBookProgressOwnSharedHardcover(grimmoryBooks: GrimmoryBook[], hardcoverBookId: number | string | null | undefined): boolean {
+  if (hardcoverBookId === null || hardcoverBookId === undefined) return false;
+  const siblings = activeGrimmorySiblingsForHardcover(grimmoryBooks, hardcoverBookId);
+  return siblings.book !== null && siblings.audiobook !== null;
+}
+
 function normalizeEditionFormat(value: string | null | undefined): string | null {
   const text = value?.trim();
   return text ? text : null;
@@ -590,6 +623,20 @@ function getUserState(db: Db, bookId: number, profileId: number, sourceType: str
   return db.prepare(
     "SELECT * FROM user_book_states WHERE book_id = ? AND profile_id = ? AND source_type = ?"
   ).get(bookId, profileId, sourceType) as UserStateSnapshot | undefined;
+}
+
+function localGrimmoryBookForBookId(db: Db, bookId: number, grimmoryBooks: GrimmoryBook[]): GrimmoryBook | null {
+  const rows = db.prepare(`
+    SELECT CAST(external_id AS INTEGER) AS grimmory_book_id
+    FROM book_sources
+    WHERE source_type = 'grimmory' AND book_id = ?
+  `).all(bookId) as { grimmory_book_id: number }[];
+
+  for (const row of rows) {
+    const book = grimmoryBooks.find((candidate) => candidate.id === row.grimmory_book_id);
+    if (book) return book;
+  }
+  return null;
 }
 
 /** Upsert a book_sources row. Returns the row id. */
@@ -897,7 +944,17 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
     if (hasHardcover) {
       for (const hcBook of hcBooks) {
         const userEdition = hcBook.edition_id ? hcEditions.get(hcBook.edition_id) : null;
-        const mediaType = inferHardcoverMediaType(hcBook, userEdition);
+        const preferredSiblings = grimmoryAvailable
+          ? activeGrimmorySiblingsForHardcover(grimmoryBooks, hcBook.book.id)
+          : { book: null, audiobook: null };
+        const bookOwnsSharedHardcover = preferredSiblings.book !== null && preferredSiblings.audiobook !== null;
+        // Hardcover uses one book ID for multiple active editions, while our
+        // book_sources row is keyed by that book ID. Keep the row in the book
+        // bucket and clear edition-specific fields so HC iteration order cannot
+        // flip the local identity between book and audiobook.
+        const mediaType = bookOwnsSharedHardcover
+          ? "physical"
+          : inferHardcoverMediaType(hcBook, userEdition);
         const edition = mediaType === "audiobook"
           ? hcBook.book.default_audio_edition
           : mediaType === "ebook"
@@ -918,7 +975,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
           ?? null;
         const hardcoverSlug = hcBook.book.slug ?? null;
         const series = firstHardcoverSeries(hcBook);
-        const editionFormat = normalizeEditionFormat(userEdition?.edition_format);
+        const editionFormat = bookOwnsSharedHardcover ? null : normalizeEditionFormat(userEdition?.edition_format);
         const editionAsin = userEdition?.asin?.trim() || null;
         const ebookAsin = mediaType === "ebook"
           ? (editionAsin ?? hcBook.book.default_ebook_edition?.asin ?? null)
@@ -927,6 +984,9 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
           ? (editionAsin ?? hcBook.book.default_audio_edition?.asin ?? null)
           : hcBook.book.default_audio_edition?.asin ?? null;
         const hcAudioSeconds = userEdition?.audio_seconds ?? null;
+        // For shared Hardcover books, keep the row edition-neutral as well as
+        // book-bucketed; otherwise whichever HC edition syncs last can flip the
+        // identity fields for every local sibling.
         const sourceId = upsertBookSource(db, "hardcover", hcBook.book.id, {
           title,
           author,
@@ -937,13 +997,13 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
           series_number: series.number,
           source_hardcover_book_id: hcBook.book.id,
           source_hardcover_slug: hardcoverSlug,
-          source_edition_id: hcBook.edition_id ?? null,
+          source_edition_id: bookOwnsSharedHardcover ? null : (hcBook.edition_id ?? null),
           source_edition_format: editionFormat,
           source_media_type: mediaType,
           source_asin: ebookAsin,
           source_audible_asin: audioAsin,
           hardcover_slug: hardcoverSlug,
-          hardcover_audio_seconds: hcAudioSeconds,
+          hardcover_audio_seconds: bookOwnsSharedHardcover ? null : hcAudioSeconds,
           last_sync_at: "datetime('now')"
         });
 
@@ -965,6 +1025,18 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
     // book_sources row gets a book_id. This is what links HC sources to
     // Grimmory sources for the HC sync loop below.
     reconcileBookIdentities(db);
+    if (hasHardcover) {
+      db.prepare(`
+        DELETE FROM user_book_states
+        WHERE profile_id = ?
+          AND source_type = 'hardcover'
+          AND NOT EXISTS (
+            SELECT 1 FROM book_sources
+            WHERE book_sources.book_id = user_book_states.book_id
+              AND book_sources.source_type = 'hardcover'
+          )
+      `).run(profileId);
+    }
 
     // ── Phase E: Build Grimmory in-memory match index (for HC loop) ─────────
     const grimmoryIndex = buildGrimmoryIndex(grimmoryBooks);
@@ -987,8 +1059,15 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
       }
       const bookId = hcSource.book_id;
 
+      const preferredSiblings = grimmoryAvailable
+        ? activeGrimmorySiblingsForHardcover(grimmoryBooks, hcBook.book.id)
+        : { book: null, audiobook: null };
+      const bookOwnsSharedHardcover = preferredSiblings.book !== null && preferredSiblings.audiobook !== null;
+
       // Find matching Grimmory book via the in-memory matcher
-      const match = grimmoryAvailable
+      const match = bookOwnsSharedHardcover && preferredSiblings.book
+        ? { grimmoryBook: preferredSiblings.book, confidence: "high" as const, matchType: "hardcover_book_id" as const }
+        : grimmoryAvailable
         ? matchHardcoverBook(hcBook, grimmoryIndex, {
             goodreadsId: (db.prepare(
               "SELECT external_id FROM book_sources WHERE source_type='goodreads' AND book_id=? LIMIT 1"
@@ -996,9 +1075,13 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
           })
         : null;
       const grBook = match?.grimmoryBook ?? null;
+      const localIdentityGrimmoryBook = !grBook && grimmoryAvailable
+        ? localGrimmoryBookForBookId(db, bookId, grimmoryBooks)
+        : null;
       if (grBook) matchedGrimmoryIds.add(grBook.id);
+      if (localIdentityGrimmoryBook) matchedGrimmoryIds.add(localIdentityGrimmoryBook.id);
 
-      const title = hcBook.book.title ?? grBook?.title ?? "";
+      const title = hcBook.book.title ?? grBook?.title ?? localIdentityGrimmoryBook?.title ?? "";
 
       if (writeTagEnabled && grBook) {
         taggedSourceGrimmoryIds.add(grBook.id);
@@ -1014,9 +1097,20 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
 
       const hcStatusId = hcBook.status_id;
       const grStatus = grBook?.readStatus ?? null;
+      const projectedHcStatus = grStatus
+        ?? localIdentityGrimmoryBook?.readStatus
+        ?? prevHcState?.status
+        ?? null;
       const audiobookRuntimeSeconds = audiobookRuntimeForBook(db, bookId);
 
-      const { decision, syncHealth, writeGrimmory, writeHardcover } = grimmoryAvailable
+      const { decision, syncHealth, writeGrimmory, writeHardcover } = localIdentityGrimmoryBook
+        ? {
+            decision: "local_identity_has_grimmory_match",
+            syncHealth: "synced",
+            writeGrimmory: false,
+            writeHardcover: false
+          }
+        : grimmoryAvailable
         ? computeSyncDecision({
             hcBook, grBook, conflictStrategy,
             syncStatusEnabled: profile["sync_status_enabled"] !== 0,
@@ -1063,7 +1157,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
 
       // Upsert user_book_states (hardcover)
       const hcStateFields: Record<string, unknown> = {
-        status: grStatus ?? null,  // canonical status from Grimmory if matched
+        status: projectedHcStatus,
         rating: hcBook.rating ?? null,
         progress: hcProgress,
         progress_pages: hcRead?.progress_pages ?? null,
@@ -1071,8 +1165,8 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
         last_read_date: hcBook.last_read_date ?? null,
         date_finished: null,
         sync_health: syncHealth,
-        match_confidence: match?.confidence ?? "none",
-        match_type: match?.matchType ?? null,
+        match_confidence: match?.confidence ?? (localIdentityGrimmoryBook ? "low" : "none"),
+        match_type: match?.matchType ?? (localIdentityGrimmoryBook ? "local_identity" : null),
         last_sync_decision: decision,
         hardcover_status_id: hcStatusId ?? null,
         hardcover_user_book_id: hcBook.id ?? null,
@@ -1273,7 +1367,13 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
         let progressDirection: "grimmory_to_hardcover" | "hardcover_to_grimmory" | null = null;
         let progressDecision = "progress_already_synced";
 
-        if (!progressAlreadySynced) {
+        if (bookOwnsSharedHardcover && grProgress !== null && !progressAlreadySynced) {
+          // Hardcover only exposes one current-progress slot per work. When a
+          // book and audiobook are both active, the book edition owns that slot
+          // even if the profile's general conflict strategy is Hardcover-wins.
+          progressDirection = "grimmory_to_hardcover";
+          progressDecision = "book_progress_wins_shared_hardcover";
+        } else if (!progressAlreadySynced) {
           const grTime = grBook.lastReadTime ?? null;
           const hcTime = hcBook.updated_at ?? null;
           const latestProgressSource = newerSource(hcTime, grTime);
@@ -1484,12 +1584,20 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
         });
 
         db.prepare(`
+          DELETE FROM user_book_states
+          WHERE profile_id = ?
+            AND source_type = 'grimmory'
+            AND grimmory_book_id = ?
+            AND book_id <> ?
+        `).run(profileId, grBook.id, bookId);
+
+        db.prepare(`
           INSERT INTO user_book_states
             (book_id, profile_id, source_type, status, rating, progress,
              last_read_date, date_finished, sync_health,
-             grimmory_last_read_time, grimmory_primary_file_id,
+             grimmory_book_id, grimmory_last_read_time, grimmory_primary_file_id,
              last_sync_at, last_sync_decision, last_modified_at)
-          VALUES (?, ?, 'grimmory', ?, ?, ?, ?, ?, 'synced', ?, ?, datetime('now'), 'grimmory_source', datetime('now'))
+          VALUES (?, ?, 'grimmory', ?, ?, ?, ?, ?, 'synced', ?, ?, ?, datetime('now'), 'grimmory_source', datetime('now'))
           ON CONFLICT(book_id, profile_id, source_type) DO UPDATE SET
             status = excluded.status,
             rating = excluded.rating,
@@ -1497,6 +1605,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
             last_read_date = excluded.last_read_date,
             date_finished = excluded.date_finished,
             sync_health = 'synced',
+            grimmory_book_id = excluded.grimmory_book_id,
             grimmory_last_read_time = excluded.grimmory_last_read_time,
             grimmory_primary_file_id = excluded.grimmory_primary_file_id,
             last_sync_at = datetime('now'),
@@ -1506,6 +1615,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
           bookId, profileId,
           grReadStatus, grRat, grProgress,
           grLastReadTime, grDateFinished,
+          grBook.id,
           grLastReadTime, grPrimaryFileId,
           meaningfulChange ? 1 : 0
         );
@@ -1516,6 +1626,21 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
           const hardcoverBookId = grBook.hardcoverBookId ? Number.parseInt(grBook.hardcoverBookId, 10) : NaN;
           const hardcoverFields = hardcoverFieldsFromGrimmory(grBook);
           const hardcoverRat = grimmoryToHardcoverRating(grimmoryRating(grBook));
+          const bookOwnsSharedHardcover = grBook.mediaType === "audiobook"
+            && shouldBookProgressOwnSharedHardcover(grimmoryBooks, grBook.hardcoverBookId);
+          if (bookOwnsSharedHardcover) {
+            logger.info("Skipped Grimmory-to-Hardcover status write because book edition owns shared Hardcover progress", {
+              profileId,
+              grimmoryBookId: grBook.id,
+              hardcoverBookId: Number.isInteger(hardcoverBookId) ? hardcoverBookId : null
+            });
+            recordEvent(db, runId, profileId, grBook.title ?? "", "skipped_no_change", "grimmory_to_hardcover", "book_progress_wins_shared_hardcover", {
+              grimmoryBookId: grBook.id,
+              hardcoverBookId: Number.isInteger(hardcoverBookId) ? hardcoverBookId : null
+            });
+            counters.skipped++;
+            continue;
+          }
           if (hasHardcover && profile["sync_status_enabled"] !== 0 && Number.isInteger(hardcoverBookId) && hardcoverFields?.status_id) {
             const title = grBook.title ?? "";
             if (dryRun) {
@@ -1952,20 +2077,41 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
         logger.info("Fetching Audiobookshelf libraries", { profileId });
         const absLibraries = await fetchAudiobookshelfLibraries(absBaseUrl, absApiKey!);
         const bookLibraries = absLibraries.filter((lib) => lib.mediaType === "book");
+        const liveAbsIds = new Set<string>();
+        let absSnapshotComplete = true;
         logger.info("Audiobookshelf libraries fetched", { profileId, total: absLibraries.length, bookLibraries: bookLibraries.length });
 
         for (const library of bookLibraries) {
-          const items = await fetchAudiobookshelfLibraryItems(absBaseUrl, absApiKey!, library.id);
+          let items: Awaited<ReturnType<typeof fetchAudiobookshelfLibraryItems>>;
+          try {
+            items = await fetchAudiobookshelfLibraryItems(absBaseUrl, absApiKey!, library.id);
+          } catch (libraryErr) {
+            absSnapshotComplete = false;
+            counters.sourceFailures++;
+            logger.warn("Audiobookshelf library items fetch failed; continuing with remaining libraries", {
+              profileId,
+              libraryId: library.id,
+              libraryName: library.name,
+              error: libraryErr
+            });
+            recordEvent(db, runId, profileId, library.name, "api_failure", "audiobookshelf", "library_items_unavailable", {
+              libraryId: library.id,
+              error: String(libraryErr)
+            });
+            continue;
+          }
           logger.info("Audiobookshelf library items fetched", { profileId, libraryId: library.id, libraryName: library.name, count: items.length });
 
           for (const item of items) {
+            liveAbsIds.add(item.id);
             const meta = item.media?.metadata;
             if (!meta) continue;
 
-            const absDuration = meta.duration ?? null;
-            const absFilePath = item.libraryFiles?.[0]?.metadata?.path ?? null;
+            const absDuration = meta.duration ?? item.media.duration ?? null;
+            const absFilePath = item.libraryFiles?.[0]?.metadata?.path ?? item.path ?? null;
             const absAsin = meta.asin ?? null;
             const absIsbn = meta.isbn ?? null;
+            const absNarrator = meta.narrator ?? meta.narratorName ?? null;
 
             // Try to find an existing book_id to link this ABS item to
             let linkedBookId: number | null = null;
@@ -2027,6 +2173,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
               author: meta.authorName ?? null,
               series_name: meta.seriesName ?? null,
               source_media_type: "audiobook",
+              source_narrator: absNarrator,
               audiobookshelf_duration: absDuration !== null ? Math.round(absDuration) : null,
               audiobookshelf_file_path: absFilePath,
               audiobookshelf_asin: absAsin,
@@ -2040,6 +2187,30 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
             upsertBookSource(db, "audiobookshelf", item.id, absFields);
           }
         }
+
+        if (!absSnapshotComplete) {
+          logger.warn("Skipped Audiobookshelf stale-state pruning because library snapshot was incomplete", {
+            profileId,
+            liveItemCount: liveAbsIds.size
+          });
+        } else if (liveAbsIds.size > 0) {
+          const placeholders = Array.from(liveAbsIds).map(() => "?").join(",");
+          db.prepare(`
+            DELETE FROM user_book_states
+            WHERE profile_id = ?
+              AND source_type = 'audiobookshelf'
+              AND audiobookshelf_item_id IS NOT NULL
+              AND audiobookshelf_item_id NOT IN (${placeholders})
+          `).run(profileId, ...Array.from(liveAbsIds));
+        } else {
+          db.prepare(`
+            DELETE FROM user_book_states
+            WHERE profile_id = ?
+              AND source_type = 'audiobookshelf'
+              AND audiobookshelf_item_id IS NOT NULL
+          `).run(profileId);
+        }
+        reconcileBookIdentities(db);
       } catch (err) {
         logger.warn("Audiobookshelf library sync failed; skipping ABS phase", { profileId, error: String(err) });
         recordEvent(db, runId, profileId, "Audiobookshelf", "api_failure", "audiobookshelf", "source_unavailable", { error: String(err) });
@@ -2115,6 +2286,8 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
           const grimProgressData = grimmoryBookId !== null ? grimmoryProgressById.get(grimmoryBookId) : undefined;
           const grBook = grimmoryBookId !== null ? grimmoryBooks.find((b) => b.id === grimmoryBookId) : undefined;
           const grProgress = meaningfulProgress(grimProgressData?.readProgress ?? null); // 0–100
+          const bookOwnsSharedHardcover = grBook?.mediaType === "audiobook"
+            && shouldBookProgressOwnSharedHardcover(grimmoryBooks, grBook.hardcoverBookId);
 
           const absDuration = absSource.abs_duration ?? (absProgress?.duration ?? null);
           const hcProgressPct = hcState?.progress_seconds && absDuration && absDuration > 0
@@ -2138,6 +2311,13 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
             const absProgressPct = absProgress.progress * 100;
             const absUpdatedAt = new Date(absProgress.lastUpdate).toISOString();
             const absCurrentTimeSeconds = effectiveAbsCurrentTimeSeconds(absProgress, absDuration);
+            db.prepare(`
+              DELETE FROM user_book_states
+              WHERE profile_id = ?
+                AND source_type = 'audiobookshelf'
+                AND audiobookshelf_item_id = ?
+                AND book_id <> ?
+            `).run(profileId, absSource.abs_item_id, absSource.book_id);
             const prevAbsState = db.prepare(
               "SELECT id, progress FROM user_book_states WHERE book_id = ? AND profile_id = ? AND source_type = 'audiobookshelf'"
             ).get(absSource.book_id, profileId) as { id: number; progress: number | null } | undefined;
@@ -2201,21 +2381,97 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
           }
 
           // ── Write to Hardcover ──
+          if (bookOwnsSharedHardcover) {
+            logger.info("Skipped ABS-to-Hardcover progress write because book edition owns shared Hardcover progress", {
+              profileId,
+              bookId: absSource.book_id,
+              grimmoryBookId: grBook?.id ?? null,
+              pct: absSourcePct
+            });
+            recordEvent(db, runId, profileId, grBook?.title ?? "", "skipped_no_change", "abs_to_hardcover", "book_progress_wins_shared_hardcover", {
+              pct: absSourcePct,
+              grimmoryBookId: grBook?.id ?? null
+            });
+            counters.skipped++;
+            continue;
+          }
+
           if (needsWrite(effectiveHcProgress)) {
             const hcSourceRow = hasHardcover ? db.prepare(`
-              SELECT external_id, source_edition_id
+              SELECT external_id, source_edition_id, source_media_type, source_audible_asin, hardcover_audio_seconds
               FROM book_sources
               WHERE source_type = 'hardcover' AND book_id = ?
             `).get(absSource.book_id) as {
               external_id: string;
               source_edition_id: string | number | null;
+              source_media_type: string | null;
+              source_audible_asin: string | null;
+              hardcover_audio_seconds: number | null;
             } | undefined : undefined;
-            const hcBookId = hcSourceRow ? parseInt(hcSourceRow.external_id, 10) : null;
+            const audiobookIdentityRow = db.prepare(`
+              SELECT
+                MAX(CASE WHEN source_type = 'grimmory' THEN source_hardcover_book_id END) AS grimmory_hardcover_book_id,
+                MAX(CASE WHEN source_type = 'grimmory' THEN source_audible_asin END) AS grimmory_audible_asin,
+                MAX(CASE WHEN source_type = 'audiobookshelf' THEN audiobookshelf_asin END) AS audiobookshelf_asin
+              FROM book_sources
+              WHERE book_id = ?
+            `).get(absSource.book_id) as {
+              grimmory_hardcover_book_id: string | null;
+              grimmory_audible_asin: string | null;
+              audiobookshelf_asin: string | null;
+            } | undefined;
+            const parsedHcBookId = hcSourceRow
+              ? parseInt(hcSourceRow.external_id, 10)
+              : (audiobookIdentityRow?.grimmory_hardcover_book_id
+                  ? parseInt(audiobookIdentityRow.grimmory_hardcover_book_id, 10)
+                  : null);
+            const hcBookId = parsedHcBookId !== null && Number.isFinite(parsedHcBookId) ? parsedHcBookId : null;
             const hcLibraryBook = hcBookId !== null ? hcBooks.find((book) => book.book.id === hcBookId) : undefined;
-            const preferredEditionId = hcSourceRow?.source_edition_id != null
-              ? parseInt(String(hcSourceRow.source_edition_id), 10) || null
-              : (hcLibraryBook?.edition_id ?? hcLibraryBook?.book.default_audio_edition_id ?? null);
+            let preferredEditionId: number | null = null;
             const desiredStatusId = absSourcePct >= 98 ? 3 : 2;
+
+            if (hcSourceRow?.source_edition_id != null && hcSourceRow.source_media_type === "audiobook") {
+              preferredEditionId = parseInt(String(hcSourceRow.source_edition_id), 10) || null;
+            }
+
+            if (!preferredEditionId && hardcoverToken && hcBookId !== null) {
+              try {
+                const candidateAsins = new Set([
+                  audiobookIdentityRow?.audiobookshelf_asin,
+                  audiobookIdentityRow?.grimmory_audible_asin,
+                  hcSourceRow?.source_audible_asin
+                ].filter((value): value is string => Boolean(value?.trim())).map((value) => value.trim().toLowerCase()));
+                const editions = await fetchEditionsForBook(hardcoverToken, hcBookId);
+                const asinMatch = editions.find((edition) => edition.asin && candidateAsins.has(edition.asin.trim().toLowerCase()));
+                const runtimeMatch = !asinMatch && absDuration
+                  ? editions.find((edition) => edition.audio_seconds && Math.abs(edition.audio_seconds - absDuration) / absDuration <= 0.05)
+                  : undefined;
+                const formatMatch = !asinMatch && !runtimeMatch
+                  ? editions.find((edition) => edition.edition_format?.toLowerCase().includes("audio"))
+                  : undefined;
+                preferredEditionId = asinMatch?.id ?? runtimeMatch?.id ?? formatMatch?.id ?? null;
+                if (preferredEditionId) {
+                  logger.info("Resolved Hardcover audio edition for ABS progress", {
+                    profileId,
+                    bookId: absSource.book_id,
+                    hcBookId,
+                    preferredEditionId,
+                    matchedBy: asinMatch ? "asin" : runtimeMatch ? "duration" : "format"
+                  });
+                }
+              } catch (editionErr) {
+                logger.warn("Failed to resolve Hardcover audio edition for ABS progress", {
+                  profileId,
+                  bookId: absSource.book_id,
+                  hcBookId,
+                  error: editionErr
+                });
+              }
+            }
+            if (!preferredEditionId) {
+              preferredEditionId = hcLibraryBook?.book.default_audio_edition_id ?? null;
+            }
+
             persistResolvedHardcoverAudioEdition(db, absSource.book_id, preferredEditionId);
 
             if (hcState?.hardcover_user_book_id) {
@@ -2224,6 +2480,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
                 : Math.round((absSourcePct / 100) * (absDuration ?? 0));
               const direction = "abs_to_hardcover";
               const decision = "abs_newer_progress";
+              const desiredStatusText = desiredStatusId === 3 ? "READ" : "READING";
               const readFields: HardcoverReadFields = {
                 edition_id: preferredEditionId ?? undefined,
                 progress_pages: 0,
@@ -2249,10 +2506,10 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
                   }
                   db.prepare(`
                     UPDATE user_book_states
-                    SET progress = NULL, progress_seconds = ?, hardcover_status_id = ?,
+                    SET status = ?, progress = NULL, progress_seconds = ?, hardcover_status_id = ?,
                         last_sync_at = datetime('now'), last_sync_decision = ?
                     WHERE book_id = ? AND profile_id = ? AND source_type = 'hardcover'
-                  `).run(progressSeconds, desiredStatusId, decision, absSource.book_id, profileId);
+                  `).run(desiredStatusText, progressSeconds, desiredStatusId, decision, absSource.book_id, profileId);
                   logger.info("Wrote audio progress to Hardcover", { profileId, bookId: absSource.book_id, source: "abs", pct: absSourcePct, progressSeconds, preferredEditionId });
                   recordEvent(db, runId, profileId, "", "written", direction, decision, { pct: absSourcePct, progressSeconds, preferredEditionId });
                   counters.written++;
@@ -2264,8 +2521,9 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
                 recordEvent(db, runId, profileId, "", "written", direction, decision, { pct: absSourcePct, progressSeconds, preferredEditionId, dryRun: true });
                 counters.written++;
               }
-            } else if (hcState && hardcoverToken) {
-              // No valid user_book_id yet — try to create one using the book's list entry (e.g. Owned list with audiobook edition)
+            } else if (hardcoverToken) {
+              // No valid user_book_id yet. If Grimmory/ABS can identify the HC book,
+              // create an audiobook user_book/read so future syncs have a local state.
               if (hcBookId !== null) {
                 const progressSeconds = absProgress
                   ? effectiveAbsCurrentTimeSeconds(absProgress, absDuration)
@@ -2274,14 +2532,12 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
                 const decision = "abs_newer_progress";
                 if (!dryRun) {
                   try {
+                    const desiredStatusText = desiredStatusId === 3 ? "READ" : "READING";
                     const newUserBookId = await insertHardcoverUserBook(hardcoverToken, {
                       book_id: hcBookId,
                       status_id: desiredStatusId,
                       edition_id: preferredEditionId ?? undefined
                     });
-                    db.prepare(
-                      "UPDATE user_book_states SET hardcover_user_book_id = ?, hardcover_status_id = ? WHERE book_id = ? AND profile_id = ? AND source_type = 'hardcover'"
-                    ).run(newUserBookId, desiredStatusId, absSource.book_id, profileId);
                     const newReadId = await insertHardcoverUserBookRead(hardcoverToken, newUserBookId, {
                       edition_id: preferredEditionId ?? undefined,
                       progress_pages: 0,
@@ -2290,9 +2546,31 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
                       finished_at: null,
                       finished_at_precision: null
                     });
-                    db.prepare(
-                      "UPDATE user_book_states SET hardcover_read_id = ?, progress_seconds = ?, last_sync_at = datetime('now'), last_sync_decision = ? WHERE book_id = ? AND profile_id = ? AND source_type = 'hardcover'"
-                    ).run(newReadId, progressSeconds, decision, absSource.book_id, profileId);
+                    db.prepare(`
+                      INSERT INTO user_book_states
+                        (book_id, profile_id, source_type, status, progress, progress_pages,
+                         progress_seconds, sync_health, hardcover_status_id, hardcover_read_id,
+                         hardcover_user_book_id, hardcover_edition_id, last_sync_at,
+                         last_sync_decision, last_modified_at)
+                      VALUES (?, ?, 'hardcover', ?, NULL, 0, ?, 'synced', ?, ?, ?, ?,
+                              datetime('now'), ?, datetime('now'))
+                      ON CONFLICT(book_id, profile_id, source_type) DO UPDATE SET
+                        status = excluded.status,
+                        progress = NULL,
+                        progress_pages = 0,
+                        progress_seconds = excluded.progress_seconds,
+                        sync_health = 'synced',
+                        hardcover_status_id = excluded.hardcover_status_id,
+                        hardcover_read_id = excluded.hardcover_read_id,
+                        hardcover_user_book_id = excluded.hardcover_user_book_id,
+                        hardcover_edition_id = excluded.hardcover_edition_id,
+                        last_sync_at = datetime('now'),
+                        last_sync_decision = excluded.last_sync_decision,
+                        last_modified_at = datetime('now')
+                    `).run(
+                      absSource.book_id, profileId, desiredStatusText, progressSeconds, desiredStatusId,
+                      newReadId, newUserBookId, preferredEditionId, decision
+                    );
                     logger.info("Created HC user_book and wrote audio progress", {
                       profileId, bookId: absSource.book_id, hcBookId, newUserBookId, preferredEditionId, statusId: desiredStatusId, progressSeconds
                     });
@@ -2399,6 +2677,13 @@ function pruneHardcoverSourcesMissingFromFetch(db: Db, fetchedHcBookIds: Set<num
 // Prune Grimmory book_sources for books no longer in the Grimmory library
 function pruneGrimmorySourcesMissingFromFetch(db: Db, fetchedGrimmoryIds: Set<number>): void {
   if (fetchedGrimmoryIds.size === 0) return;
+  const enabledProfileCount = (db.prepare("SELECT COUNT(*) AS count FROM profiles WHERE enabled = 1").get() as { count: number }).count;
+  if (enabledProfileCount > 1) {
+    // book_sources are not profile-scoped yet, so a single profile's Grimmory
+    // fetch cannot safely prove that another profile no longer owns a source.
+    logger.info("Skipping Grimmory source pruning until profile-scoped source ownership is available", { enabledProfileCount });
+    return;
+  }
   const placeholders = Array.from(fetchedGrimmoryIds).map(() => "?").join(",");
   const result = db.prepare(`
     DELETE FROM book_sources
