@@ -909,3 +909,79 @@ you actually have — go to Hardcover and switch to the correct audio edition.
 The `hardcover_audio_seconds` field is stored per book in `book_sources` during
 Phase C and populated from the user's selected `edition_id` when that edition
 has `audio_seconds > 0`.
+
+### Shared Hardcover Books (Print + Audiobook Editions)
+
+Hardcover gives one `user_books` row per (user, book) pair, not per edition —
+so when a title exists in both a print/ebook Grimmory record and a separate
+audiobook Grimmory record, both point at the **same** Hardcover book ID and
+the same underlying `user_books` row, even though they are two distinct
+canonical ShelfBridge books.
+
+**Routing.** ShelfBridge decides which Grimmory sibling "owns" that shared
+Hardcover book using a signal it controls, not Hardcover's own live data:
+
+- If the audiobook sibling has a runtime-validated Audiobookshelf link
+  (`book_sources.audiobookshelf_runtime_validated = 1`), the shared Hardcover
+  book is always routed to the audiobook sibling — regardless of which
+  edition Hardcover's API currently reports as the book's "current" edition
+  for that user. This matters because editing *any* read record on a shared
+  Hardcover book appears to retarget that pointer on Hardcover's side, which
+  would otherwise cause the routing to flip between audiobook and print from
+  one sync to the next depending on unrelated activity (e.g. a manually
+  edited print read date).
+- This ABS-ownership signal is computed once at the start of each sync run,
+  anchored via the Grimmory audiobook row's own `grimmory_hardcover_book_id`
+  field joined to its Audiobookshelf sibling's `book_id` — not via the
+  `hardcover` source row's own `book_id`, because that is the value that
+  drifts when the routing goes wrong; anchoring off it would prevent the
+  signal from ever self-correcting after a bad run.
+- If both the print/ebook sibling and the audiobook sibling are simultaneously
+  `READING`/`RE_READING`/`PARTIALLY_READ` in Grimmory (i.e. the user is
+  actively reading and listening to the same book at once), the shared
+  Hardcover book is instead routed to the print/ebook sibling for that run
+  (`book_progress_wins_shared_hardcover`). Audiobookshelf progress and status
+  still sync normally to Grimmory and to ShelfBridge's own state in this case
+  — only the Hardcover-side write is deferred to the print side, to avoid the
+  two editions fighting over the one shared Hardcover progress/status field.
+
+**Non-owning sibling writes are suppressed.** Whichever Grimmory sibling does
+*not* currently own the shared Hardcover book must not push its own
+status/progress into it — this applies both to the main Hardcover↔Grimmory
+sync loop and to the fallback path that pushes unmatched Grimmory books into
+Hardcover (Phase G). Without this, the non-owning sibling would be treated as
+"a Grimmory book with no Hardcover match yet" and insert/overwrite the shared
+`user_books` row on every run.
+
+**Read record selection.** When ShelfBridge writes audiobook progress to
+Hardcover, it targets a specific `user_book_reads` row. Two related pitfalls:
+
+- A cached `hardcover_read_id` can go stale (Hardcover can delete or
+  supersede a read independently of ShelfBridge). ShelfBridge verifies the
+  cached ID is still present in the freshly fetched read list before reusing
+  it, falling back to an existing open read on the target edition, then to
+  inserting a new one.
+- Hardcover returns each book's most recent reads ordered by database ID, not
+  by which edition they belong to. On a shared book, a read that was simply
+  edited more recently (e.g. a manually corrected print read date) can have a
+  higher ID than the actively-tracked audiobook read despite being for an
+  unrelated, already-finished period. ShelfBridge's own read/progress
+  selection logic (`latestHardcoverRead`) is edition-aware for this reason:
+  when a persisted target edition ID is known for the book, it prefers a read
+  on that specific edition over whichever read merely has the highest ID.
+- Hardcover also tracks a single "current edition" pointer on the shared
+  `user_books` row itself, independent of which reads exist. This pointer can
+  drift on its own (edited by Hardcover in response to read edits) even when
+  the underlying read data is untouched. ShelfBridge checks this pointer
+  against the persisted target edition on every sync — independently of
+  whether progress or status also need a write — and re-patches it back when
+  it has drifted, so a stale "current edition" doesn't get stuck permanently
+  correct data underneath it.
+- Hardcover's own website appears to feature whichever read was edited most
+  recently in its "Currently Reading" widget, independent of `finished_at` or
+  the `user_books.edition_id` pointer. A one-off manual edit to an older
+  finished read (e.g. correcting its date) can therefore make Hardcover's own
+  UI feature that read instead of the actively-progressing one, even though
+  all underlying data is otherwise correct. This is a Hardcover-side display
+  behavior, not something ShelfBridge's sync state controls; it resolves
+  itself once the actively-tracked read is written to again.
