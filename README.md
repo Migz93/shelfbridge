@@ -102,6 +102,8 @@ ShelfBridge is configured through its web UI after first run. The main things yo
 - **Data directory** — change the left side of `/opt/shelfbridge:/config` to store ShelfBridge's database, logs, credential key, and image cache wherever you prefer on your host
 - **Timezone** — set `TZ` to your preferred timezone if you do not want UTC
 
+ShelfBridge's own process runs as an unprivileged user (UID/GID `1000`), not root. The container briefly starts as root only to make sure the data directory is owned by that user — including fixing ownership automatically on a fresh bind mount, or one created by an older version that ran as root — then drops privileges before starting the app. You don't need to `chown` anything on the host yourself, including when upgrading an existing installation.
+
 If ShelfBridge is served through a reverse proxy such as Nginx, Traefik, or Caddy, enable **Settings → General → Network → Trust Proxy** and restart the container so rate limiting uses the real client IP from forwarded headers.
 
 ### First Setup
