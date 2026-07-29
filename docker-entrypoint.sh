@@ -6,16 +6,12 @@ set -e
 # Fix ownership here (while still root), then drop to "node" for the real process.
 if [ "$(id -u)" = "0" ]; then
   mkdir -p "$DATA_DIR"
-  # Only pay for a recursive chown when the top-level directory isn't already
-  # node-owned — DATA_DIR can hold a large image cache, so re-walking it on
-  # every restart once ownership is already correct would slow startup for
-  # no benefit. A restored/copied-in DATA_DIR whose top level is node-owned
-  # but contains stray root-owned files is not handled by this check.
-  current_owner="$(stat -c '%u' "$DATA_DIR")"
-  node_uid="$(id -u node)"
-  if [ "$current_owner" != "$node_uid" ]; then
-    chown -R node:node "$DATA_DIR"
-  fi
+  # Only chown entries that actually need it, rather than unconditionally
+  # chown -R'ing the whole tree — DATA_DIR can hold a large image cache, and
+  # most restarts touch nothing here. This still walks the tree (so nested
+  # root-owned files from a restore/manual copy are caught, not just the
+  # top-level directory), but issues a chown syscall only for mismatches.
+  find "$DATA_DIR" \( ! -user node -o ! -group node \) -exec chown node:node {} +
   exec su-exec node "$@"
 fi
 

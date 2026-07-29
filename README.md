@@ -104,6 +104,8 @@ ShelfBridge is configured through its web UI after first run. The main things yo
 
 ShelfBridge's own process runs as an unprivileged user (UID/GID `1000`), not root. The container briefly starts as root only to make sure the data directory is owned by that user — including fixing ownership automatically on a fresh bind mount, or one created by an older version that ran as root — then drops privileges before starting the app. You don't need to `chown` anything on the host yourself, including when upgrading an existing installation.
 
+This behavior lives in the image itself, so upgrading to it requires actually replacing the running container — pulling a new tag and running `docker compose up -d` does this automatically, but if you build the image yourself, rebuild it and recreate the container (`docker compose up -d --build`, or `docker build` followed by `docker stop`/`docker rm`/`docker run` for a plain `docker run` setup) rather than just restarting the existing one.
+
 If ShelfBridge is served through a reverse proxy such as Nginx, Traefik, or Caddy, enable **Settings → General → Network → Trust Proxy** and restart the container so rate limiting uses the real client IP from forwarded headers.
 
 ### First Setup
