@@ -175,7 +175,11 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
     const bookfileResults = await Promise.all(
       authorIds.map((authorId) =>
         chaptarrGet<Record<string, unknown>[]>(baseUrl, apiKey, `/api/v1/bookfile?authorId=${authorId}`)
-          .catch(() => { uncertainFileInventoryAuthorIds.add(authorId); return [] as Record<string, unknown>[]; })
+          .catch((error) => {
+            uncertainFileInventoryAuthorIds.add(authorId);
+            logger.warn("Chaptarr bookfile fetch failed; preserving prior file state", { profileId, authorId, error });
+            return [] as Record<string, unknown>[];
+          })
       )
     );
     for (const files of bookfileResults) {
@@ -191,7 +195,13 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
     }
     const filePathCount = Array.from(chaptarrFilePathsByBookId.values()).reduce((total, paths) => total + paths.length, 0);
     logger.info("Chaptarr book file paths fetched", { profileId, count: filePathCount, booksWithFiles: chaptarrFilePathsByBookId.size });
-  } catch { /* non-fatal; author names and file-path matching degrade gracefully */ }
+  } catch (error) {
+    logger.warn("Chaptarr file inventory discovery failed; preserving prior file state", { profileId, error });
+    for (const book of allBooks) {
+      const authorId = typeof book["authorId"] === "number" ? book["authorId"] : Number(book["authorId"] ?? 0);
+      if (authorId) uncertainFileInventoryAuthorIds.add(authorId);
+    }
+  }
 
   // Previously recorded hasFile state, keyed by Chaptarr book id. Used to avoid
   // downgrading a book to "no file" when this run's file-path inventory for its
