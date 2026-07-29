@@ -11,7 +11,10 @@ if [ "$(id -u)" = "0" ]; then
   # most restarts touch nothing here. This still walks the tree (so nested
   # root-owned files from a restore/manual copy are caught, not just the
   # top-level directory), but issues a chown syscall only for mismatches.
-  find "$DATA_DIR" \( ! -user node -o ! -group node \) -exec chown node:node {} +
+  # -h is required: without it, chown follows a symlink to its target, so a
+  # symlink under DATA_DIR pointing outside it would let this root-run repair
+  # change ownership of an arbitrary file elsewhere on the filesystem.
+  find "$DATA_DIR" \( ! -user node -o ! -group node \) -exec chown -h node:node {} +
   exec su-exec node "$@"
 fi
 
