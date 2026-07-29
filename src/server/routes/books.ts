@@ -341,8 +341,8 @@ function matchesSource(row: Pick<DbBookRow, "book_id">, source: SourceFilter, ha
   return hardcoverBookIds.has(row.book_id) || goodreadsBookIds.has(row.book_id) || onDiskBookIds.has(row.book_id);
 }
 
-function matchesChaptarrPresence(bookId: number, mode: "in" | "out", chaptarrMonitoredBookIds: Set<number>): boolean {
-  return mode === "in" ? chaptarrMonitoredBookIds.has(bookId) : !chaptarrMonitoredBookIds.has(bookId);
+function matchesChaptarrPresence(bookId: number, mode: "in" | "out", chaptarrPresentBookIds: Set<number>): boolean {
+  return mode === "in" ? chaptarrPresentBookIds.has(bookId) : !chaptarrPresentBookIds.has(bookId);
 }
 
 function matchesAction(
@@ -363,7 +363,8 @@ function matchesAction(
       return probableDuplicateIds.has(row.book_id);
     case "add-to-chaptarr":
       return (row.hardcover_book_id !== null || row.goodreads_book_link !== null)
-        && !chaptarrMonitoredBookIds.has(row.book_id);
+        && !chaptarrMonitoredBookIds.has(row.book_id)
+        && !chaptarrHasFileBookIds.has(row.book_id);
     case "grab-in-chaptarr":
       return chaptarrMonitoredBookIds.has(row.book_id) && !chaptarrHasFileBookIds.has(row.book_id);
     case "review-in-grimmory":
@@ -400,6 +401,7 @@ function matchesFilters(row: DbBookRow, opts: {
   hardcoverBookIds: Set<number>;
   goodreadsBookIds: Set<number>;
   onDiskBookIds: Set<number>;
+  chaptarrPresentBookIds: Set<number>;
   chaptarrMonitoredBookIds: Set<number>;
   chaptarrHasFileBookIds: Set<number>;
   activeChaptarrIdMismatchBookIds: Set<number>;
@@ -413,7 +415,7 @@ function matchesFilters(row: DbBookRow, opts: {
   }
   if (opts.excludedProfileIds.includes(row.profile_id)) return false;
   if (opts.action && !matchesAction(row, opts.action, opts.idReviewBookIds, opts.probableDuplicateIds, opts.grimmoryBookIds, opts.chaptarrMonitoredBookIds, opts.chaptarrHasFileBookIds, opts.activeChaptarrIdMismatchBookIds, opts.absRuntimeMismatchBookIds)) return false;
-  if (opts.chaptarr && !matchesChaptarrPresence(row.book_id, opts.chaptarr, opts.chaptarrMonitoredBookIds)) return false;
+  if (opts.chaptarr && !matchesChaptarrPresence(row.book_id, opts.chaptarr, opts.chaptarrPresentBookIds)) return false;
   if (opts.includedSources.length > 0 && !opts.includedSources.some((s) => matchesSource(row, s, opts.hardcoverBookIds, opts.goodreadsBookIds, opts.onDiskBookIds))) return false;
   if (opts.excludedSources.some((s) => matchesSource(row, s, opts.hardcoverBookIds, opts.goodreadsBookIds, opts.onDiskBookIds))) return false;
   const primarySource: SourceFilter = opts.includedSources.length === 1 ? opts.includedSources[0]! : "all";
@@ -837,6 +839,7 @@ router.get("/", (req, res) => {
   const grimmoryBookIds = new Set(allRows.filter((r) => r.grimmory_book_id !== null).map((r) => r.book_id));
   const chaptarrMonitoredBookIds = new Set(allRows.filter((r) => Boolean(r.chaptarr_monitored)).map((r) => r.book_id));
   const chaptarrHasFileBookIds = new Set(allRows.filter((r) => Boolean(r.chaptarr_has_file)).map((r) => r.book_id));
+  const chaptarrPresentBookIds = new Set([...chaptarrMonitoredBookIds, ...chaptarrHasFileBookIds]);
   const activeChaptarrIdMismatchBookIds = new Set(allRows.filter((r) => Boolean(r.chaptarr_id_mismatch) && !Boolean(r.chaptarr_id_mismatch_dismissed)).map((r) => r.book_id));
   const dismissedPairs = dismissedDuplicatePairKeys();
   const probableDuplicateIds = probableDuplicateBookIds(allRows, dismissedPairs);
@@ -851,14 +854,14 @@ router.get("/", (req, res) => {
     return false;
   }).map((r) => r.book_id));
 
-  const filteredRows = allRows.filter((row) => matchesFilters(row, { includedProfileIds, excludedProfileIds, includedSources, excludedSources, status, chaptarr, action, q, idReviewBookIds, probableDuplicateIds, grimmoryBookIds, hardcoverBookIds, goodreadsBookIds, onDiskBookIds, chaptarrMonitoredBookIds, chaptarrHasFileBookIds, activeChaptarrIdMismatchBookIds, absRuntimeMismatchBookIds }));
+  const filteredRows = allRows.filter((row) => matchesFilters(row, { includedProfileIds, excludedProfileIds, includedSources, excludedSources, status, chaptarr, action, q, idReviewBookIds, probableDuplicateIds, grimmoryBookIds, hardcoverBookIds, goodreadsBookIds, onDiskBookIds, chaptarrPresentBookIds, chaptarrMonitoredBookIds, chaptarrHasFileBookIds, activeChaptarrIdMismatchBookIds, absRuntimeMismatchBookIds }));
   const summaries = groupByBook(filteredRows).map(dbToSummary).sort(compareSummaries(sortBy));
   const offset = (page - 1) * pageSize;
 
   const profileNames = db.prepare("SELECT id, display_name FROM profiles").all() as { id: number; display_name: string }[];
 
   const passesPresence = (row: DbBookRow) =>
-    (!chaptarr || matchesChaptarrPresence(row.book_id, chaptarr, chaptarrMonitoredBookIds)) &&
+    (!chaptarr || matchesChaptarrPresence(row.book_id, chaptarr, chaptarrPresentBookIds)) &&
     (!action || matchesAction(row, action, idReviewBookIds, probableDuplicateIds, grimmoryBookIds, chaptarrMonitoredBookIds, chaptarrHasFileBookIds, activeChaptarrIdMismatchBookIds, absRuntimeMismatchBookIds));
   const passesSource = (row: DbBookRow) =>
     (includedSources.length === 0 || includedSources.some((s) => matchesSource(row, s, hardcoverBookIds, goodreadsBookIds, onDiskBookIds))) &&
@@ -872,8 +875,8 @@ router.get("/", (req, res) => {
   const sourceFilteredRows = presenceRows.filter(passesSource);
   const allProfileSourceRows = allRows.filter(passesPresence).filter(passesSource);
 
-  const chaptarrInCount = countGroups(profileRows.filter((row) => matchesChaptarrPresence(row.book_id, "in", chaptarrMonitoredBookIds)));
-  const chaptarrOutCount = countGroups(profileRows.filter((row) => matchesChaptarrPresence(row.book_id, "out", chaptarrMonitoredBookIds)));
+  const chaptarrInCount = countGroups(profileRows.filter((row) => matchesChaptarrPresence(row.book_id, "in", chaptarrPresentBookIds)));
+  const chaptarrOutCount = countGroups(profileRows.filter((row) => matchesChaptarrPresence(row.book_id, "out", chaptarrPresentBookIds)));
   const addToChaptarrCount = countGroups(profileRows.filter((row) => matchesAction(row, "add-to-chaptarr", idReviewBookIds, probableDuplicateIds, grimmoryBookIds, chaptarrMonitoredBookIds, chaptarrHasFileBookIds, activeChaptarrIdMismatchBookIds, absRuntimeMismatchBookIds)));
   const grabInChaptarrCount = countGroups(profileRows.filter((row) => matchesAction(row, "grab-in-chaptarr", idReviewBookIds, probableDuplicateIds, grimmoryBookIds, chaptarrMonitoredBookIds, chaptarrHasFileBookIds, activeChaptarrIdMismatchBookIds, absRuntimeMismatchBookIds)));
   const reviewInGrimmoryCount = countGroups(profileRows.filter((row) => matchesAction(row, "review-in-grimmory", idReviewBookIds, probableDuplicateIds, grimmoryBookIds, chaptarrMonitoredBookIds, chaptarrHasFileBookIds, activeChaptarrIdMismatchBookIds, absRuntimeMismatchBookIds)));

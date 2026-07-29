@@ -111,6 +111,13 @@ function chaptarrSeries(book: Record<string, unknown>): { name: string | null; n
   };
 }
 
+function chaptarrBookHasFile(book: Record<string, unknown>, filePaths: string[] = []): boolean {
+  const stats = book["statistics"] as Record<string, unknown> | undefined;
+  return book["hasFiles"] === true
+    || Number(stats?.["bookFileCount"] ?? 0) > 0
+    || filePaths.length > 0;
+}
+
 // ── Live sync pass ────────────────────────────────────────────────────────────
 
 /**
@@ -137,11 +144,11 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
 
   logger.info("Chaptarr status pass started", { profileId });
 
-  let books: Record<string, unknown>[] = [];
+  let allBooks: Record<string, unknown>[] = [];
   try {
-    const all = await chaptarrGet<Record<string, unknown>[]>(baseUrl, apiKey, "/api/v1/book");
-    books = all.filter((b) => b["monitored"] === true);
-    logger.info("Chaptarr books fetched", { profileId, total: all.length, monitored: books.length });
+    allBooks = await chaptarrGet<Record<string, unknown>[]>(baseUrl, apiKey, "/api/v1/book");
+    const monitored = allBooks.filter((book) => book["monitored"] === true).length;
+    logger.info("Chaptarr books fetched", { profileId, total: allBooks.length, monitored });
   } catch (err) {
     logger.warn("Chaptarr books fetch failed; skipping status pass", { profileId, error: err });
     return;
@@ -182,6 +189,24 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
     const filePathCount = Array.from(chaptarrFilePathsByBookId.values()).reduce((total, paths) => total + paths.length, 0);
     logger.info("Chaptarr book file paths fetched", { profileId, count: filePathCount, booksWithFiles: chaptarrFilePathsByBookId.size });
   } catch { /* non-fatal; author names and file-path matching degrade gracefully */ }
+
+  // Chaptarr exposes unmonitored catalogue entries for known authors. Ignore
+  // those unless they own an imported file: a downloaded book remains present
+  // in Chaptarr even if an automation or metadata refresh unmonitors it.
+  const books = allBooks.filter((book) => {
+    const chaptarrId = typeof book["id"] === "number" ? book["id"] : Number(book["id"]);
+    return book["monitored"] === true
+      || chaptarrBookHasFile(book, chaptarrFilePathsByBookId.get(chaptarrId) ?? []);
+  });
+  logger.info("Chaptarr active books selected", {
+    profileId,
+    count: books.length,
+    monitored: books.filter((book) => book["monitored"] === true).length,
+    fileBacked: books.filter((book) => {
+      const chaptarrId = typeof book["id"] === "number" ? book["id"] : Number(book["id"]);
+      return chaptarrBookHasFile(book, chaptarrFilePathsByBookId.get(chaptarrId) ?? []);
+    }).length
+  });
 
   // Load book_sources rows to build lookup indexes (book-level, not per-profile)
   type SourceRow = {
@@ -308,8 +333,8 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
   for (const book of books) {
     const chaptarrId = typeof book["id"] === "number" ? book["id"] : Number(book["id"]);
     const monitored = book["monitored"] === true ? 1 : 0;
-    const stats = book["statistics"] as Record<string, unknown> | undefined;
-    const hasFile = (book["hasFiles"] === true || Number(stats?.["bookFileCount"] ?? 0) > 0) ? 1 : 0;
+    const chaptarrFilePaths = chaptarrFilePathsByBookId.get(chaptarrId) ?? [];
+    const hasFile = chaptarrBookHasFile(book, chaptarrFilePaths) ? 1 : 0;
 
     const hardcoverBookIdRaw = cleanIdentifier(book["hardcoverBookId"] ?? book["baseBookId"]);
     const hardcoverBookId = hardcoverBookIdRaw?.startsWith("gr:") ? "" : stripPrefix(hardcoverBookIdRaw, "hc:") ?? "";
@@ -362,7 +387,6 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
     if (!bookId && goodreadsWorkId) bookId = getIdentifierLookup(byGoodreadsId, goodreadsWorkId);
     if (!bookId && goodreadsEditionId) bookId = getIdentifierLookup(byGoodreadsId, goodreadsEditionId);
     if (!bookId && foreignBookIdAsGoodreads) bookId = getIdentifierLookup(byGoodreadsId, foreignBookIdAsGoodreads);
-    const chaptarrFilePaths = chaptarrFilePathsByBookId.get(chaptarrId) ?? [];
     if (!bookId && titleSlug) bookId = byHardcoverSlug.get(titleSlug.toLowerCase());
     for (const isbn of isbn13s) { if (!bookId) bookId = byIsbn13.get(isbn); }
     for (const isbn of isbn10s) { if (!bookId) bookId = byIsbn10.get(isbn); }
