@@ -1736,9 +1736,9 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
           // shared Hardcover book was routed to its audiobook sibling instead)
           // would insert/overwrite the shared user_book with the print's status,
           // fighting Phase N's audiobook progress on every run.
-          const grimmorySiblingOwnsSharedHardcover = grBook.mediaType !== "audiobook"
+          const audiobookSiblingOwnsSharedHardcover = grBook.mediaType !== "audiobook"
             && absOwnedHardcoverBookIds.has(normalizeExternalId(grBook.hardcoverBookId) ?? "");
-          if (bookOwnsSharedHardcover || grimmorySiblingOwnsSharedHardcover) {
+          if (bookOwnsSharedHardcover || audiobookSiblingOwnsSharedHardcover) {
             logger.info("Skipped Grimmory-to-Hardcover status write because a sibling edition owns shared Hardcover progress", {
               profileId,
               grimmoryBookId: grBook.id,
