@@ -523,6 +523,12 @@ function todayDate(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+// Matches SQLite's datetime('now') format ("YYYY-MM-DD HH:MM:SS", UTC) so values
+// generated in application code sort and compare identically to ones set in raw SQL.
+function sqliteNow(): string {
+  return new Date().toISOString().replace("T", " ").slice(0, 19);
+}
+
 function sourceTagName(username: string | null, displayName: string | null): string {
   const rawName = (username?.trim() || displayName?.trim() || "user").toLowerCase();
   const safeName = rawName
@@ -979,7 +985,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
           grimmory_goodreads_id: grBook.goodreadsId ?? null,
           grimmory_hardcover_id: grBook.hardcoverId ?? null,
           grimmory_primary_file_path: grBook.primaryFilePath ?? null,
-          last_sync_at: "datetime('now')",
+          last_sync_at: sqliteNow(),
           last_sync_decision: "grimmory_source"
         });
 
@@ -1077,7 +1083,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
           source_asin: ebookAsin,
           source_audible_asin: audioAsin,
           hardcover_slug: hardcoverSlug,
-          last_sync_at: "datetime('now')"
+          last_sync_at: sqliteNow()
         };
         if (bookOwnsSharedHardcover) {
           sourceFields.source_edition_id = null;
@@ -1941,7 +1947,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
               series_number: grBook.seriesNumber ?? null,
               source_goodreads_book_id: grBook.goodreadsId,
               goodreads_book_link: grBook.bookLink ?? null,
-              last_sync_at: "datetime('now')"
+              last_sync_at: sqliteNow()
             });
             if (grBook.coverUrl) {
               enqueueImageCacheTask(`cover:${goodreadsSourceId}`, async () => {
@@ -2065,7 +2071,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
               series_number: grBook.seriesNumber ?? null,
               source_goodreads_book_id: grBook.goodreadsId,
               goodreads_book_link: grBook.bookLink ?? null,
-              last_sync_at: "datetime('now')"
+              last_sync_at: sqliteNow()
             });
 
             if (grBook.coverUrl) {

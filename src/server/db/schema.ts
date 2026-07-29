@@ -3,7 +3,7 @@ import { reconcileBookIdentities } from "./bookIdentity.js";
 import { migrateCredentialStorage } from "../security/credentials.js";
 import { logger } from "../logger.js";
 
-export const CURRENT_SCHEMA_VERSION = 12;
+export const CURRENT_SCHEMA_VERSION = 13;
 
 export function initSchema(db: Database.Database): void {
   db.pragma("journal_mode = WAL");
@@ -680,6 +680,20 @@ export function initSchema(db: Database.Database): void {
     }
     db.prepare("UPDATE schema_version SET version = 12").run();
     logger.info("Schema migrated to version 12: added Grimmory book identity tracking on user states");
+  }
+
+  if (!row || row.version < 13) {
+    // A prior bug bound "datetime('now')" as a plain parameter instead of evaluating it as
+    // SQL, so some rows have the literal string stored instead of a real timestamp. Treat
+    // those as unknown rather than guessing a time — NULL sorts/compares safely either way.
+    const repaired = db
+      .prepare("UPDATE book_sources SET last_sync_at = NULL WHERE last_sync_at = ?")
+      .run("datetime('now')");
+    if (repaired.changes > 0) {
+      logger.warn("Repaired book_sources rows with literal last_sync_at value", { count: repaired.changes });
+    }
+    db.prepare("UPDATE schema_version SET version = 13").run();
+    logger.info("Schema migrated to version 13: repaired literal last_sync_at values");
   }
 
   migrateCredentialStorage(db);
