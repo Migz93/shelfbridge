@@ -59,6 +59,75 @@ import { decryptCredential } from "../security/credentials.js";
 import { identifierVariants, normalizeExternalId } from "../identifiers.js";
 import type { SyncStatus } from "../../shared/types.js";
 
+// ── Source adapters ─────────────────────────────────────────────────────────
+// Every network call runSyncImpl (and the shelf-sync helpers it calls) makes
+// against Hardcover/Grimmory/Goodreads/Chaptarr/Audiobookshelf is routed through
+// this object instead of the imported functions directly, so tests can substitute
+// scripted fakes without hitting real HTTP. `defaultAdapters` wires up the real
+// implementations and is what `runSync()` (the exported entry point) uses in
+// production — this is a dependency-injection seam only, not a behavior change.
+export interface SyncAdapters {
+  fetchHardcoverUserId: typeof fetchHardcoverUserId;
+  fetchHardcoverLibrary: typeof fetchHardcoverLibrary;
+  fetchHardcoverEditions: typeof fetchHardcoverEditions;
+  fetchHardcoverLists: typeof fetchHardcoverLists;
+  fetchEditionsForBook: typeof fetchEditionsForBook;
+  updateHardcoverUserBook: typeof updateHardcoverUserBook;
+  insertHardcoverUserBook: typeof insertHardcoverUserBook;
+  addBookToHardcoverList: typeof addBookToHardcoverList;
+  insertHardcoverUserBookRead: typeof insertHardcoverUserBookRead;
+  updateHardcoverUserBookRead: typeof updateHardcoverUserBookRead;
+  deleteHardcoverUserBookRead: typeof deleteHardcoverUserBookRead;
+  testGrimmoryLogin: typeof testGrimmoryLogin;
+  fetchGrimmoryBooks: typeof fetchGrimmoryBooks;
+  updateGrimmoryStatus: typeof updateGrimmoryStatus;
+  updateGrimmoryRating: typeof updateGrimmoryRating;
+  fetchGrimmoryShelfBookIds: typeof fetchGrimmoryShelfBookIds;
+  ensureGrimmoryShelf: typeof ensureGrimmoryShelf;
+  addBooksToGrimmoryShelf: typeof addBooksToGrimmoryShelf;
+  fetchGrimmoryProgress: typeof fetchGrimmoryProgress;
+  updateGrimmoryProgress: typeof updateGrimmoryProgress;
+  clearGrimmoryProgress: typeof clearGrimmoryProgress;
+  addGrimmoryTag: typeof addGrimmoryTag;
+  fetchAllGoodreadsBooks: typeof fetchAllGoodreadsBooks;
+  fetchShelfPage: typeof fetchShelfPage;
+  syncChaptarrStatus: typeof syncChaptarrStatus;
+  fetchAudiobookshelfLibraries: typeof fetchAudiobookshelfLibraries;
+  fetchAudiobookshelfLibraryItems: typeof fetchAudiobookshelfLibraryItems;
+  fetchAudiobookshelfAllProgress: typeof fetchAudiobookshelfAllProgress;
+}
+
+export const defaultAdapters: SyncAdapters = {
+  fetchHardcoverUserId,
+  fetchHardcoverLibrary,
+  fetchHardcoverEditions,
+  fetchHardcoverLists,
+  fetchEditionsForBook,
+  updateHardcoverUserBook,
+  insertHardcoverUserBook,
+  addBookToHardcoverList,
+  insertHardcoverUserBookRead,
+  updateHardcoverUserBookRead,
+  deleteHardcoverUserBookRead,
+  testGrimmoryLogin,
+  fetchGrimmoryBooks,
+  updateGrimmoryStatus,
+  updateGrimmoryRating,
+  fetchGrimmoryShelfBookIds,
+  ensureGrimmoryShelf,
+  addBooksToGrimmoryShelf,
+  fetchGrimmoryProgress,
+  updateGrimmoryProgress,
+  clearGrimmoryProgress,
+  addGrimmoryTag,
+  fetchAllGoodreadsBooks,
+  fetchShelfPage,
+  syncChaptarrStatus,
+  fetchAudiobookshelfLibraries,
+  fetchAudiobookshelfLibraryItems,
+  fetchAudiobookshelfAllProgress
+};
+
 const MAX_COVER_BYTES = 20 * 1024 * 1024;
 
 function looksLikeImage(data: Buffer): boolean {
@@ -190,7 +259,7 @@ async function cacheGrimmoryCover(
   }
 }
 
-type ConflictStrategy = "latest_wins" | "grimmory_wins" | "hardcover_wins";
+export type ConflictStrategy = "latest_wins" | "grimmory_wins" | "hardcover_wins";
 
 interface SyncCounters {
   written: number;
@@ -381,6 +450,7 @@ async function cleanupDuplicateBlankHardcoverReads(opts: {
   hardcoverToken: string;
   dryRun: boolean;
   counters: SyncCounters;
+  adapters: SyncAdapters;
 }): Promise<void> {
   const duplicates = findDuplicateBlankHardcoverReads(opts.hcBook);
   if (duplicates.length === 0) return;
@@ -398,7 +468,7 @@ async function cleanupDuplicateBlankHardcoverReads(opts: {
   const deletedReadIds: number[] = [];
   for (const read of duplicates) {
     try {
-      await deleteHardcoverUserBookRead(opts.hardcoverToken, read.id);
+      await opts.adapters.deleteHardcoverUserBookRead(opts.hardcoverToken, read.id);
       deletedReadIds.push(read.id);
       logger.info("Deleted duplicate blank Hardcover read", {
         profileId: opts.profileId,
@@ -544,7 +614,7 @@ function sourceTagName(username: string | null, displayName: string | null): str
   return `shelfbridge-${safeName}`;
 }
 
-function newerSource(hardcoverTime: string | null, grimmoryTime: string | null): "hardcover" | "grimmory" | null {
+export function newerSource(hardcoverTime: string | null, grimmoryTime: string | null): "hardcover" | "grimmory" | null {
   if (!hardcoverTime || !grimmoryTime) return null;
   const hardcoverMs = Date.parse(hardcoverTime);
   const grimmoryMs = Date.parse(grimmoryTime);
@@ -554,7 +624,7 @@ function newerSource(hardcoverTime: string | null, grimmoryTime: string | null):
   return hardcoverMs >= grimmoryMs ? "hardcover" : "grimmory";
 }
 
-function shouldGoodreadsOverwriteGrimmory(goodreadsTime: string | null, grimmoryTime: string | null): boolean {
+export function shouldGoodreadsOverwriteGrimmory(goodreadsTime: string | null, grimmoryTime: string | null): boolean {
   if (!grimmoryTime) return true;
   if (!goodreadsTime) return false;
   return newerSource(goodreadsTime, grimmoryTime) === "hardcover";
@@ -738,7 +808,12 @@ export function runSync(profileId: number, runId: number, dryRun: boolean): Prom
   return result;
 }
 
-async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): Promise<void> {
+export async function runSyncImpl(
+  profileId: number,
+  runId: number,
+  dryRun: boolean,
+  adapters: SyncAdapters = defaultAdapters
+): Promise<void> {
   const db = getDb();
 
   try {
@@ -796,14 +871,14 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
     if (hasHardcover) {
       try {
         logger.info("Fetching Hardcover user ID", { profileId });
-        const hardcoverUserId = await fetchHardcoverUserId(hardcoverToken);
+        const hardcoverUserId = await adapters.fetchHardcoverUserId(hardcoverToken);
 
         logger.info("Fetching Hardcover library", { profileId, hardcoverUserId });
-        hcBooks = await fetchHardcoverLibrary(hardcoverToken, hardcoverUserId);
+        hcBooks = await adapters.fetchHardcoverLibrary(hardcoverToken, hardcoverUserId);
         logger.info("Hardcover library fetched", { profileId, count: hcBooks.length });
 
         logger.info("Fetching Hardcover lists", { profileId });
-        hcLists = await fetchHardcoverLists(hardcoverToken);
+        hcLists = await adapters.fetchHardcoverLists(hardcoverToken);
         logger.info("Hardcover lists fetched", { profileId, count: hcLists.length });
       } catch (err) {
         logger.error("Hardcover unavailable; aborting sync before local data changes", { profileId, error: err });
@@ -869,7 +944,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
       const editionIds = hcBooks.map((book) => book.edition_id ?? 0).filter((id) => id > 0);
       if (editionIds.length > 0) {
         try {
-          hcEditions = await fetchHardcoverEditions(hardcoverToken, editionIds);
+          hcEditions = await adapters.fetchHardcoverEditions(hardcoverToken, editionIds);
           logger.info("Hardcover edition details fetched", { profileId, requested: editionIds.length, fetched: hcEditions.size });
         } catch (err) {
           logger.warn("Hardcover edition detail fetch failed; falling back to default edition metadata", { profileId, error: err });
@@ -885,7 +960,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
 
     if (hasGrimmory) {
       logger.info("Authenticating with Grimmory", { profileId, username });
-      const loginResult = await testGrimmoryLogin(baseUrl, username!, password!);
+      const loginResult = await adapters.testGrimmoryLogin(baseUrl, username!, password!);
       grimmoryToken = loginResult.accessToken ?? null;
       if (!loginResult.ok || !grimmoryToken) {
         counters.sourceFailures++;
@@ -897,7 +972,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
       } else {
         try {
           logger.info("Fetching Grimmory library", { profileId });
-          grimmoryBooks = await fetchGrimmoryBooks(baseUrl, grimmoryToken);
+          grimmoryBooks = await adapters.fetchGrimmoryBooks(baseUrl, grimmoryToken);
           grimmoryAvailable = true;
           logger.info("Grimmory library fetched", { profileId, count: grimmoryBooks.length });
         } catch (err) {
@@ -916,7 +991,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
     if (grimmoryAvailable && grimmoryToken && profile["sync_progress_enabled"] !== 0) {
       for (const grBook of grimmoryBooks) {
         try {
-          const progress = await fetchGrimmoryProgress(baseUrl, grimmoryToken, grBook.id);
+          const progress = await adapters.fetchGrimmoryProgress(baseUrl, grimmoryToken, grBook.id);
           grimmoryProgressById.set(grBook.id, progress);
           grBook.readProgress = progress.readProgress;
           grBook.lastReadTime = progress.lastReadTime ?? grBook.lastReadTime ?? null;
@@ -1240,7 +1315,8 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
           hcBook,
           hardcoverToken,
           dryRun,
-          counters
+          counters,
+          adapters
         });
       }
 
@@ -1314,7 +1390,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
         if (targetStatus) {
           if (!dryRun) {
             try {
-              await updateGrimmoryStatus(baseUrl, grimmoryToken, grBook.id, targetStatus);
+              await adapters.updateGrimmoryStatus(baseUrl, grimmoryToken, grBook.id, targetStatus);
               logger.info("Wrote status to Grimmory", { profileId, bookId: grBook.id, status: targetStatus });
             } catch (writeErr) {
               logger.warn("Failed to write status to Grimmory", { profileId, bookId: grBook.id, error: writeErr });
@@ -1334,11 +1410,11 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
           if (!dryRun) {
             try {
               if (hcBook.id) {
-                await updateHardcoverUserBook(hardcoverToken, hcBook.id, hardcoverFields);
+                await adapters.updateHardcoverUserBook(hardcoverToken, hcBook.id, hardcoverFields);
                 logger.info("Wrote status to Hardcover", { profileId, userBookId: hcBook.id, statusId: hardcoverFields.status_id });
               } else {
                 const targetRating = grBook ? grimmoryToHardcoverRating(grimmoryRating(grBook)) : null;
-                await insertHardcoverUserBook(hardcoverToken, {
+                await adapters.insertHardcoverUserBook(hardcoverToken, {
                   book_id: hcBook.book.id,
                   ...hardcoverFields,
                   ...(targetRating !== null ? { rating: targetRating } : {})
@@ -1430,10 +1506,10 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
           } else {
             try {
               if (hcBook.id) {
-                await updateHardcoverUserBook(hardcoverToken, hcBook.id, { rating: grAsHardcover });
+                await adapters.updateHardcoverUserBook(hardcoverToken, hcBook.id, { rating: grAsHardcover });
                 logger.info("Wrote rating to Hardcover", { profileId, userBookId: hcBook.id, grimmoryRating: grRating, hardcoverRating: grAsHardcover });
               } else {
-                await insertHardcoverUserBook(hardcoverToken, { book_id: hcBook.book.id, rating: grAsHardcover });
+                await adapters.insertHardcoverUserBook(hardcoverToken, { book_id: hcBook.book.id, rating: grAsHardcover });
                 logger.info("Inserted rating for list-only Hardcover book", { profileId, hardcoverBookId: hcBook.book.id, grimmoryRating: grRating, hardcoverRating: grAsHardcover });
               }
               db.prepare("UPDATE user_book_states SET rating = ?, last_sync_at = datetime('now'), last_sync_decision = ?, last_modified_at = datetime('now') WHERE book_id = ? AND profile_id = ? AND source_type = 'hardcover'")
@@ -1452,7 +1528,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
             counters.written++;
           } else {
             try {
-              await updateGrimmoryRating(baseUrl, grimmoryToken, grBook.id, hcAsGrimmory);
+              await adapters.updateGrimmoryRating(baseUrl, grimmoryToken, grBook.id, hcAsGrimmory);
               db.prepare("UPDATE user_book_states SET last_sync_at = datetime('now'), last_sync_decision = ?, last_modified_at = datetime('now') WHERE book_id = ? AND profile_id = ? AND source_type = 'grimmory'")
                 .run(ratingDecision, bookId, profileId);
               recordEvent(db, runId, profileId, title, "written", "hardcover_to_grimmory", ratingDecision, { hardcoverRating: hcRating, targetRating: hcAsGrimmory });
@@ -1548,7 +1624,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
 
         if (needsEditionResolution && hardcoverToken) {
           try {
-            const editions = await fetchEditionsForBook(hardcoverToken, hcBook.book.id);
+            const editions = await adapters.fetchEditionsForBook(hardcoverToken, hcBook.book.id);
             const matched = editions.find(e => e.pages === hcPages);
             if (matched) {
               resolvedEditionId = matched.id;
@@ -1590,8 +1666,8 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
                 started_at: hcRead?.started_at ?? todayDate(),
                 finished_at: grBook.readStatus === "READ" ? hardcoverDate(grBook.dateFinished) : null
               };
-              const hardcoverReadId = hcRead?.id ?? await insertHardcoverUserBookRead(hardcoverToken, hcBook.id, readFields);
-              if (hcRead?.id) await updateHardcoverUserBookRead(hardcoverToken, hcRead.id, readFields);
+              const hardcoverReadId = hcRead?.id ?? await adapters.insertHardcoverUserBookRead(hardcoverToken, hcBook.id, readFields);
+              if (hcRead?.id) await adapters.updateHardcoverUserBookRead(hardcoverToken, hcRead.id, readFields);
               // Store the round-tripped percentage (pages / totalPages) rather than the raw
               // Grimmory %, so the next sync's hcProgressChanged comparison is stable and
               // doesn't re-trigger a write just from integer rounding.
@@ -1624,7 +1700,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
             counters.written++;
           } else {
             try {
-              await updateGrimmoryProgress(baseUrl, grimmoryToken, grBook.id, primaryFileId, hcProgressNow);
+              await adapters.updateGrimmoryProgress(baseUrl, grimmoryToken, grBook.id, primaryFileId, hcProgressNow);
               db.prepare("UPDATE user_book_states SET progress = ?, last_sync_at = datetime('now'), last_sync_decision = ?, last_modified_at = datetime('now') WHERE book_id = ? AND profile_id = ? AND source_type = 'hardcover'")
                 .run(hcProgressNow, progressDecision, bookId, profileId);
               recordEvent(db, runId, profileId, title, "written", "hardcover_to_grimmory", progressDecision, { progress: hcProgressNow });
@@ -1645,7 +1721,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
             counters.written++;
           } else {
             try {
-              await clearGrimmoryProgress(baseUrl, grimmoryToken, grBook.id, primaryFileId);
+              await adapters.clearGrimmoryProgress(baseUrl, grimmoryToken, grBook.id, primaryFileId);
               db.prepare("UPDATE user_book_states SET progress = NULL, last_sync_at = datetime('now'), last_sync_decision = ?, last_modified_at = datetime('now') WHERE book_id = ? AND profile_id = ? AND source_type = 'hardcover'")
                 .run(progressDecision, bookId, profileId);
               recordEvent(db, runId, profileId, title, "written", "hardcover_to_grimmory", progressDecision, { clearedProgress: true, previousGrimmoryProgress: grProgress });
@@ -1778,7 +1854,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
               counters.written++;
             } else {
               try {
-                await insertHardcoverUserBook(hardcoverToken, {
+                await adapters.insertHardcoverUserBook(hardcoverToken, {
                   book_id: hardcoverBookId,
                   ...hardcoverFields,
                   ...(hardcoverRat !== null ? { rating: hardcoverRat } : {})
@@ -1816,7 +1892,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
       const goodreadsShelves = goodreadsSyncShelfName ? [goodreadsSyncShelfName] : undefined;
       logger.info("Fetching Goodreads library", { profileId, goodreadsUserId, shelfFilter: goodreadsSyncShelfName });
       try {
-        const goodreadsBooks = await fetchAllGoodreadsBooks(goodreadsUserId, goodreadsShelves);
+        const goodreadsBooks = await adapters.fetchAllGoodreadsBooks(goodreadsUserId, goodreadsShelves);
         logger.info("Goodreads library fetched", { profileId, count: goodreadsBooks.length, shelfFilter: goodreadsSyncShelfName });
 
         pruneGoodreadsUserStatesMissingFromFetch(db, profileId, new Set(goodreadsBooks.map((b) => b.goodreadsId)));
@@ -2017,7 +2093,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
                   counters.written++;
                 } else {
                   try {
-                    await updateGrimmoryStatus(baseUrl, grimmoryToken, grimmoryBookId, mappedStatus);
+                    await adapters.updateGrimmoryStatus(baseUrl, grimmoryToken, grimmoryBookId, mappedStatus);
                     logger.info("Updated Grimmory status from Goodreads", { profileId, bookId, shelf: grBook.shelf, status: mappedStatus });
                     db.prepare("UPDATE user_book_states SET status = ? WHERE book_id = ? AND profile_id = ? AND source_type = 'grimmory'")
                       .run(mappedStatus, bookId, profileId);
@@ -2050,7 +2126,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
                   counters.written++;
                 } else {
                   try {
-                    await updateGrimmoryRating(baseUrl, grimmoryToken, grimmoryBookId, targetGoodreadsRating);
+                    await adapters.updateGrimmoryRating(baseUrl, grimmoryToken, grimmoryBookId, targetGoodreadsRating);
                     logger.info("Updated Grimmory rating from Goodreads", { profileId, bookId, goodreadsRating: grBook.rating, targetRating: targetGoodreadsRating });
                     recordEvent(db, runId, profileId, grBook.title, "written", "goodreads_to_grimmory", "goodreads_latest_rating", { goodreadsRating: grBook.rating, targetRating: targetGoodreadsRating });
                     counters.written++;
@@ -2120,7 +2196,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
         if (grimmoryAvailable && hasGrimmory && grimmoryToken) {
           db.prepare("UPDATE user_book_states SET grimmory_shelves = NULL WHERE profile_id = ? AND source_type = 'grimmory'").run(profileId);
           grimmoryShelvesCleared = true;
-          await syncGoodreadsShelvesToGrimmory(db, profileId, goodreadsUserId, baseUrl, grimmoryToken, dryRun);
+          await syncGoodreadsShelvesToGrimmory(db, profileId, goodreadsUserId, baseUrl, grimmoryToken, dryRun, adapters);
         }
       } catch (err) {
         counters.sourceFailures++;
@@ -2150,7 +2226,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
           continue;
         }
         try {
-          const changed = await addGrimmoryTag(baseUrl, grimmoryToken, grimmoryBookId, writeTagName);
+          const changed = await adapters.addGrimmoryTag(baseUrl, grimmoryToken, grimmoryBookId, writeTagName);
           if (changed) {
             recordEvent(db, runId, profileId, bookTitle, "written", "source_to_grimmory", "tag_written", { grimmoryBookId, tag: writeTagName });
             counters.written++;
@@ -2176,7 +2252,8 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
         "hardcover",
         profile["hardcover_target_shelf_name"] as string | null,
         hardcoverSourceGrimmoryIds,
-        dryRun
+        dryRun,
+        adapters
       );
       await syncMatchedSourceBooksToGrimmoryShelf(
         db,
@@ -2186,23 +2263,24 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
         "goodreads",
         profile["goodreads_target_shelf_name"] as string | null,
         goodreadsSourceGrimmoryIds,
-        dryRun
+        dryRun,
+        adapters
       );
     }
 
     // ── Phase J: Hardcover list → Grimmory shelf sync ────────────────────────
     if (hasHardcover && grimmoryAvailable && hasGrimmory && grimmoryToken) {
-      await syncListsToShelves(db, profileId, baseUrl, grimmoryToken, hcLists, hardcoverToken, dryRun, !grimmoryShelvesCleared);
+      await syncListsToShelves(db, profileId, baseUrl, grimmoryToken, hcLists, hardcoverToken, dryRun, !grimmoryShelvesCleared, adapters);
     }
 
     // ── Phase K: Chaptarr status pass ───────────────────────────────────────
-    await syncChaptarrStatus(profileId);
+    await adapters.syncChaptarrStatus(profileId);
 
     // ── Phase M: Audiobookshelf library sync ─────────────────────────────────
     if (hasAbs) {
       try {
         logger.info("Fetching Audiobookshelf libraries", { profileId });
-        const absLibraries = await fetchAudiobookshelfLibraries(absBaseUrl, absApiKey!);
+        const absLibraries = await adapters.fetchAudiobookshelfLibraries(absBaseUrl, absApiKey!);
         const bookLibraries = absLibraries.filter((lib) => lib.mediaType === "book");
         const liveAbsIds = new Set<string>();
         let absSnapshotComplete = true;
@@ -2211,7 +2289,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
         for (const library of bookLibraries) {
           let items: Awaited<ReturnType<typeof fetchAudiobookshelfLibraryItems>>;
           try {
-            items = await fetchAudiobookshelfLibraryItems(absBaseUrl, absApiKey!, library.id);
+            items = await adapters.fetchAudiobookshelfLibraryItems(absBaseUrl, absApiKey!, library.id);
           } catch (libraryErr) {
             absSnapshotComplete = false;
             counters.sourceFailures++;
@@ -2353,7 +2431,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
     if (hasAbs && (hasHardcover || grimmoryAvailable)) {
       try {
         logger.info("Fetching Audiobookshelf progress", { profileId });
-        const absProgressList = await fetchAudiobookshelfAllProgress(absBaseUrl, absApiKey!);
+        const absProgressList = await adapters.fetchAudiobookshelfAllProgress(absBaseUrl, absApiKey!);
         const absProgressIndex = new Map(absProgressList.map((p) => [p.libraryItemId, p]));
         logger.info("Audiobookshelf progress fetched", { profileId, count: absProgressList.length });
 
@@ -2522,7 +2600,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
             const decision = "abs_newer_progress";
             if (!dryRun) {
               try {
-                await updateGrimmoryProgress(baseUrl, grimmoryToken, grBook.id, grBook.primaryFileId, absSourcePct);
+                await adapters.updateGrimmoryProgress(baseUrl, grimmoryToken, grBook.id, grBook.primaryFileId, absSourcePct);
                 logger.info("Wrote progress to Grimmory", { profileId, bookId: absSource.book_id, source: "abs", pct: absSourcePct });
                 recordEvent(db, runId, profileId, grBook.title ?? "", "written", direction, decision, { pct: absSourcePct });
                 counters.written++;
@@ -2542,7 +2620,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
             const decision = "abs_derived_status";
             if (!dryRun) {
               try {
-                await updateGrimmoryStatus(baseUrl, grimmoryToken, grBook.id, absDesiredGrimmoryStatus);
+                await adapters.updateGrimmoryStatus(baseUrl, grimmoryToken, grBook.id, absDesiredGrimmoryStatus);
                 logger.info("Wrote ABS-derived status to Grimmory", { profileId, bookId: absSource.book_id, status: absDesiredGrimmoryStatus, pct: absSourcePct });
                 recordEvent(db, runId, profileId, grBook.title ?? "", "written", direction, decision, { status: absDesiredGrimmoryStatus, pct: absSourcePct });
                 counters.written++;
@@ -2635,7 +2713,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
                   audiobookIdentityRow?.grimmory_audible_asin,
                   hcSourceRow?.source_audible_asin
                 ].filter((value): value is string => Boolean(value?.trim())).map((value) => value.trim().toLowerCase()));
-                const editions = await fetchEditionsForBook(hardcoverToken, hcBookId);
+                const editions = await adapters.fetchEditionsForBook(hardcoverToken, hcBookId);
                 const asinMatch = editions.find((edition) => edition.asin && candidateAsins.has(edition.asin.trim().toLowerCase()));
                 const runtimeMatch = !asinMatch && absDuration
                   ? editions.find((edition) => edition.audio_seconds && Math.abs(edition.audio_seconds - absDuration) / absDuration <= 0.05)
@@ -2698,7 +2776,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
                   }
                   if (hcState.hardcover_status_id !== desiredStatusId) userBookPatch.status_id = desiredStatusId;
                   if (Object.keys(userBookPatch).length > 0) {
-                    await updateHardcoverUserBook(hardcoverToken, hcState.hardcover_user_book_id, userBookPatch);
+                    await adapters.updateHardcoverUserBook(hardcoverToken, hcState.hardcover_user_book_id, userBookPatch);
                   }
                   // Our cached hardcover_read_id can go stale — e.g. Hardcover
                   // auto-creates a fresh blank read when status_id changes, or an
@@ -2715,7 +2793,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
                     : liveReads.find((read) => read.edition_id === preferredEditionId && read.finished_at === null)?.id ?? null;
 
                   if (targetReadId) {
-                    await updateHardcoverUserBookRead(hardcoverToken, targetReadId, readFields);
+                    await adapters.updateHardcoverUserBookRead(hardcoverToken, targetReadId, readFields);
                     if (targetReadId !== hcState.hardcover_read_id) {
                       logger.info("Re-pointed Hardcover read to live record after stale/missing cached read id", {
                         profileId, bookId: absSource.book_id, staleReadId: hcState.hardcover_read_id, targetReadId
@@ -2724,7 +2802,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
                         .run(targetReadId, absSource.book_id, profileId);
                     }
                   } else {
-                    const newReadId = await insertHardcoverUserBookRead(hardcoverToken, hcState.hardcover_user_book_id, readFields);
+                    const newReadId = await adapters.insertHardcoverUserBookRead(hardcoverToken, hcState.hardcover_user_book_id, readFields);
                     db.prepare("UPDATE user_book_states SET hardcover_read_id = ? WHERE book_id = ? AND profile_id = ? AND source_type = 'hardcover'")
                       .run(newReadId, absSource.book_id, profileId);
                   }
@@ -2758,12 +2836,12 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
                 if (!dryRun) {
                   try {
                     const desiredStatusText = desiredStatusId === 3 ? "READ" : "READING";
-                    const newUserBookId = await insertHardcoverUserBook(hardcoverToken, {
+                    const newUserBookId = await adapters.insertHardcoverUserBook(hardcoverToken, {
                       book_id: hcBookId,
                       status_id: desiredStatusId,
                       edition_id: preferredEditionId ?? undefined
                     });
-                    const newReadId = await insertHardcoverUserBookRead(hardcoverToken, newUserBookId, {
+                    const newReadId = await adapters.insertHardcoverUserBookRead(hardcoverToken, newUserBookId, {
                       edition_id: preferredEditionId ?? undefined,
                       progress_pages: 0,
                       progress_seconds: progressSeconds,
@@ -2859,7 +2937,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
 // ── Pruning helpers ───────────────────────────────────────────────────────────
 
 // Prune HC user states for books no longer in the fetched HC library
-function pruneHardcoverUserStatesMissingFromFetch(
+export function pruneHardcoverUserStatesMissingFromFetch(
   db: Db,
   profileId: number,
   fetchedHcBookIds: Set<number>
@@ -2882,7 +2960,7 @@ function pruneHardcoverUserStatesMissingFromFetch(
 
 // Prune this profile's Hardcover book_sources for books no longer in its HC library.
 // Scoped to source_instance_id so another profile's Hardcover connection can't be pruned.
-function pruneHardcoverSourcesMissingFromFetch(db: Db, profileId: number, fetchedHcBookIds: Set<number>): void {
+export function pruneHardcoverSourcesMissingFromFetch(db: Db, profileId: number, fetchedHcBookIds: Set<number>): void {
   if (fetchedHcBookIds.size === 0) return;
   const placeholders = Array.from(fetchedHcBookIds).map(() => "?").join(",");
   // Only delete if this profile itself has no user_book_states referencing the book via
@@ -2904,7 +2982,7 @@ function pruneHardcoverSourcesMissingFromFetch(db: Db, profileId: number, fetche
 
 // Prune this profile's Grimmory book_sources for books no longer in its Grimmory library.
 // Scoped to source_instance_id so another profile's Grimmory connection can't be pruned.
-function pruneGrimmorySourcesMissingFromFetch(db: Db, profileId: number, fetchedGrimmoryIds: Set<number>): void {
+export function pruneGrimmorySourcesMissingFromFetch(db: Db, profileId: number, fetchedGrimmoryIds: Set<number>): void {
   if (fetchedGrimmoryIds.size === 0) return;
   const placeholders = Array.from(fetchedGrimmoryIds).map(() => "?").join(",");
   const result = db.prepare(`
@@ -2922,7 +3000,7 @@ function pruneGrimmorySourcesMissingFromFetch(db: Db, profileId: number, fetched
 }
 
 // Prune Grimmory user states for books no longer in this profile's Grimmory library
-function pruneGrimmoryUserStatesMissingFromFetch(
+export function pruneGrimmoryUserStatesMissingFromFetch(
   db: Db,
   profileId: number,
   fetchedGrimmoryIds: Set<number>
@@ -2944,7 +3022,7 @@ function pruneGrimmoryUserStatesMissingFromFetch(
 }
 
 // Prune GR user states for books no longer in this profile's GR library
-function pruneGoodreadsUserStatesMissingFromFetch(
+export function pruneGoodreadsUserStatesMissingFromFetch(
   db: Db,
   profileId: number,
   fetchedGoodreadsIds: Set<string>
@@ -2973,7 +3051,8 @@ async function syncGoodreadsShelvesToGrimmory(
   goodreadsUserId: string,
   baseUrl: string,
   grimmoryToken: string,
-  dryRun: boolean
+  dryRun: boolean,
+  adapters: SyncAdapters
 ): Promise<void> {
   type MappingRow = { id: number; source_list_name: string; grimmory_shelf_name: string; grimmory_shelf_id: number | null };
   const mappings = db.prepare(`
@@ -3019,7 +3098,7 @@ async function syncGoodreadsShelvesToGrimmory(
       let page = 1;
       let hasMore = true;
       while (hasMore) {
-        const { books, hasMore: more } = await fetchShelfPage(goodreadsUserId, shelfName, page);
+        const { books, hasMore: more } = await adapters.fetchShelfPage(goodreadsUserId, shelfName, page);
         for (const book of books) {
           let gId: number | undefined;
           if (book.goodreadsId && grimmoryByGoodreadsId[book.goodreadsId]) gId = grimmoryByGoodreadsId[book.goodreadsId];
@@ -3049,7 +3128,7 @@ async function syncGoodreadsShelvesToGrimmory(
     let shelfId = mapping.grimmory_shelf_id;
     if (!shelfId) {
       try {
-        shelfId = await ensureGrimmoryShelf(baseUrl, grimmoryToken, mapping.grimmory_shelf_name);
+        shelfId = await adapters.ensureGrimmoryShelf(baseUrl, grimmoryToken, mapping.grimmory_shelf_name);
         db.prepare("UPDATE shelf_mappings SET grimmory_shelf_id = ? WHERE id = ?").run(shelfId, mapping.id);
       } catch (err) {
         logger.warn("Failed to resolve Grimmory shelf for Goodreads sync", { profileId, grimmoryShelfName: mapping.grimmory_shelf_name, error: err });
@@ -3058,7 +3137,7 @@ async function syncGoodreadsShelvesToGrimmory(
     }
 
     let currentIds: number[];
-    try { currentIds = await fetchGrimmoryShelfBookIds(baseUrl, grimmoryToken, shelfId); } catch { currentIds = []; }
+    try { currentIds = await adapters.fetchGrimmoryShelfBookIds(baseUrl, grimmoryToken, shelfId); } catch { currentIds = []; }
 
     const toAdd = grimmoryBookIds.filter((id) => !currentIds.includes(id));
     if (toAdd.length > 0) {
@@ -3066,7 +3145,7 @@ async function syncGoodreadsShelvesToGrimmory(
         logger.info("Dry run: would add books to Grimmory shelf from Goodreads shelf", { profileId, shelfName, grimmoryShelfName: mapping.grimmory_shelf_name, count: toAdd.length });
       } else {
         try {
-          await addBooksToGrimmoryShelf(baseUrl, grimmoryToken, toAdd, shelfId);
+          await adapters.addBooksToGrimmoryShelf(baseUrl, grimmoryToken, toAdd, shelfId);
           logger.info("Synced Goodreads shelf to Grimmory shelf", { profileId, shelfName, grimmoryShelfName: mapping.grimmory_shelf_name, added: toAdd.length });
         } catch (err) {
           logger.warn("Failed to add books to Grimmory shelf from Goodreads", { profileId, grimmoryShelfName: mapping.grimmory_shelf_name, error: err });
@@ -3105,14 +3184,15 @@ async function syncMatchedSourceBooksToGrimmoryShelf(
   source: "hardcover" | "goodreads",
   targetShelfName: string | null,
   grimmoryBookIds: Set<number>,
-  dryRun: boolean
+  dryRun: boolean,
+  adapters: SyncAdapters
 ): Promise<void> {
   const shelfName = targetShelfName?.trim();
   if (!shelfName || grimmoryBookIds.size === 0) return;
 
   let shelfId: number;
   try {
-    shelfId = await ensureGrimmoryShelf(baseUrl, grimmoryToken, shelfName);
+    shelfId = await adapters.ensureGrimmoryShelf(baseUrl, grimmoryToken, shelfName);
   } catch (err) {
     logger.warn("Failed to resolve Grimmory target shelf for source sync", { profileId, source, shelfName, error: err });
     return;
@@ -3120,7 +3200,7 @@ async function syncMatchedSourceBooksToGrimmoryShelf(
 
   let currentIds: number[];
   try {
-    currentIds = await fetchGrimmoryShelfBookIds(baseUrl, grimmoryToken, shelfId);
+    currentIds = await adapters.fetchGrimmoryShelfBookIds(baseUrl, grimmoryToken, shelfId);
   } catch (err) {
     logger.warn("Failed to fetch Grimmory target shelf for source sync", { profileId, source, shelfName, error: err });
     return;
@@ -3138,7 +3218,7 @@ async function syncMatchedSourceBooksToGrimmoryShelf(
   }
 
   try {
-    await addBooksToGrimmoryShelf(baseUrl, grimmoryToken, toAdd, shelfId);
+    await adapters.addBooksToGrimmoryShelf(baseUrl, grimmoryToken, toAdd, shelfId);
     logger.info("Added matched source books to Grimmory target shelf", { profileId, source, shelfName, added: toAdd.length });
   } catch (err) {
     logger.warn("Failed to add matched source books to Grimmory target shelf", { profileId, source, shelfName, error: err });
@@ -3153,7 +3233,8 @@ async function syncListsToShelves(
   hcLists: Awaited<ReturnType<typeof fetchHardcoverLists>>,
   hardcoverToken: string,
   dryRun: boolean,
-  clearFirst = false
+  clearFirst: boolean,
+  adapters: SyncAdapters
 ): Promise<void> {
   if (clearFirst) {
     db.prepare("UPDATE user_book_states SET grimmory_shelves = NULL WHERE profile_id = ? AND source_type = 'grimmory'").run(profileId);
@@ -3210,7 +3291,7 @@ async function syncListsToShelves(
     let shelfId = mapping.grimmory_shelf_id;
     if (!shelfId) {
       try {
-        shelfId = await ensureGrimmoryShelf(baseUrl, grimmoryToken, mapping.grimmory_shelf_name);
+        shelfId = await adapters.ensureGrimmoryShelf(baseUrl, grimmoryToken, mapping.grimmory_shelf_name);
         db.prepare("UPDATE shelf_mappings SET grimmory_shelf_id = ? WHERE id = ?").run(shelfId, mapping.id);
       } catch (err) {
         logger.warn("Failed to resolve Grimmory shelf for list sync", { profileId, shelfName: mapping.grimmory_shelf_name, error: err });
@@ -3219,7 +3300,7 @@ async function syncListsToShelves(
     }
 
     let currentIds: number[];
-    try { currentIds = await fetchGrimmoryShelfBookIds(baseUrl, grimmoryToken, shelfId); } catch { currentIds = []; }
+    try { currentIds = await adapters.fetchGrimmoryShelfBookIds(baseUrl, grimmoryToken, shelfId); } catch { currentIds = []; }
 
     const toAdd = grimmoryBookIds.filter((id) => !currentIds.includes(id));
     if (toAdd.length > 0) {
@@ -3227,7 +3308,7 @@ async function syncListsToShelves(
         logger.info("Dry run: would add books to Grimmory shelf from Hardcover list", { profileId, listName: hcList.name, shelfName: mapping.grimmory_shelf_name, count: toAdd.length });
       } else {
         try {
-          await addBooksToGrimmoryShelf(baseUrl, grimmoryToken, toAdd, shelfId);
+          await adapters.addBooksToGrimmoryShelf(baseUrl, grimmoryToken, toAdd, shelfId);
           logger.info("Synced Hardcover list to Grimmory shelf", { profileId, listName: hcList.name, shelfName: mapping.grimmory_shelf_name, added: toAdd.length });
         } catch (err) {
           logger.warn("Failed to add books to Grimmory shelf", { profileId, shelfName: mapping.grimmory_shelf_name, error: err });
@@ -3300,7 +3381,7 @@ async function syncListsToShelves(
     let addedToHardcover = 0;
     for (const hardcoverBookId of toAddToHardcover) {
       try {
-        await addBookToHardcoverList(hardcoverToken, Number.parseInt(mapping.source_list_id, 10), hardcoverBookId);
+        await adapters.addBookToHardcoverList(hardcoverToken, Number.parseInt(mapping.source_list_id, 10), hardcoverBookId);
         addedToHardcover++;
       } catch (err) {
         logger.warn("Failed to add book to Hardcover list", { profileId, listName: hcList.name, hardcoverBookId, error: err });
@@ -3315,14 +3396,14 @@ async function syncListsToShelves(
 
 // ── Sync decision ─────────────────────────────────────────────────────────────
 
-interface SyncDecision {
+export interface SyncDecision {
   decision: string;
   syncHealth: string;
   writeGrimmory: boolean;
   writeHardcover: boolean;
 }
 
-function computeSyncDecision(opts: {
+export function computeSyncDecision(opts: {
   hcBook: HardcoverUserBook;
   grBook: GrimmoryBook | null;
   conflictStrategy: ConflictStrategy;
@@ -3406,7 +3487,7 @@ function computeSyncDecision(opts: {
 }
 
 // Strip parenthetical series info "(Series, #N)" then lowercase + alphanumeric only
-function normalizeTitle(title: string): string {
+export function normalizeTitle(title: string): string {
   return title
     .replace(/\s*\(.*?\)\s*/g, " ")
     .toLowerCase()
@@ -3415,7 +3496,7 @@ function normalizeTitle(title: string): string {
     .trim();
 }
 
-function normalizeSeriesNumber(value: string | number | null | undefined): string | null {
+export function normalizeSeriesNumber(value: string | number | null | undefined): string | null {
   if (value === null || value === undefined) return null;
   const text = String(value).trim().toLowerCase();
   if (!text) return null;
