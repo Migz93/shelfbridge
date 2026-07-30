@@ -285,9 +285,19 @@ function highKeyConflict(keysA: Set<IdentityKey>, keysB: Set<IdentityKey>): bool
   const byType = new Map<string, Set<string>>();
   for (const key of [...keysA, ...keysB]) {
     const [type, ...rest] = key.split(":");
-    const values = byType.get(type) ?? new Set<string>();
-    values.add(rest.join(":"));
-    byType.set(type, values);
+    if (type === undefined) continue;
+    // grimmory_book_id keys embed their source instance as the first segment of
+    // `rest` (see highIdentityKeys): two different Grimmory servers legitimately
+    // assigning different local ids to what may be the same book is not a
+    // conflict — only two different local ids reported by the SAME instance is.
+    // Group by (type, instance) for this key so cross-instance differences don't
+    // block an otherwise well-corroborated merge (e.g. via a shared ISBN).
+    const isScopedGrimmoryKey = type.endsWith(".grimmory_book_id") && rest.length > 1;
+    const groupKey = isScopedGrimmoryKey ? `${type}:${rest[0]}` : type;
+    const value = isScopedGrimmoryKey ? rest.slice(1).join(":") : rest.join(":");
+    const values = byType.get(groupKey) ?? new Set<string>();
+    values.add(value);
+    byType.set(groupKey, values);
   }
   return Array.from(byType.values()).some((values) => values.size > 1);
 }
