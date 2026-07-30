@@ -1,6 +1,5 @@
 import { Router } from "express";
 import { getDb } from "../db/index.js";
-import { reconcileBookIdentities } from "../db/bookIdentity.js";
 import type { DashboardResponse, BookSummary, SyncRun, ReadStatus, SyncHealth, MatchConfidence, MediaType } from "../../shared/types.js";
 import { normalizeExternalId } from "../identifiers.js";
 
@@ -8,7 +7,6 @@ const router = Router();
 
 router.get("/", (_req, res) => {
   const db = getDb();
-  reconcileBookIdentities(db);
 
   // One row per (book × profile) using the same CTE pattern as the books route
   const allRows = db.prepare(`

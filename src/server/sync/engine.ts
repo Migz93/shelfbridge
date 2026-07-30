@@ -633,11 +633,16 @@ function hasGrimmoryUserActivity(book: GrimmoryBook): boolean {
 
 type Db = ReturnType<typeof import("../db/index.js").getDb>;
 
-/** Look up an existing book_sources row by (source_type, external_id) */
-function getBookSource(db: Db, sourceType: string, externalId: string | number): { id: number; book_id: number | null; source_media_type: string | null; source_edition_id: string | null } | undefined {
+/**
+ * Look up an existing book_sources row by (source_type, source_instance_id, external_id).
+ * source_instance_id scopes ownership to the connection (profile) that produced the row,
+ * so two configured instances of the same integration can reuse the same external_id
+ * without colliding.
+ */
+function getBookSource(db: Db, sourceType: string, instanceId: number, externalId: string | number): { id: number; book_id: number | null; source_media_type: string | null; source_edition_id: string | null } | undefined {
   return db.prepare(
-    "SELECT id, book_id, source_media_type, source_edition_id FROM book_sources WHERE source_type = ? AND external_id = ?"
-  ).get(sourceType, String(externalId)) as { id: number; book_id: number | null; source_media_type: string | null; source_edition_id: string | null } | undefined;
+    "SELECT id, book_id, source_media_type, source_edition_id FROM book_sources WHERE source_type = ? AND source_instance_id = ? AND external_id = ?"
+  ).get(sourceType, instanceId, String(externalId)) as { id: number; book_id: number | null; source_media_type: string | null; source_edition_id: string | null } | undefined;
 }
 
 /** Look up a user_book_states row by (book_id, profile_id, source_type) */
@@ -661,19 +666,19 @@ function localGrimmoryBookForBookId(db: Db, bookId: number, grimmoryBooks: Grimm
   return null;
 }
 
-/** Upsert a book_sources row. Returns the row id. */
-function upsertBookSource(db: Db, sourceType: string, externalId: string | number, fields: Record<string, unknown>): number {
-  const existing = getBookSource(db, sourceType, externalId);
+/** Upsert a book_sources row, scoped to (source_type, source_instance_id, external_id). Returns the row id. */
+function upsertBookSource(db: Db, sourceType: string, instanceId: number, externalId: string | number, fields: Record<string, unknown>): number {
+  const existing = getBookSource(db, sourceType, instanceId, externalId);
   if (existing) {
     const setClauses = Object.keys(fields).map((k) => `${k} = ?`).join(", ");
     db.prepare(`UPDATE book_sources SET ${setClauses}, last_modified_at = datetime('now') WHERE id = ?`)
       .run(...Object.values(fields), existing.id);
     return existing.id;
   } else {
-    const cols = ["source_type", "external_id", ...Object.keys(fields)].join(", ");
-    const placeholders = Array(Object.keys(fields).length + 2).fill("?").join(", ");
+    const cols = ["source_type", "source_instance_id", "external_id", ...Object.keys(fields)].join(", ");
+    const placeholders = Array(Object.keys(fields).length + 3).fill("?").join(", ");
     const result = db.prepare(`INSERT INTO book_sources (${cols}) VALUES (${placeholders})`)
-      .run(sourceType, String(externalId), ...Object.values(fields));
+      .run(sourceType, instanceId, String(externalId), ...Object.values(fields));
     return Number(result.lastInsertRowid);
   }
 }
@@ -967,7 +972,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
         const author = grimmoryAuthorName(grBook) ?? null;
         const coverUrl = grimmoryCoverUrl(grBook) ?? null;
 
-        const sourceId = upsertBookSource(db, "grimmory", grBook.id, {
+        const sourceId = upsertBookSource(db, "grimmory", profileId, grBook.id, {
           title,
           author,
           cover_url: coverUrl,
@@ -1000,7 +1005,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
         }
       }
 
-      pruneGrimmorySourcesMissingFromFetch(db, new Set(grimmoryBooks.map((b) => b.id)));
+      pruneGrimmorySourcesMissingFromFetch(db, profileId, new Set(grimmoryBooks.map((b) => b.id)));
       logger.info("Grimmory book_sources written", { profileId, count: grimmoryBooks.length });
     }
 
@@ -1100,7 +1105,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
         // (ABS-forced) media type — leave the previously persisted
         // edition id/format/audio_seconds alone rather than overwrite them
         // with mismatched data.
-        const sourceId = upsertBookSource(db, "hardcover", hcBook.book.id, sourceFields);
+        const sourceId = upsertBookSource(db, "hardcover", profileId, hcBook.book.id, sourceFields);
 
         if (coverUrl) {
           enqueueImageCacheTask(`cover:${sourceId}`, async () => {
@@ -1110,7 +1115,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
       }
 
       // Prune HC sources whose books are no longer in the HC library
-      pruneHardcoverSourcesMissingFromFetch(db, new Set(hcBooks.map((b) => b.book.id)));
+      pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set(hcBooks.map((b) => b.book.id)));
       pruneHardcoverUserStatesMissingFromFetch(db, profileId, new Set(hcBooks.map((b) => b.book.id)));
       logger.info("Hardcover book_sources written", { profileId, count: hcBooks.length });
     }
@@ -1146,7 +1151,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
     // AND the book_sources reconciliation), then apply conflict resolution and
     // write user_book_states.
     for (const hcBook of hcBooks) {
-      const hcSource = getBookSource(db, "hardcover", hcBook.book.id);
+      const hcSource = getBookSource(db, "hardcover", profileId, hcBook.book.id);
       if (!hcSource?.book_id) {
         // Should not happen after reconcile, but skip gracefully
         logger.warn("HC book source has no book_id after reconcile", { profileId, hardcoverBookId: hcBook.book.id });
@@ -1660,7 +1665,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
     // book_sources and should not create a user relationship by itself.
     if (grimmoryAvailable) {
       for (const grBook of grimmoryBooks) {
-        const grSource = getBookSource(db, "grimmory", grBook.id);
+        const grSource = getBookSource(db, "grimmory", profileId, grBook.id);
         if (!grSource?.book_id) {
           logger.warn("Grimmory source has no book_id after reconcile", { profileId, grimmoryBookId: grBook.id });
           continue;
@@ -1936,7 +1941,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
             });
 
             // Upsert GR book_source
-            const goodreadsSourceId = upsertBookSource(db, "goodreads", grBook.goodreadsId, {
+            const goodreadsSourceId = upsertBookSource(db, "goodreads", profileId, grBook.goodreadsId, {
               book_id: bookId,
               title: grBook.title,
               author: grBook.author,
@@ -2061,7 +2066,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
             }
 
             // Create GR book_source (book_id will be assigned by reconcile)
-            const newSourceId = upsertBookSource(db, "goodreads", grBook.goodreadsId, {
+            const newSourceId = upsertBookSource(db, "goodreads", profileId, grBook.goodreadsId, {
               title: grBook.title,
               author: grBook.author,
               cover_url: grBook.coverUrl ?? null,
@@ -2300,7 +2305,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
               absFields["book_id"] = linkedBookId;
             }
 
-            upsertBookSource(db, "audiobookshelf", item.id, absFields);
+            upsertBookSource(db, "audiobookshelf", profileId, item.id, absFields);
           }
         }
 
@@ -2846,56 +2851,51 @@ function pruneHardcoverUserStatesMissingFromFetch(
     WHERE profile_id = ? AND source_type = 'hardcover'
       AND book_id IN (
         SELECT book_id FROM book_sources
-        WHERE source_type = 'hardcover'
+        WHERE source_type = 'hardcover' AND source_instance_id = ?
           AND CAST(external_id AS INTEGER) NOT IN (${placeholders})
       )
-  `).run(profileId, ...Array.from(fetchedHcBookIds));
+  `).run(profileId, profileId, ...Array.from(fetchedHcBookIds));
   if (result.changes > 0) {
     logger.info("Pruned HC user states missing from fetched library", { profileId, deleted: result.changes });
   }
 }
 
-// Prune HC book_sources for books not in any profile's HC library
-function pruneHardcoverSourcesMissingFromFetch(db: Db, fetchedHcBookIds: Set<number>): void {
+// Prune this profile's Hardcover book_sources for books no longer in its HC library.
+// Scoped to source_instance_id so another profile's Hardcover connection can't be pruned.
+function pruneHardcoverSourcesMissingFromFetch(db: Db, profileId: number, fetchedHcBookIds: Set<number>): void {
   if (fetchedHcBookIds.size === 0) return;
   const placeholders = Array.from(fetchedHcBookIds).map(() => "?").join(",");
   // Only delete if no user_book_states reference this book via HC
   const result = db.prepare(`
     DELETE FROM book_sources
-    WHERE source_type = 'hardcover'
+    WHERE source_type = 'hardcover' AND source_instance_id = ?
       AND CAST(external_id AS INTEGER) NOT IN (${placeholders})
       AND NOT EXISTS (
         SELECT 1 FROM user_book_states
         WHERE book_id = book_sources.book_id AND source_type = 'hardcover'
       )
-  `).run(...Array.from(fetchedHcBookIds));
+  `).run(profileId, ...Array.from(fetchedHcBookIds));
   if (result.changes > 0) {
-    logger.info("Pruned HC book_sources with no remaining user states", { deleted: result.changes });
+    logger.info("Pruned HC book_sources with no remaining user states", { profileId, deleted: result.changes });
   }
 }
 
-// Prune Grimmory book_sources for books no longer in the Grimmory library
-function pruneGrimmorySourcesMissingFromFetch(db: Db, fetchedGrimmoryIds: Set<number>): void {
+// Prune this profile's Grimmory book_sources for books no longer in its Grimmory library.
+// Scoped to source_instance_id so another profile's Grimmory connection can't be pruned.
+function pruneGrimmorySourcesMissingFromFetch(db: Db, profileId: number, fetchedGrimmoryIds: Set<number>): void {
   if (fetchedGrimmoryIds.size === 0) return;
-  const enabledProfileCount = (db.prepare("SELECT COUNT(*) AS count FROM profiles WHERE enabled = 1").get() as { count: number }).count;
-  if (enabledProfileCount > 1) {
-    // book_sources are not profile-scoped yet, so a single profile's Grimmory
-    // fetch cannot safely prove that another profile no longer owns a source.
-    logger.info("Skipping Grimmory source pruning until profile-scoped source ownership is available", { enabledProfileCount });
-    return;
-  }
   const placeholders = Array.from(fetchedGrimmoryIds).map(() => "?").join(",");
   const result = db.prepare(`
     DELETE FROM book_sources
-    WHERE source_type = 'grimmory'
+    WHERE source_type = 'grimmory' AND source_instance_id = ?
       AND CAST(external_id AS INTEGER) NOT IN (${placeholders})
       AND NOT EXISTS (
         SELECT 1 FROM user_book_states
         WHERE book_id = book_sources.book_id AND source_type = 'grimmory'
       )
-  `).run(...Array.from(fetchedGrimmoryIds));
+  `).run(profileId, ...Array.from(fetchedGrimmoryIds));
   if (result.changes > 0) {
-    logger.info("Pruned Grimmory book_sources with no remaining user states", { deleted: result.changes });
+    logger.info("Pruned Grimmory book_sources with no remaining user states", { profileId, deleted: result.changes });
   }
 }
 
@@ -2912,10 +2912,10 @@ function pruneGrimmoryUserStatesMissingFromFetch(
     WHERE profile_id = ? AND source_type = 'grimmory'
       AND book_id IN (
         SELECT book_id FROM book_sources
-        WHERE source_type = 'grimmory'
+        WHERE source_type = 'grimmory' AND source_instance_id = ?
           AND CAST(external_id AS INTEGER) NOT IN (${placeholders})
       )
-  `).run(profileId, ...Array.from(fetchedGrimmoryIds));
+  `).run(profileId, profileId, ...Array.from(fetchedGrimmoryIds));
   if (result.changes > 0) {
     logger.info("Pruned Grimmory user states missing from fetched library", { profileId, deleted: result.changes });
   }
@@ -2934,10 +2934,10 @@ function pruneGoodreadsUserStatesMissingFromFetch(
     WHERE profile_id = ? AND source_type = 'goodreads'
       AND book_id IN (
         SELECT book_id FROM book_sources
-        WHERE source_type = 'goodreads'
+        WHERE source_type = 'goodreads' AND source_instance_id = ?
           AND external_id NOT IN (${placeholders})
       )
-  `).run(profileId, ...Array.from(fetchedGoodreadsIds));
+  `).run(profileId, profileId, ...Array.from(fetchedGoodreadsIds));
   if (result.changes > 0) {
     logger.info("Pruned Goodreads user states missing from fetched library", { profileId, deleted: result.changes });
   }

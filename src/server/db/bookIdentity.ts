@@ -281,7 +281,15 @@ function titleAuthorKey(row: BookSourceRow): IdentityKey | null {
   return title && author ? `${bucket}.title_author:${title}||${author}` : null;
 }
 
-function seriesCompatible(rows: BookSourceRow[], uf: UnionFind, rootA: number, rootB: number): boolean {
+interface SeriesMatchInfo {
+  // No contradictory series name/number between the two groups.
+  compatible: boolean;
+  // Both groups explicitly agree on series name AND number — strong corroborating
+  // evidence that a title/author match is genuinely the same book.
+  strongMatch: boolean;
+}
+
+function seriesMatchInfo(rows: BookSourceRow[], uf: UnionFind, rootA: number, rootB: number): SeriesMatchInfo {
   const namesA = new Set<string>();
   const namesB = new Set<string>();
   const numbersA = new Set<string>();
@@ -302,22 +310,16 @@ function seriesCompatible(rows: BookSourceRow[], uf: UnionFind, rootA: number, r
     }
   }
 
-  if (namesA.size > 0 && namesB.size > 0 && !Array.from(namesA).some((name) => namesB.has(name))) {
-    return false;
-  }
-  if (numbersA.size > 0 && numbersB.size > 0 && !Array.from(numbersA).some((number) => numbersB.has(number))) {
-    return false;
-  }
-  return true;
-}
+  const namesOverlap = namesA.size > 0 && namesB.size > 0 && Array.from(namesA).some((name) => namesB.has(name));
+  const numbersOverlap = numbersA.size > 0 && numbersB.size > 0 && Array.from(numbersA).some((number) => numbersB.has(number));
 
-function groupTitleAuthorKeys(rows: BookSourceRow[], uf: UnionFind, root: number): Set<IdentityKey> {
-  return new Set(
-    rows
-      .filter((row) => uf.find(row.id) === root)
-      .map(titleAuthorKey)
-      .filter((key): key is IdentityKey => key !== null)
-  );
+  const nameConflict = namesA.size > 0 && namesB.size > 0 && !namesOverlap;
+  const numberConflict = numbersA.size > 0 && numbersB.size > 0 && !numbersOverlap;
+
+  return {
+    compatible: !nameConflict && !numberConflict,
+    strongMatch: namesOverlap && numbersOverlap
+  };
 }
 
 function newer(a: string | null | undefined, b: string | null | undefined): string | null {
@@ -455,13 +457,24 @@ export function reconcileBookIdentities(db: Database.Database): void {
       if (rootA === rootB) continue;
       const keysA = new Set(rows.filter((row) => uf.find(row.id) === rootA).flatMap((row) => Array.from(highKeysByRow.get(row.id) ?? [])));
       const keysB = new Set(rows.filter((row) => uf.find(row.id) === rootB).flatMap((row) => Array.from(highKeysByRow.get(row.id) ?? [])));
-      const titleKeysA = groupTitleAuthorKeys(rows, uf, rootA);
-      const titleKeysB = groupTitleAuthorKeys(rows, uf, rootB);
-      const sameWorkByTitle = Array.from(titleKeysA).some((key) => titleKeysB.has(key));
-      if (!highKeyConflict(keysA, keysB) || sameWorkByTitle) uf.union(rootA, rootB);
+      // A shared ISBN is strong corroborating evidence, but a conflicting authoritative
+      // ID (e.g. different Hardcover/Goodreads IDs) always blocks the merge — matching
+      // titles must never override an explicit identifier conflict.
+      if (highKeyConflict(keysA, keysB)) {
+        logger.debug("Skipped ISBN-based book merge: conflicting authoritative identifiers", {
+          rootA, rootB
+        });
+        continue;
+      }
+      uf.union(rootA, rootB);
     }
   }
 
+  // Title/author matches alone are not authoritative enough to auto-merge distinct
+  // books: they are surfaced as "probable duplicates" for manual review instead
+  // (see routes/books.ts). Only merge automatically when there is no conflicting
+  // authoritative identifier AND the groups also explicitly agree on series name +
+  // number — corroborating evidence that this is genuinely the same work.
   const byTitle = new Map<IdentityKey, number[]>();
   for (const row of rows) {
     const key = titleAuthorKey(row);
@@ -470,9 +483,19 @@ export function reconcileBookIdentities(db: Database.Database): void {
     for (const existing of existingIds) {
       const rootA = uf.find(existing);
       const rootB = uf.find(row.id);
-      if (rootA === rootB || seriesCompatible(rows, uf, rootA, rootB)) {
-        uf.union(existing, row.id);
+      if (rootA === rootB) continue;
+
+      const keysA = new Set(rows.filter((r) => uf.find(r.id) === rootA).flatMap((r) => Array.from(highKeysByRow.get(r.id) ?? [])));
+      const keysB = new Set(rows.filter((r) => uf.find(r.id) === rootB).flatMap((r) => Array.from(highKeysByRow.get(r.id) ?? [])));
+      if (highKeyConflict(keysA, keysB)) {
+        logger.debug("Skipped title/author book merge: conflicting authoritative identifiers", { rootA, rootB });
+        continue;
       }
+
+      const series = seriesMatchInfo(rows, uf, rootA, rootB);
+      if (!series.compatible || !series.strongMatch) continue;
+
+      uf.union(existing, row.id);
     }
     existingIds.push(row.id);
     byTitle.set(key, existingIds);
@@ -678,6 +701,13 @@ export function reconcileBookIdentities(db: Database.Database): void {
           deleteBook.run(duplicateId);
           validBookIds.delete(duplicateId);
           merged++;
+          logger.info("Merged duplicate book record during identity reconciliation", {
+            keptBookId: bookId,
+            mergedBookId: duplicateId,
+            title: values.title,
+            author: values.author,
+            matchedKeys: Array.from(new Set(group.flatMap((row) => [...highIdentityKeys(row), ...isbnIdentityKeys(row)])))
+          });
         }
       }
 

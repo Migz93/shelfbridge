@@ -324,17 +324,19 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
     return normChaptarr === normDb || normChaptarr.includes(normDb) || normDb.includes(normChaptarr);
   }
 
+  // Chaptarr is a single global connection (not configured per profile), so it always
+  // uses a fixed source_instance_id of 0 — see schema.ts v14 migration.
   const upsertChaptarrSource = db.prepare(`
     INSERT INTO book_sources (
-      book_id, source_type, external_id, title, author, series_name, series_number,
+      book_id, source_type, source_instance_id, external_id, title, author, series_name, series_number,
       source_hardcover_book_id, source_goodreads_book_id, source_goodreads_work_id,
       source_goodreads_edition_id, source_edition_id, source_media_type, source_edition_format,
       source_narrator, source_asin, source_audible_asin,
       chaptarr_monitored, chaptarr_has_file, chaptarr_id_mismatch, chaptarr_primary_file_path,
       last_modified_at
     )
-    VALUES (?, 'chaptarr', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-    ON CONFLICT(source_type, external_id) DO UPDATE SET
+    VALUES (?, 'chaptarr', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(source_type, source_instance_id, external_id) DO UPDATE SET
       book_id                    = excluded.book_id,
       title                      = excluded.title,
       author                     = excluded.author,

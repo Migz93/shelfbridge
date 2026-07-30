@@ -3,7 +3,7 @@ import { reconcileBookIdentities } from "./bookIdentity.js";
 import { migrateCredentialStorage } from "../security/credentials.js";
 import { logger } from "../logger.js";
 
-export const CURRENT_SCHEMA_VERSION = 13;
+export const CURRENT_SCHEMA_VERSION = 14;
 
 export function initSchema(db: Database.Database): void {
   db.pragma("journal_mode = WAL");
@@ -694,6 +694,78 @@ export function initSchema(db: Database.Database): void {
     }
     db.prepare("UPDATE schema_version SET version = 13").run();
     logger.info("Schema migrated to version 13: repaired literal last_sync_at values");
+  }
+
+  // v14: Scope book_sources uniqueness to (source_type, source_instance_id, external_id).
+  // Previously (source_type, external_id) was globally unique, which collided when a
+  // user configured two instances of the same integration (e.g. two Grimmory servers)
+  // that happen to reuse the same local ID for different books.
+  if (!row || row.version < 14) {
+    const existingCols = db.prepare("PRAGMA table_info(book_sources)").all() as {
+      name: string; type: string; notnull: number; dflt_value: string | null; pk: number;
+    }[];
+    const colNames = existingCols.map((c) => c.name);
+    const colDefs = existingCols.map((c) => {
+      if (c.name === "id") return "id INTEGER PRIMARY KEY AUTOINCREMENT";
+      if (c.name === "book_id") return "book_id INTEGER REFERENCES books(id) ON DELETE CASCADE";
+      let def = `${c.name} ${c.type}`;
+      if (c.notnull) def += " NOT NULL";
+      if (c.dflt_value !== null) def += ` DEFAULT (${c.dflt_value})`;
+      return def;
+    });
+
+    db.pragma("foreign_keys = OFF");
+    db.exec(`
+      CREATE TABLE book_sources_v14 (
+        ${colDefs.join(",\n        ")},
+        source_instance_id INTEGER,
+        UNIQUE(source_type, source_instance_id, external_id)
+      );
+      INSERT INTO book_sources_v14 (${colNames.join(", ")})
+        SELECT ${colNames.join(", ")} FROM book_sources;
+      DROP TABLE book_sources;
+      ALTER TABLE book_sources_v14 RENAME TO book_sources;
+
+      CREATE INDEX IF NOT EXISTS idx_book_sources_book ON book_sources(book_id);
+      CREATE INDEX IF NOT EXISTS idx_book_sources_type ON book_sources(source_type);
+      CREATE INDEX IF NOT EXISTS idx_book_sources_instance ON book_sources(source_type, source_instance_id);
+    `);
+    db.pragma("foreign_keys = ON");
+
+    // Chaptarr is a single global connection (not per-profile), so it always gets a
+    // fixed instance id — future upserts target the same row instead of duplicating.
+    db.prepare(`
+      UPDATE book_sources SET source_instance_id = 0
+      WHERE source_type = 'chaptarr' AND source_instance_id IS NULL
+    `).run();
+
+    // Per-profile sources: attribute existing rows to the sole configured profile when
+    // unambiguous. Installs with more than one profile connected to the same source type
+    // predate per-instance scoping and can't be safely attributed retroactively — those
+    // rows are left unscoped (NULL) and get re-attributed the next time each profile syncs.
+    const connectionTables: Record<string, string> = {
+      grimmory: "grimmory_connections",
+      hardcover: "hardcover_connections",
+      goodreads: "goodreads_connections",
+      audiobookshelf: "audiobookshelf_connections"
+    };
+    for (const [sourceType, table] of Object.entries(connectionTables)) {
+      const profileIds = (db.prepare(`SELECT profile_id FROM ${table}`).all() as { profile_id: number }[])
+        .map((r) => r.profile_id);
+      if (profileIds.length === 1) {
+        db.prepare(`
+          UPDATE book_sources SET source_instance_id = ?
+          WHERE source_type = ? AND source_instance_id IS NULL
+        `).run(profileIds[0], sourceType);
+      } else if (profileIds.length > 1) {
+        logger.warn("Multiple profiles configured for the same source type; existing book_sources rows left unscoped pending re-sync", {
+          sourceType, profileCount: profileIds.length
+        });
+      }
+    }
+
+    db.prepare("UPDATE schema_version SET version = 14").run();
+    logger.info("Schema migrated to version 14: scoped book_sources uniqueness to (source_type, source_instance_id, external_id)");
   }
 
   migrateCredentialStorage(db);

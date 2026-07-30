@@ -799,7 +799,6 @@ function countGroups(rows: DbBookRow[]): number {
 // GET /api/books
 router.get("/", (req, res) => {
   const db = getDb();
-  reconcileBookIdentities(db);
 
   const VALID_SOURCES = new Set<SourceFilter>(["hardcover", "goodreads", "on-disk"]);
   const parseSourceList = (raw: string | undefined): SourceFilter[] =>
@@ -1127,8 +1126,6 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
 
 // GET /api/books/:id
 router.get("/:id", (req, res) => {
-  const db = getDb();
-  reconcileBookIdentities(db);
   const id = parseInt(req.params["id"] ?? "0", 10);
   const allRows = fetchRows();
   const rows = allRows.filter((row) => row.book_id === id);
