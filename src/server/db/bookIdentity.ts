@@ -334,10 +334,16 @@ interface RootIndexEntry {
   seriesNumbers: Set<string>;
 }
 
+// Absorbs the smaller set into the larger one and returns it (mutating), so a long
+// merge chain costs O(n log n) element inserts instead of re-copying both sides on
+// every union. Safe because unionRoots() always deletes the losing root's rootIndex
+// entry right after calling this, so nothing else retains the pre-merge sets.
 function mergeSets<T>(a: Set<T> | undefined, b: Set<T> | undefined): Set<T> {
-  if (!a || a.size === 0) return new Set(b ?? []);
-  if (!b || b.size === 0) return new Set(a);
-  return new Set([...a, ...b]);
+  if (!a || a.size === 0) return b ?? new Set<T>();
+  if (!b || b.size === 0) return a;
+  const [large, small] = a.size >= b.size ? [a, b] : [b, a];
+  for (const value of small) large.add(value);
+  return large;
 }
 
 function mergeRootEntries(a: RootIndexEntry | undefined, b: RootIndexEntry | undefined): RootIndexEntry {

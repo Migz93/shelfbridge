@@ -3506,10 +3506,14 @@ export async function refreshStaleGrimmoryCovers(): Promise<void> {
           AND g.username IS NOT NULL
           AND g.encrypted_password IS NOT NULL
       `).get(profileId) as { base_url: string | null; username: string; encrypted_password: string } | undefined;
-      const baseUrl = conn?.base_url || getSetting("grimmory.baseUrl", "");
+      // No global baseUrl fallback here: a local Grimmory book id is only meaningful
+      // on the server this profile is actually connected to, and this profile's own
+      // credentials must never be presented to some other host via a stale/shared
+      // global setting.
+      const baseUrl = conn?.base_url || "";
 
       if (!conn || !baseUrl) {
-        logger.warn("ImageCache: no Grimmory connection available for cover refresh", { profileId });
+        logger.warn("ImageCache: no Grimmory connection base URL for cover refresh", { profileId });
         continue;
       }
 
