@@ -153,7 +153,9 @@ type/branch-name branch → PR into develop → develop → chore/bump-version �
 1. **Start a new branch** from `develop` for every piece of work — features, bug fixes, chores, CI changes, everything. Never commit new work directly to `develop` or `main`.
    - Branch naming: `feat/short-description`, `fix/short-description`, `chore/short-description`, `ci/short-description`, `docs/short-description`
 
-2. **Do the work** on that branch. Commit as many times as needed. Push the branch to GitHub.
+2. **Do the work** on that branch. Commit as many times as needed.
+
+2a. **Get a cross-AI review before opening the PR.** See "Cross-AI Review Before Opening The PR" below — this is mandatory, not optional polish. Push the branch to GitHub once this review pass is clean.
 
 3. **Open a PR** from that branch into `develop` using `gh pr create`. This is what feeds the release notes — the PR title becomes the changelog entry. Use a semantic title (`feat:`, `fix:`, `chore:`, etc.).
 
@@ -170,6 +172,28 @@ type/branch-name branch → PR into develop → develop → chore/bump-version �
 9. **Tag `main`** with `vX.Y.Z` and push the tag.
 
 10. **Publish the GitHub release** — review the auto-generated draft and publish it.
+
+---
+
+### Cross-AI Review Before Opening The PR (Mandatory)
+
+ShelfBridge is worked on by two AI agents — Claude and Codex — usually in separate chat sessions, with the user relaying messages between them. Before step 3 above (opening the PR), every feature/fix branch must go through a review pass by the *other* agent. This is required, not optional polish: it catches real issues before CodeRabbit sees the PR, which substantially cuts down the CodeRabbit back-and-forth.
+
+**Roles are relative, not fixed to a specific AI.** Whichever agent wrote the code is "the implementer"; the other agent is "the reviewer." If Codex implemented, Claude reviews, and vice versa — this section applies symmetrically regardless of which agent is reading it right now.
+
+**When this starts:** once the implementer believes the work is complete *and* the user has confirmed they're happy with it. Not before — the user is still the gate on scope and direction.
+
+**The review loop** (the implementer drives this state machine — never wait for the user to ask "what's next" or "can you do a full review"):
+
+1. **First pass is always a full review.** Write a self-contained prompt for the reviewer covering what changed, why, relevant files, and what to check. Hand it to the user to paste into the other agent's session.
+2. **The reviewer responds** with findings or a clean verdict.
+   - Findings: fix them, then immediately prepare the next prompt as a **delta-only review** — explicitly scoped to just the fix that was just made, not the whole branch again. Offer this prompt without being asked.
+   - Clean: go to step 3.
+3. **A clean delta review is not the finish line.** Once a delta review comes back clean, automatically prepare a **full review prompt** covering the whole branch again from scratch. This catches things a narrow delta view misses (e.g. the same unsafe pattern repeated elsewhere in the codebase). Offer this prompt without being asked.
+4. **Repeat.** If the full pass finds new issues, go back to step 2's delta loop for those fixes, then trigger another full pass once the deltas are clean again. Keep alternating — delta-until-clean, then full-check, then delta-until-clean, then full-check — until a full review pass comes back clean with nothing new.
+5. **Only a clean full review pass clears the branch to open a PR.** A clean delta review alone is not sufficient to proceed to step 3 of the main flow.
+
+**Minimal effort for the user:** their job is only to paste the prompt into the other agent's chat and paste the response back here. The implementer tracks review state (was the last request a delta or a full pass? did it come back clean?) and always produces the next prompt proactively.
 
 ---
 
