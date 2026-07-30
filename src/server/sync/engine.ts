@@ -444,15 +444,18 @@ function meaningfulProgress(percent: number | null | undefined): number | null {
     : null;
 }
 
-function audiobookRuntimeForBook(db: ReturnType<typeof getDb>, bookId: number): number | null {
+// Scoped to this profile's own ABS/Hardcover instances — this runtime feeds the
+// progress percentage used for this profile's outbound writes, so another
+// profile's (possibly different) audiobook runtime must not leak in.
+function audiobookRuntimeForBook(db: ReturnType<typeof getDb>, profileId: number, bookId: number): number | null {
   const row = db.prepare(`
     SELECT COALESCE(
-      MAX(CASE WHEN source_type = 'audiobookshelf' THEN audiobookshelf_duration END),
-      MAX(CASE WHEN source_type = 'hardcover' THEN hardcover_audio_seconds END)
+      MAX(CASE WHEN source_type = 'audiobookshelf' AND source_instance_id = ? THEN audiobookshelf_duration END),
+      MAX(CASE WHEN source_type = 'hardcover' AND source_instance_id = ? THEN hardcover_audio_seconds END)
     ) AS runtime_seconds
     FROM book_sources
     WHERE book_id = ?
-  `).get(bookId) as { runtime_seconds: number | null } | undefined;
+  `).get(profileId, profileId, bookId) as { runtime_seconds: number | null } | undefined;
   return row?.runtime_seconds && row.runtime_seconds > 0 ? row.runtime_seconds : null;
 }
 
@@ -502,16 +505,19 @@ function effectiveAbsCurrentTimeSeconds(absProgress: { currentTime: number; prog
 
 function persistResolvedHardcoverAudioEdition(
   db: ReturnType<typeof getDb>,
+  profileId: number,
   bookId: number,
   editionId: number | null
 ): void {
   if (!editionId || editionId <= 0) return;
+  // Scoped to this profile's own Hardcover instance — each profile can track a
+  // different edition of the same shared book.
   db.prepare(`
     UPDATE book_sources
     SET source_edition_id = ?, source_media_type = 'audiobook', last_modified_at = datetime('now')
-    WHERE source_type = 'hardcover' AND book_id = ?
+    WHERE source_type = 'hardcover' AND source_instance_id = ? AND book_id = ?
       AND (source_edition_id IS NULL OR source_edition_id != ? OR source_media_type IS NULL OR source_media_type != 'audiobook')
-  `).run(String(editionId), bookId, String(editionId));
+  `).run(String(editionId), profileId, bookId, String(editionId));
 }
 
 function progressPagesFromPercent(percent: number, pages: number | null): number | null {
@@ -1202,7 +1208,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
         ?? localIdentityGrimmoryBook?.readStatus
         ?? prevHcState?.status
         ?? null;
-      const audiobookRuntimeSeconds = audiobookRuntimeForBook(db, bookId);
+      const audiobookRuntimeSeconds = audiobookRuntimeForBook(db, profileId, bookId);
 
       const { decision, syncHealth, writeGrimmory, writeHardcover } = localIdentityGrimmoryBook
         ? {
@@ -2593,14 +2599,17 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
               source_audible_asin: string | null;
               hardcover_audio_seconds: number | null;
             } | undefined : undefined;
+            // Scoped to this profile's own Grimmory/ABS instances — these values feed a
+            // Hardcover edition lookup made through this profile's own Hardcover token,
+            // so another profile's cross-reference data must not leak in.
             const audiobookIdentityRow = db.prepare(`
               SELECT
-                MAX(CASE WHEN source_type = 'grimmory' THEN source_hardcover_book_id END) AS grimmory_hardcover_book_id,
-                MAX(CASE WHEN source_type = 'grimmory' THEN source_audible_asin END) AS grimmory_audible_asin,
-                MAX(CASE WHEN source_type = 'audiobookshelf' THEN audiobookshelf_asin END) AS audiobookshelf_asin
+                MAX(CASE WHEN source_type = 'grimmory' AND source_instance_id = ? THEN source_hardcover_book_id END) AS grimmory_hardcover_book_id,
+                MAX(CASE WHEN source_type = 'grimmory' AND source_instance_id = ? THEN source_audible_asin END) AS grimmory_audible_asin,
+                MAX(CASE WHEN source_type = 'audiobookshelf' AND source_instance_id = ? THEN audiobookshelf_asin END) AS audiobookshelf_asin
               FROM book_sources
               WHERE book_id = ?
-            `).get(absSource.book_id) as {
+            `).get(profileId, profileId, profileId, absSource.book_id) as {
               grimmory_hardcover_book_id: string | null;
               grimmory_audible_asin: string | null;
               audiobookshelf_asin: string | null;
@@ -2657,7 +2666,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
               preferredEditionId = hcLibraryBook?.book.default_audio_edition_id ?? null;
             }
 
-            persistResolvedHardcoverAudioEdition(db, absSource.book_id, preferredEditionId);
+            persistResolvedHardcoverAudioEdition(db, profileId, absSource.book_id, preferredEditionId);
 
             if (hcState?.hardcover_user_book_id) {
               const progressSeconds = absProgress

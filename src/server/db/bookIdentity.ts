@@ -205,9 +205,7 @@ function canonicalFormat(rows: BookSourceRow[]): Exclude<FormatBucket, "unknown"
 // These are authoritative enough to cluster books without further validation.
 function highIdentityKeys(row: BookSourceRow): IdentityKey[] {
   const bucket = rowFormatBucket(row);
-  const pairs: Array<[string, string | null]> = [
-    ["file_path", normalizePath(row.grimmory_primary_file_path ?? row.chaptarr_primary_file_path ?? row.audiobookshelf_file_path)],
-  ];
+  const pairs: Array<[string, string | null]> = [];
 
   // Chaptarr metadata can carry stale upstream IDs when its resolver picks the
   // wrong edition/book. Use those IDs for display/review context, but not as
@@ -270,6 +268,19 @@ function isbnIdentityKeys(row: BookSourceRow): IdentityKey[] {
   ));
 }
 
+// On-disk file path, used to bridge Grimmory/Audiobookshelf rows to the (single,
+// global) Chaptarr instance that manages the same physical library. This is NOT a
+// high-confidence key: two independent Grimmory/Audiobookshelf server instances can
+// expose the same relative path (e.g. identical container mount layouts) for
+// unrelated books, so a shared path alone must not blindly merge two books — it
+// is treated the same as an ISBN match (blocked by a conflicting authoritative ID,
+// and by an explicit title/author disagreement — see the clustering pass below).
+function filePathIdentityKeys(row: BookSourceRow): IdentityKey[] {
+  const bucket = rowFormatBucket(row);
+  const path = normalizePath(row.grimmory_primary_file_path ?? row.chaptarr_primary_file_path ?? row.audiobookshelf_file_path);
+  return path ? [`${bucket}.file_path:${path}` as IdentityKey] : [];
+}
+
 function highKeyConflict(keysA: Set<IdentityKey>, keysB: Set<IdentityKey>): boolean {
   const byType = new Map<string, Set<string>>();
   for (const key of [...keysA, ...keysB]) {
@@ -287,6 +298,15 @@ function titleAuthorKey(row: BookSourceRow): IdentityKey | null {
   const bucket = rowFormatBucket(row);
   if (bucket === "unknown") return null;
   return title && author ? `${bucket}.title_author:${title}||${author}` : null;
+}
+
+function groupTitleAuthorKeys(rows: BookSourceRow[], uf: UnionFind, root: number): Set<IdentityKey> {
+  return new Set(
+    rows
+      .filter((row) => uf.find(row.id) === root)
+      .map(titleAuthorKey)
+      .filter((key): key is IdentityKey => key !== null)
+  );
 }
 
 interface SeriesMatchInfo {
@@ -437,12 +457,14 @@ export function reconcileBookIdentities(db: Database.Database): void {
   const uf = new UnionFind();
   const byHighKey = new Map<IdentityKey, number>();
   const byIsbnKey = new Map<IdentityKey, number[]>();
+  const byFilePathKey = new Map<IdentityKey, number[]>();
   const highKeysByRow = new Map<number, Set<IdentityKey>>();
 
   for (const row of rows) {
     uf.add(row.id);
     const highKeys = highIdentityKeys(row);
     const isbnKeys = isbnIdentityKeys(row);
+    const filePathKeys = filePathIdentityKeys(row);
     highKeysByRow.set(row.id, new Set(highKeys));
 
     for (const key of highKeys) {
@@ -455,6 +477,12 @@ export function reconcileBookIdentities(db: Database.Database): void {
       const ids = byIsbnKey.get(key) ?? [];
       ids.push(row.id);
       byIsbnKey.set(key, ids);
+    }
+
+    for (const key of filePathKeys) {
+      const ids = byFilePathKey.get(key) ?? [];
+      ids.push(row.id);
+      byFilePathKey.set(key, ids);
     }
   }
 
@@ -474,6 +502,36 @@ export function reconcileBookIdentities(db: Database.Database): void {
         });
         continue;
       }
+      uf.union(rootA, rootB);
+    }
+  }
+
+  // A shared file path is only useful to bridge Grimmory/Audiobookshelf rows to the
+  // global Chaptarr instance managing the same library — it is not proof on its own,
+  // since two independent server instances can expose the same relative path for
+  // unrelated books. Require no conflicting authoritative ID (like ISBN) AND, when
+  // both sides have title/author data, that it doesn't explicitly disagree.
+  for (const ids of byFilePathKey.values()) {
+    for (const id of ids.slice(1)) {
+      const rootA = uf.find(ids[0]!);
+      const rootB = uf.find(id);
+      if (rootA === rootB) continue;
+      const keysA = new Set(rows.filter((row) => uf.find(row.id) === rootA).flatMap((row) => Array.from(highKeysByRow.get(row.id) ?? [])));
+      const keysB = new Set(rows.filter((row) => uf.find(row.id) === rootB).flatMap((row) => Array.from(highKeysByRow.get(row.id) ?? [])));
+      if (highKeyConflict(keysA, keysB)) {
+        logger.debug("Skipped file-path book merge: conflicting authoritative identifiers", { rootA, rootB });
+        continue;
+      }
+
+      const titleKeysA = groupTitleAuthorKeys(rows, uf, rootA);
+      const titleKeysB = groupTitleAuthorKeys(rows, uf, rootB);
+      const bothHaveTitles = titleKeysA.size > 0 && titleKeysB.size > 0;
+      const titlesAgree = Array.from(titleKeysA).some((key) => titleKeysB.has(key));
+      if (bothHaveTitles && !titlesAgree) {
+        logger.debug("Skipped file-path book merge: conflicting title/author", { rootA, rootB });
+        continue;
+      }
+
       uf.union(rootA, rootB);
     }
   }
@@ -720,7 +778,7 @@ export function reconcileBookIdentities(db: Database.Database): void {
             mergedBookId: duplicateId,
             title: values.title,
             author: values.author,
-            matchedKeys: Array.from(new Set(group.flatMap((row) => [...highIdentityKeys(row), ...isbnIdentityKeys(row)])))
+            matchedKeys: Array.from(new Set(group.flatMap((row) => [...highIdentityKeys(row), ...isbnIdentityKeys(row), ...filePathIdentityKeys(row)])))
           });
         }
       }
@@ -730,7 +788,7 @@ export function reconcileBookIdentities(db: Database.Database): void {
         updateSource.run(bookId, row.id);
       }
 
-      for (const key of new Set(group.flatMap((row) => [...highIdentityKeys(row), ...isbnIdentityKeys(row)]))) {
+      for (const key of new Set(group.flatMap((row) => [...highIdentityKeys(row), ...isbnIdentityKeys(row), ...filePathIdentityKeys(row)]))) {
         const [keyType, ...rest] = key.split(":");
         insertKey.run(bookId, keyType, rest.join(":"));
       }
