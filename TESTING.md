@@ -75,7 +75,8 @@ Adapters not relevant to a given test are left unimplemented via `createFakeAdap
 
 ### Known gaps
 
-- No coverage yet for Goodreads/Chaptarr/Audiobookshelf sync paths, shelf/list syncing, or the Grimmory cover-caching path (which makes a real `fetch()` call outside the adapter seam — see `cacheGrimmoryCover` in `engine.ts`).
+- No coverage yet for Goodreads/Chaptarr/Audiobookshelf sync paths or shelf/list syncing.
+- The Grimmory cover-caching path (`cacheGrimmoryCover` in `engine.ts`) makes a real `fetch()` call outside the adapter seam — `sync-engine.test.ts` stubs `globalThis.fetch` globally so it never hits the network, but the cover-caching logic itself has no dedicated test coverage.
 - No forced mid-transaction failure test for `reconcileBookIdentities`'s rollback behavior.
 - No auth/session-expiry tests.
 

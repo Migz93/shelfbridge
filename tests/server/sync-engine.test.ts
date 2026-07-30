@@ -22,6 +22,15 @@ import {
 // at a private temp dir before the very first import of the singleton module.
 process.env["DATA_DIR"] = mkdtempSync(path.join(os.tmpdir(), "shelfbridge-sync-engine-test-"));
 
+// Cover caching (cacheGrimmoryCover / fetchGrimmoryCoverFromPath in engine.ts) calls
+// the global fetch() directly — it isn't part of the SyncAdapters seam (see
+// TESTING.md's "Known gaps"). It's queued as a fire-and-forget background task
+// whenever a synced Grimmory book exists, so every test with a Grimmory fixture
+// would otherwise make a real, slow (15s-timeout) network attempt against a
+// nonexistent host. Stub it globally for this file so nothing here touches the
+// network, regardless of which test triggers the queue.
+globalThis.fetch = (async () => new Response(null, { status: 404 })) as typeof fetch;
+
 const { runSyncImpl } = await import("../../src/server/sync/engine.js");
 const { getDb } = await import("../../src/server/db/index.js");
 
@@ -56,10 +65,17 @@ function grBook(overrides: Partial<GrimmoryBook> = {}): GrimmoryBook {
   return { id: 1, title: "Integration Test Book", ...overrides };
 }
 
-test("a profile with no connections configured completes without touching any adapter", async () => {
+test("a profile with no connections configured completes without touching any Hardcover/Grimmory/Goodreads adapter", async () => {
   const profileId = seedProfile(db);
   const runId = insertSyncRun(db, profileId);
-  const adapters = createFakeAdapters({});
+  // Chaptarr is a single global connection, so syncChaptarrStatus runs on every
+  // sync regardless of per-profile configuration (see createFakeAdapters) — track
+  // it explicitly instead of leaving it an implicit, easy-to-miss exception to
+  // this test's name.
+  let chaptarrCalls = 0;
+  const adapters = createFakeAdapters({
+    syncChaptarrStatus: async () => { chaptarrCalls++; }
+  });
 
   await runSyncImpl(profileId, runId, false, adapters);
 
@@ -67,6 +83,7 @@ test("a profile with no connections configured completes without touching any ad
     { status: string; changes_written: number };
   assert.equal(run.status, "success");
   assert.equal(run.changes_written, 0);
+  assert.equal(chaptarrCalls, 1, "syncChaptarrStatus is expected to run unconditionally");
 });
 
 test("a Hardcover fetch failure aborts the run and is recorded as a source failure", async () => {
