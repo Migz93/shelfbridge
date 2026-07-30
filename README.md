@@ -102,6 +102,10 @@ ShelfBridge is configured through its web UI after first run. The main things yo
 - **Data directory** — change the left side of `/opt/shelfbridge:/config` to store ShelfBridge's database, logs, credential key, and image cache wherever you prefer on your host
 - **Timezone** — set `TZ` to your preferred timezone if you do not want UTC
 
+ShelfBridge's own process runs as an unprivileged user (UID/GID `1000`), not root. The container briefly starts as root only to make sure the data directory is owned by that user — including fixing ownership automatically on a fresh bind mount, or one created by an older version that ran as root — then drops privileges before starting the app. You don't need to `chown` anything on the host yourself, including when upgrading an existing installation.
+
+This behavior lives in the image itself, so upgrading to it requires actually replacing the running container, not just restarting it. With the `image:`-based Compose setup above, run `docker compose pull && docker compose up -d` so Compose fetches the new image before recreating the container — `docker compose up -d` alone won't pull a new image. With a plain `docker run` setup, re-run the `docker pull`/`docker stop`/`docker rm`/`docker run` sequence. If you build the image yourself instead of pulling from `ghcr.io`, rebuild it and recreate the container (`docker build` followed by `docker stop`/`docker rm`/`docker run`, or `docker compose up -d --build` if your own Compose file defines a `build:` section) rather than just restarting the existing one.
+
 If ShelfBridge is served through a reverse proxy such as Nginx, Traefik, or Caddy, enable **Settings → General → Network → Trust Proxy** and restart the container so rate limiting uses the real client IP from forwarded headers.
 
 ### First Setup
