@@ -1088,9 +1088,12 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
     }
 
     if (source === "goodreads") {
+      // Scoped to this profile's own Goodreads instance — otherwise this write could
+      // push another profile's selected Goodreads relationship into this profile's
+      // Grimmory server.
       const grSrc = db.prepare(`
-        SELECT external_id FROM book_sources WHERE source_type = 'goodreads' AND book_id = ?
-      `).get(bookId) as { external_id: string } | undefined;
+        SELECT external_id FROM book_sources WHERE source_type = 'goodreads' AND source_instance_id = ? AND book_id = ?
+      `).get(profileId, bookId) as { external_id: string } | undefined;
       const goodreadsId = grSrc?.external_id?.trim();
       if (!goodreadsId) {
         res.status(400).json({ error: "No Goodreads ID is available for this book" });
@@ -1103,9 +1106,10 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
       `).run(goodreadsId, bookId, profileId);
       logger.info("Wrote Goodreads ID to Grimmory metadata", { bookId, profileId, grimmoryBookId, goodreadsId });
     } else {
+      // Scoped to this profile's own Hardcover instance — same reasoning as Goodreads above.
       const hcSrc = db.prepare(`
-        SELECT external_id, hardcover_slug FROM book_sources WHERE source_type = 'hardcover' AND book_id = ?
-      `).get(bookId) as { external_id: string; hardcover_slug: string | null } | undefined;
+        SELECT external_id, hardcover_slug FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ? AND book_id = ?
+      `).get(profileId, bookId) as { external_id: string; hardcover_slug: string | null } | undefined;
       if (!hcSrc?.external_id) {
         res.status(400).json({ error: "No Hardcover ID is available for this book" });
         return;

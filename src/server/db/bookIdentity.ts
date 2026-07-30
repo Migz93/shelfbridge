@@ -604,11 +604,14 @@ export function reconcileBookIdentities(db: Database.Database): void {
   };
 
   const repairAudiobookshelfStates = (): void => {
+    // Matched by (external_id AND instance) — a colliding local item id on a
+    // different profile's ABS server must not move this profile's user state.
     const rows = db.prepare(`
       SELECT ubs.*, bs.book_id AS source_book_id
       FROM user_book_states ubs
       JOIN book_sources bs
         ON bs.source_type = 'audiobookshelf'
+       AND bs.source_instance_id = ubs.profile_id
        AND bs.external_id = ubs.audiobookshelf_item_id
       WHERE ubs.source_type = 'audiobookshelf'
         AND ubs.audiobookshelf_item_id IS NOT NULL
@@ -622,11 +625,14 @@ export function reconcileBookIdentities(db: Database.Database): void {
   };
 
   const repairGrimmoryStates = (): void => {
+    // Matched by (external_id AND instance) — a colliding local book id on a
+    // different profile's Grimmory server must not move this profile's user state.
     const rows = db.prepare(`
       SELECT ubs.*, bs.book_id AS source_book_id
       FROM user_book_states ubs
       JOIN book_sources bs
         ON bs.source_type = 'grimmory'
+       AND bs.source_instance_id = ubs.profile_id
        AND CAST(bs.external_id AS INTEGER) = ubs.grimmory_book_id
       WHERE ubs.source_type = 'grimmory'
         AND ubs.grimmory_book_id IS NOT NULL

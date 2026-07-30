@@ -2441,11 +2441,13 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
             : hcProgressPct;
           const absSourcePct = absProgress ? clampPercent(absProgress.progress * 100) : null;
 
-          // Backfill duration on book_sources if not yet stored (ABS item metadata may return 0)
+          // Backfill duration on book_sources if not yet stored (ABS item metadata may return 0).
+          // Scoped to this profile's own ABS instance — a colliding item id on another
+          // profile's ABS server must not have its duration overwritten.
           if (absDuration !== null && absDuration > 0 && !absSource.abs_duration) {
             db.prepare(
-              "UPDATE book_sources SET audiobookshelf_duration = ? WHERE source_type = 'audiobookshelf' AND external_id = ?"
-            ).run(Math.round(absDuration), absSource.abs_item_id);
+              "UPDATE book_sources SET audiobookshelf_duration = ? WHERE source_type = 'audiobookshelf' AND source_instance_id = ? AND external_id = ?"
+            ).run(Math.round(absDuration), profileId, absSource.abs_item_id);
           }
 
           // Upsert ABS user state regardless of progress sync eligibility
@@ -3429,19 +3431,21 @@ function recordEvent(
 /**
  * Re-fetch stale Grimmory covers for all book_sources where the cached cover
  * (stored without a source_url because it required an auth token) is past its
- * refresh_after date. Uses any configured Grimmory connection for authentication.
+ * refresh_after date. Grouped and authenticated per source_instance_id, since a
+ * local Grimmory book id is only meaningful against the server that issued it.
  */
 export async function refreshStaleGrimmoryCovers(): Promise<void> {
   const db = getDb();
 
   const stale = db.prepare(`
-    SELECT ic.entity_id, CAST(bs.external_id AS INTEGER) as grimmory_book_id
+    SELECT ic.entity_id, CAST(bs.external_id AS INTEGER) as grimmory_book_id, bs.source_instance_id
     FROM image_cache ic
     JOIN book_sources bs ON bs.id = CAST(ic.entity_id AS INTEGER)
     WHERE ic.source_url IS NULL
       AND bs.source_type = 'grimmory'
+      AND bs.source_instance_id IS NOT NULL
       AND (ic.last_refresh_at IS NULL OR ic.last_refresh_at < datetime('now', '-7 days'))
-  `).all() as { entity_id: string; grimmory_book_id: number }[];
+  `).all() as { entity_id: string; grimmory_book_id: number; source_instance_id: number }[];
 
   if (stale.length === 0) {
     logger.info("ImageCache: no stale Grimmory covers to refresh");
@@ -3450,49 +3454,61 @@ export async function refreshStaleGrimmoryCovers(): Promise<void> {
 
   logger.info("ImageCache: refreshing stale Grimmory covers", { count: stale.length });
 
-  // Use an enabled profile's credentials and honor the same profile-to-global
-  // base URL fallback as the main sync path.
-  const conn = db.prepare(`
-    SELECT g.base_url, g.username, g.encrypted_password
-    FROM grimmory_connections g
-    JOIN profiles p ON p.id = g.profile_id
-    WHERE p.enabled = 1
-      AND g.username IS NOT NULL
-      AND g.encrypted_password IS NOT NULL
-    ORDER BY g.profile_id
-    LIMIT 1
-  `).get() as { base_url: string | null; username: string; encrypted_password: string } | undefined;
-  const baseUrl = conn?.base_url || getSetting("grimmory.baseUrl", "");
-
-  if (!conn || !baseUrl) {
-    logger.warn("ImageCache: no Grimmory connection available for cover refresh");
-    return;
+  const staleByInstance = new Map<number, { entity_id: string; grimmory_book_id: number }[]>();
+  for (const { entity_id, grimmory_book_id, source_instance_id } of stale) {
+    const group = staleByInstance.get(source_instance_id) ?? [];
+    group.push({ entity_id, grimmory_book_id });
+    staleByInstance.set(source_instance_id, group);
   }
 
-  const password = decryptCredential(conn.encrypted_password);
-  if (!password) {
-    logger.warn("ImageCache: could not decrypt Grimmory password");
-    return;
-  }
+  let refreshed = 0;
 
-  const token = await getGrimmoryToken(baseUrl, conn.username, password);
-  if (!token) {
-    logger.warn("ImageCache: Grimmory login failed, skipping cover refresh");
-    return;
-  }
+  for (const [profileId, entries] of staleByInstance) {
+    // Each group is authenticated against its own profile's Grimmory connection —
+    // a local book id from one Grimmory server must never be fetched through
+    // another profile's connection.
+    const conn = db.prepare(`
+      SELECT g.base_url, g.username, g.encrypted_password
+      FROM grimmory_connections g
+      JOIN profiles p ON p.id = g.profile_id
+      WHERE g.profile_id = ?
+        AND p.enabled = 1
+        AND g.username IS NOT NULL
+        AND g.encrypted_password IS NOT NULL
+    `).get(profileId) as { base_url: string | null; username: string; encrypted_password: string } | undefined;
+    const baseUrl = conn?.base_url || getSetting("grimmory.baseUrl", "");
 
-  for (const { entity_id, grimmory_book_id } of stale) {
-    const sourceId = parseInt(entity_id, 10);
-    const source = db.prepare(
-      "SELECT source_media_type FROM book_sources WHERE id = ?"
-    ).get(sourceId) as { source_media_type: "physical" | "ebook" | "audiobook" | null } | undefined;
-    const data = await fetchGrimmoryCoverBuffer(baseUrl, token, grimmory_book_id, source?.source_media_type ?? null);
-    if (!data) continue;
-    const webPath = storeFetchedCover(sourceId, data);
-    if (webPath) {
-      db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(webPath, sourceId);
+    if (!conn || !baseUrl) {
+      logger.warn("ImageCache: no Grimmory connection available for cover refresh", { profileId });
+      continue;
+    }
+
+    const password = decryptCredential(conn.encrypted_password);
+    if (!password) {
+      logger.warn("ImageCache: could not decrypt Grimmory password", { profileId });
+      continue;
+    }
+
+    const token = await getGrimmoryToken(baseUrl, conn.username, password);
+    if (!token) {
+      logger.warn("ImageCache: Grimmory login failed, skipping cover refresh", { profileId });
+      continue;
+    }
+
+    for (const { entity_id, grimmory_book_id } of entries) {
+      const sourceId = parseInt(entity_id, 10);
+      const source = db.prepare(
+        "SELECT source_media_type FROM book_sources WHERE id = ?"
+      ).get(sourceId) as { source_media_type: "physical" | "ebook" | "audiobook" | null } | undefined;
+      const data = await fetchGrimmoryCoverBuffer(baseUrl, token, grimmory_book_id, source?.source_media_type ?? null);
+      if (!data) continue;
+      const webPath = storeFetchedCover(sourceId, data);
+      if (webPath) {
+        db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(webPath, sourceId);
+        refreshed++;
+      }
     }
   }
 
-  logger.info("ImageCache: Grimmory covers refreshed", { count: stale.length });
+  logger.info("ImageCache: Grimmory covers refreshed", { count: refreshed });
 }

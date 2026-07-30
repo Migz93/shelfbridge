@@ -743,33 +743,28 @@ export function initSchema(db: Database.Database): void {
           WHERE source_type = 'chaptarr' AND source_instance_id IS NULL
         `).run();
 
-        // Per-profile sources: attribute existing rows to the sole configured profile when
-        // unambiguous. This is the common single-profile install case, and it's
-        // self-healing even if that profile's connection was reconfigured or replaced a
-        // deleted second connection — normal per-instance pruning on the next sync will
-        // clean up anything that no longer matches the live connection's external IDs.
-        // Installs currently connected to more than one profile for a given source type
-        // have no reliable way to attribute historical rows retroactively, so those rows
-        // are left unscoped (NULL) and get re-attributed the next time each profile syncs.
-        const connectionTables: Record<string, string> = {
-          grimmory: "grimmory_connections",
-          hardcover: "hardcover_connections",
-          goodreads: "goodreads_connections",
-          audiobookshelf: "audiobookshelf_connections"
-        };
-        for (const [sourceType, table] of Object.entries(connectionTables)) {
-          const profileIds = (db.prepare(`SELECT profile_id FROM ${table}`).all() as { profile_id: number }[])
-            .map((r) => r.profile_id);
-          if (profileIds.length === 1) {
-            db.prepare(`
-              UPDATE book_sources SET source_instance_id = ?
-              WHERE source_type = ? AND source_instance_id IS NULL
-            `).run(profileIds[0], sourceType);
-          } else if (profileIds.length > 1) {
-            logger.warn("Multiple profiles configured for the same source type; existing book_sources rows left unscoped pending re-sync", {
-              sourceType, profileCount: profileIds.length
-            });
-          }
+        // Per-profile sources (Grimmory/Hardcover/Goodreads/Audiobookshelf) are
+        // deliberately left unscoped (source_instance_id = NULL) rather than guessed from
+        // the currently configured connections. Even a single currently-configured
+        // connection isn't reliable proof of historical ownership — a second connection
+        // could have existed and been deleted, or the connection could have been
+        // reconfigured to point at a different server, before the upgrade. An unscoped
+        // row simply won't match any profile's upsert lookup, so each profile creates a
+        // fresh, correctly-scoped row for its own data on its next sync; identity
+        // reconciliation still clusters it with the same canonical book via ISBN/ID
+        // matching. Unscoped rows are not touched by per-instance pruning, so existing
+        // installs may carry a bounded amount of unscoped leftover data until cleaned up
+        // separately — safer than risking a misattributed row being overwritten by an
+        // unrelated book on a live connection.
+        const unscopedCount = (db.prepare(`
+          SELECT COUNT(*) AS count FROM book_sources
+          WHERE source_type IN ('grimmory', 'hardcover', 'goodreads', 'audiobookshelf')
+            AND source_instance_id IS NULL
+        `).get() as { count: number }).count;
+        if (unscopedCount > 0) {
+          logger.warn("Existing per-profile book_sources rows left unscoped after v14 migration; they will be re-attributed as each profile syncs", {
+            count: unscopedCount
+          });
         }
 
         db.prepare("UPDATE schema_version SET version = 14").run();
