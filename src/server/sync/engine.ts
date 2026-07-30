@@ -3506,14 +3506,18 @@ export async function refreshStaleGrimmoryCovers(): Promise<void> {
           AND g.username IS NOT NULL
           AND g.encrypted_password IS NOT NULL
       `).get(profileId) as { base_url: string | null; username: string; encrypted_password: string } | undefined;
-      // No global baseUrl fallback here: a local Grimmory book id is only meaningful
-      // on the server this profile is actually connected to, and this profile's own
-      // credentials must never be presented to some other host via a stale/shared
-      // global setting.
-      const baseUrl = conn?.base_url || "";
+      // grimmory.baseUrl is a first-class global setting (see routes/settings.ts) used
+      // as the shared-server default everywhere else a profile's Grimmory URL is
+      // resolved (profiles.ts, the manual relationship route, the main sync entry
+      // point) — households running one shared Grimmory server for multiple profiles
+      // rely on setting it once and leaving each profile's own base_url blank. This
+      // loop is already correctly scoped to profileId's own connection row by this
+      // point, so falling back to that same shared default here is consistent with,
+      // not different from, every other Grimmory URL resolution in the app.
+      const baseUrl = conn?.base_url || getSetting("grimmory.baseUrl", "");
 
       if (!conn || !baseUrl) {
-        logger.warn("ImageCache: no Grimmory connection base URL for cover refresh", { profileId });
+        logger.warn("ImageCache: no Grimmory connection available for cover refresh", { profileId });
         continue;
       }
 
