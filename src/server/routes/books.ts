@@ -769,12 +769,15 @@ function fetchRows(): DbBookRow[] {
     FROM book_profile bp
     JOIN books b ON b.id = bp.book_id
     JOIN profiles p ON p.id = bp.profile_id
-    LEFT JOIN book_sources hc_src   ON hc_src.book_id   = bp.book_id AND hc_src.source_type   = 'hardcover'
-    LEFT JOIN book_sources gr_src   ON gr_src.book_id   = bp.book_id AND gr_src.source_type   = 'goodreads'
-    LEFT JOIN book_sources grim_src ON grim_src.book_id = bp.book_id AND grim_src.source_type = 'grimmory'
+    -- Per-instance sources are scoped to this row's own profile so a book with
+    -- multiple configured instances of the same integration doesn't fan out into
+    -- extra rows (or attribute another profile's source data to this profile).
+    LEFT JOIN book_sources hc_src   ON hc_src.book_id   = bp.book_id AND hc_src.source_type   = 'hardcover' AND hc_src.source_instance_id = bp.profile_id
+    LEFT JOIN book_sources gr_src   ON gr_src.book_id   = bp.book_id AND gr_src.source_type   = 'goodreads' AND gr_src.source_instance_id = bp.profile_id
+    LEFT JOIN book_sources grim_src ON grim_src.book_id = bp.book_id AND grim_src.source_type = 'grimmory' AND grim_src.source_instance_id = bp.profile_id
     LEFT JOIN book_sources chap_src ON chap_src.book_id = bp.book_id AND chap_src.source_type = 'chaptarr'
     LEFT JOIN chaptarr_id_mismatch_dismissals chap_dismiss ON chap_dismiss.chaptarr_external_id = chap_src.external_id
-    LEFT JOIN book_sources abs_src  ON abs_src.book_id  = bp.book_id AND abs_src.source_type  = 'audiobookshelf'
+    LEFT JOIN book_sources abs_src  ON abs_src.book_id  = bp.book_id AND abs_src.source_type  = 'audiobookshelf' AND abs_src.source_instance_id = bp.profile_id
     LEFT JOIN user_book_states hc_ubs   ON hc_ubs.book_id   = bp.book_id AND hc_ubs.profile_id   = bp.profile_id AND hc_ubs.source_type   = 'hardcover'
     LEFT JOIN user_book_states gr_ubs   ON gr_ubs.book_id   = bp.book_id AND gr_ubs.profile_id   = bp.profile_id AND gr_ubs.source_type   = 'goodreads'
     LEFT JOIN user_book_states grim_ubs ON grim_ubs.book_id = bp.book_id AND grim_ubs.profile_id = bp.profile_id AND grim_ubs.source_type = 'grimmory'
@@ -1050,11 +1053,12 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
     return;
   }
 
-  // Grimmory book is book-level — look it up from book_sources
+  // Grimmory local id/metadata is instance-specific — scope to this profile's own
+  // Grimmory connection so the write below targets the correct server/book.
   const grimSrc = db.prepare(`
     SELECT external_id, grimmory_hardcover_id
-    FROM book_sources WHERE source_type = 'grimmory' AND book_id = ?
-  `).get(bookId) as { external_id: string; grimmory_hardcover_id: string | null } | undefined;
+    FROM book_sources WHERE source_type = 'grimmory' AND source_instance_id = ? AND book_id = ?
+  `).get(profileId, bookId) as { external_id: string; grimmory_hardcover_id: string | null } | undefined;
 
   if (!grimSrc) {
     res.status(400).json({ error: "No Grimmory relationship is available for this book" });
@@ -1095,8 +1099,8 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
       await writeGrimmoryExternalIds(baseUrl, token, grimmoryBookId, { goodreadsId });
       db.prepare(`
         UPDATE book_sources SET grimmory_goodreads_id = ?, last_modified_at = datetime('now')
-        WHERE book_id = ? AND source_type = 'grimmory'
-      `).run(goodreadsId, bookId);
+        WHERE book_id = ? AND source_type = 'grimmory' AND source_instance_id = ?
+      `).run(goodreadsId, bookId, profileId);
       logger.info("Wrote Goodreads ID to Grimmory metadata", { bookId, profileId, grimmoryBookId, goodreadsId });
     } else {
       const hcSrc = db.prepare(`
@@ -1111,8 +1115,8 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
       await writeGrimmoryExternalIds(baseUrl, token, grimmoryBookId, { hardcoverBookId, hardcoverId: hardcoverId ?? undefined });
       db.prepare(`
         UPDATE book_sources SET grimmory_hardcover_book_id = ?, grimmory_hardcover_id = ?, last_modified_at = datetime('now')
-        WHERE book_id = ? AND source_type = 'grimmory'
-      `).run(hardcoverBookId, hardcoverId, bookId);
+        WHERE book_id = ? AND source_type = 'grimmory' AND source_instance_id = ?
+      `).run(hardcoverBookId, hardcoverId, bookId, profileId);
       logger.info("Wrote Hardcover ID to Grimmory metadata", { bookId, profileId, grimmoryBookId, hardcoverBookId, hardcoverId });
     }
 

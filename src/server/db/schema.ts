@@ -714,57 +714,70 @@ export function initSchema(db: Database.Database): void {
       return def;
     });
 
+    // foreign_keys is a no-op inside a transaction, so it must be toggled outside the
+    // BEGIN/COMMIT below. The rebuild + backfill + version bump run as a single
+    // transaction so a mid-migration failure can't leave book_sources half-rebuilt.
     db.pragma("foreign_keys = OFF");
-    db.exec(`
-      CREATE TABLE book_sources_v14 (
-        ${colDefs.join(",\n        ")},
-        source_instance_id INTEGER,
-        UNIQUE(source_type, source_instance_id, external_id)
-      );
-      INSERT INTO book_sources_v14 (${colNames.join(", ")})
-        SELECT ${colNames.join(", ")} FROM book_sources;
-      DROP TABLE book_sources;
-      ALTER TABLE book_sources_v14 RENAME TO book_sources;
+    try {
+      const migrateV14 = db.transaction(() => {
+        db.exec(`
+          CREATE TABLE book_sources_v14 (
+            ${colDefs.join(",\n            ")},
+            source_instance_id INTEGER,
+            UNIQUE(source_type, source_instance_id, external_id)
+          );
+          INSERT INTO book_sources_v14 (${colNames.join(", ")})
+            SELECT ${colNames.join(", ")} FROM book_sources;
+          DROP TABLE book_sources;
+          ALTER TABLE book_sources_v14 RENAME TO book_sources;
 
-      CREATE INDEX IF NOT EXISTS idx_book_sources_book ON book_sources(book_id);
-      CREATE INDEX IF NOT EXISTS idx_book_sources_type ON book_sources(source_type);
-      CREATE INDEX IF NOT EXISTS idx_book_sources_instance ON book_sources(source_type, source_instance_id);
-    `);
-    db.pragma("foreign_keys = ON");
+          CREATE INDEX IF NOT EXISTS idx_book_sources_book ON book_sources(book_id);
+          CREATE INDEX IF NOT EXISTS idx_book_sources_type ON book_sources(source_type);
+          CREATE INDEX IF NOT EXISTS idx_book_sources_instance ON book_sources(source_type, source_instance_id);
+        `);
 
-    // Chaptarr is a single global connection (not per-profile), so it always gets a
-    // fixed instance id — future upserts target the same row instead of duplicating.
-    db.prepare(`
-      UPDATE book_sources SET source_instance_id = 0
-      WHERE source_type = 'chaptarr' AND source_instance_id IS NULL
-    `).run();
-
-    // Per-profile sources: attribute existing rows to the sole configured profile when
-    // unambiguous. Installs with more than one profile connected to the same source type
-    // predate per-instance scoping and can't be safely attributed retroactively — those
-    // rows are left unscoped (NULL) and get re-attributed the next time each profile syncs.
-    const connectionTables: Record<string, string> = {
-      grimmory: "grimmory_connections",
-      hardcover: "hardcover_connections",
-      goodreads: "goodreads_connections",
-      audiobookshelf: "audiobookshelf_connections"
-    };
-    for (const [sourceType, table] of Object.entries(connectionTables)) {
-      const profileIds = (db.prepare(`SELECT profile_id FROM ${table}`).all() as { profile_id: number }[])
-        .map((r) => r.profile_id);
-      if (profileIds.length === 1) {
+        // Chaptarr is a single global connection (not per-profile), so it always gets a
+        // fixed instance id — future upserts target the same row instead of duplicating.
         db.prepare(`
-          UPDATE book_sources SET source_instance_id = ?
-          WHERE source_type = ? AND source_instance_id IS NULL
-        `).run(profileIds[0], sourceType);
-      } else if (profileIds.length > 1) {
-        logger.warn("Multiple profiles configured for the same source type; existing book_sources rows left unscoped pending re-sync", {
-          sourceType, profileCount: profileIds.length
-        });
-      }
-    }
+          UPDATE book_sources SET source_instance_id = 0
+          WHERE source_type = 'chaptarr' AND source_instance_id IS NULL
+        `).run();
 
-    db.prepare("UPDATE schema_version SET version = 14").run();
+        // Per-profile sources: attribute existing rows to the sole configured profile when
+        // unambiguous. This is the common single-profile install case, and it's
+        // self-healing even if that profile's connection was reconfigured or replaced a
+        // deleted second connection — normal per-instance pruning on the next sync will
+        // clean up anything that no longer matches the live connection's external IDs.
+        // Installs currently connected to more than one profile for a given source type
+        // have no reliable way to attribute historical rows retroactively, so those rows
+        // are left unscoped (NULL) and get re-attributed the next time each profile syncs.
+        const connectionTables: Record<string, string> = {
+          grimmory: "grimmory_connections",
+          hardcover: "hardcover_connections",
+          goodreads: "goodreads_connections",
+          audiobookshelf: "audiobookshelf_connections"
+        };
+        for (const [sourceType, table] of Object.entries(connectionTables)) {
+          const profileIds = (db.prepare(`SELECT profile_id FROM ${table}`).all() as { profile_id: number }[])
+            .map((r) => r.profile_id);
+          if (profileIds.length === 1) {
+            db.prepare(`
+              UPDATE book_sources SET source_instance_id = ?
+              WHERE source_type = ? AND source_instance_id IS NULL
+            `).run(profileIds[0], sourceType);
+          } else if (profileIds.length > 1) {
+            logger.warn("Multiple profiles configured for the same source type; existing book_sources rows left unscoped pending re-sync", {
+              sourceType, profileCount: profileIds.length
+            });
+          }
+        }
+
+        db.prepare("UPDATE schema_version SET version = 14").run();
+      });
+      migrateV14();
+    } finally {
+      db.pragma("foreign_keys = ON");
+    }
     logger.info("Schema migrated to version 14: scoped book_sources uniqueness to (source_type, source_instance_id, external_id)");
   }
 

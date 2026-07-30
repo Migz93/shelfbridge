@@ -7,6 +7,7 @@ interface BookSourceRow {
   id: number;
   book_id: number | null;
   source_type: string;
+  source_instance_id: number | null;
   external_id: string;
   title: string | null;
   author: string | null;
@@ -228,7 +229,14 @@ function highIdentityKeys(row: BookSourceRow): IdentityKey[] {
     pairs.push(["hardcover_book_id", normalizeExternalId(row.external_id)]);
     pairs.push(["hardcover_slug", clean(row.hardcover_slug)?.toLowerCase() ?? null]);
   } else if (row.source_type === "grimmory") {
-    pairs.push(["grimmory_book_id", clean(row.external_id)]);
+    // A Grimmory external_id is only meaningful within its own server instance —
+    // two different Grimmory servers (different source_instance_id) can legitimately
+    // reuse the same local ID for unrelated books, so the instance id must be part
+    // of the key rather than trusting the raw external_id as globally unique.
+    const grimmoryLocalId = clean(row.external_id);
+    pairs.push(["grimmory_book_id", grimmoryLocalId && row.source_instance_id !== null
+      ? `${row.source_instance_id}:${grimmoryLocalId}`
+      : null]);
     // Grimmory stores cross-reference IDs from HC and GR — use them to cluster
     pairs.push(["hardcover_book_id", normalizeExternalId(row.grimmory_hardcover_book_id)]);
     pairs.push(["hardcover_slug", clean(row.grimmory_hardcover_id)?.toLowerCase() ?? null]);
