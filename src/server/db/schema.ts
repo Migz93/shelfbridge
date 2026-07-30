@@ -762,7 +762,7 @@ export function initSchema(db: Database.Database): void {
             AND source_instance_id IS NULL
         `).get() as { count: number }).count;
         if (unscopedCount > 0) {
-          logger.warn("Existing per-profile book_sources rows left unscoped after v14 migration; they will be re-attributed as each profile syncs", {
+          logger.warn("Existing per-profile book_sources rows left unscoped after v14 migration; each profile's next sync creates fresh scoped rows and leaves these as inert historical rows", {
             count: unscopedCount
           });
         }
