@@ -26,3 +26,6 @@ tests/playwright-report/
 # Scratch/debug artifacts
 .debug/
 plans/
+
+# node:test run artifacts (logger writes here when DATA_DIR is unset)
+.test-data/
