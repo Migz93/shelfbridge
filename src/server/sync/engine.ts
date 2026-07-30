@@ -444,15 +444,18 @@ function meaningfulProgress(percent: number | null | undefined): number | null {
     : null;
 }
 
-function audiobookRuntimeForBook(db: ReturnType<typeof getDb>, bookId: number): number | null {
+// Scoped to this profile's own ABS/Hardcover instances — this runtime feeds the
+// progress percentage used for this profile's outbound writes, so another
+// profile's (possibly different) audiobook runtime must not leak in.
+function audiobookRuntimeForBook(db: ReturnType<typeof getDb>, profileId: number, bookId: number): number | null {
   const row = db.prepare(`
     SELECT COALESCE(
-      MAX(CASE WHEN source_type = 'audiobookshelf' THEN audiobookshelf_duration END),
-      MAX(CASE WHEN source_type = 'hardcover' THEN hardcover_audio_seconds END)
+      MAX(CASE WHEN source_type = 'audiobookshelf' AND source_instance_id = ? THEN audiobookshelf_duration END),
+      MAX(CASE WHEN source_type = 'hardcover' AND source_instance_id = ? THEN hardcover_audio_seconds END)
     ) AS runtime_seconds
     FROM book_sources
     WHERE book_id = ?
-  `).get(bookId) as { runtime_seconds: number | null } | undefined;
+  `).get(profileId, profileId, bookId) as { runtime_seconds: number | null } | undefined;
   return row?.runtime_seconds && row.runtime_seconds > 0 ? row.runtime_seconds : null;
 }
 
@@ -502,16 +505,19 @@ function effectiveAbsCurrentTimeSeconds(absProgress: { currentTime: number; prog
 
 function persistResolvedHardcoverAudioEdition(
   db: ReturnType<typeof getDb>,
+  profileId: number,
   bookId: number,
   editionId: number | null
 ): void {
   if (!editionId || editionId <= 0) return;
+  // Scoped to this profile's own Hardcover instance — each profile can track a
+  // different edition of the same shared book.
   db.prepare(`
     UPDATE book_sources
     SET source_edition_id = ?, source_media_type = 'audiobook', last_modified_at = datetime('now')
-    WHERE source_type = 'hardcover' AND book_id = ?
+    WHERE source_type = 'hardcover' AND source_instance_id = ? AND book_id = ?
       AND (source_edition_id IS NULL OR source_edition_id != ? OR source_media_type IS NULL OR source_media_type != 'audiobook')
-  `).run(String(editionId), bookId, String(editionId));
+  `).run(String(editionId), profileId, bookId, String(editionId));
 }
 
 function progressPagesFromPercent(percent: number, pages: number | null): number | null {
@@ -633,11 +639,16 @@ function hasGrimmoryUserActivity(book: GrimmoryBook): boolean {
 
 type Db = ReturnType<typeof import("../db/index.js").getDb>;
 
-/** Look up an existing book_sources row by (source_type, external_id) */
-function getBookSource(db: Db, sourceType: string, externalId: string | number): { id: number; book_id: number | null; source_media_type: string | null; source_edition_id: string | null } | undefined {
+/**
+ * Look up an existing book_sources row by (source_type, source_instance_id, external_id).
+ * source_instance_id scopes ownership to the connection (profile) that produced the row,
+ * so two configured instances of the same integration can reuse the same external_id
+ * without colliding.
+ */
+function getBookSource(db: Db, sourceType: string, instanceId: number, externalId: string | number): { id: number; book_id: number | null; source_media_type: string | null; source_edition_id: string | null } | undefined {
   return db.prepare(
-    "SELECT id, book_id, source_media_type, source_edition_id FROM book_sources WHERE source_type = ? AND external_id = ?"
-  ).get(sourceType, String(externalId)) as { id: number; book_id: number | null; source_media_type: string | null; source_edition_id: string | null } | undefined;
+    "SELECT id, book_id, source_media_type, source_edition_id FROM book_sources WHERE source_type = ? AND source_instance_id = ? AND external_id = ?"
+  ).get(sourceType, instanceId, String(externalId)) as { id: number; book_id: number | null; source_media_type: string | null; source_edition_id: string | null } | undefined;
 }
 
 /** Look up a user_book_states row by (book_id, profile_id, source_type) */
@@ -647,12 +658,12 @@ function getUserState(db: Db, bookId: number, profileId: number, sourceType: str
   ).get(bookId, profileId, sourceType) as UserStateSnapshot | undefined;
 }
 
-function localGrimmoryBookForBookId(db: Db, bookId: number, grimmoryBooks: GrimmoryBook[]): GrimmoryBook | null {
+function localGrimmoryBookForBookId(db: Db, profileId: number, bookId: number, grimmoryBooks: GrimmoryBook[]): GrimmoryBook | null {
   const rows = db.prepare(`
     SELECT CAST(external_id AS INTEGER) AS grimmory_book_id
     FROM book_sources
-    WHERE source_type = 'grimmory' AND book_id = ?
-  `).all(bookId) as { grimmory_book_id: number }[];
+    WHERE source_type = 'grimmory' AND source_instance_id = ? AND book_id = ?
+  `).all(profileId, bookId) as { grimmory_book_id: number }[];
 
   for (const row of rows) {
     const book = grimmoryBooks.find((candidate) => candidate.id === row.grimmory_book_id);
@@ -661,19 +672,19 @@ function localGrimmoryBookForBookId(db: Db, bookId: number, grimmoryBooks: Grimm
   return null;
 }
 
-/** Upsert a book_sources row. Returns the row id. */
-function upsertBookSource(db: Db, sourceType: string, externalId: string | number, fields: Record<string, unknown>): number {
-  const existing = getBookSource(db, sourceType, externalId);
+/** Upsert a book_sources row, scoped to (source_type, source_instance_id, external_id). Returns the row id. */
+function upsertBookSource(db: Db, sourceType: string, instanceId: number, externalId: string | number, fields: Record<string, unknown>): number {
+  const existing = getBookSource(db, sourceType, instanceId, externalId);
   if (existing) {
     const setClauses = Object.keys(fields).map((k) => `${k} = ?`).join(", ");
     db.prepare(`UPDATE book_sources SET ${setClauses}, last_modified_at = datetime('now') WHERE id = ?`)
       .run(...Object.values(fields), existing.id);
     return existing.id;
   } else {
-    const cols = ["source_type", "external_id", ...Object.keys(fields)].join(", ");
-    const placeholders = Array(Object.keys(fields).length + 2).fill("?").join(", ");
+    const cols = ["source_type", "source_instance_id", "external_id", ...Object.keys(fields)].join(", ");
+    const placeholders = Array(Object.keys(fields).length + 3).fill("?").join(", ");
     const result = db.prepare(`INSERT INTO book_sources (${cols}) VALUES (${placeholders})`)
-      .run(sourceType, String(externalId), ...Object.values(fields));
+      .run(sourceType, instanceId, String(externalId), ...Object.values(fields));
     return Number(result.lastInsertRowid);
   }
 }
@@ -967,7 +978,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
         const author = grimmoryAuthorName(grBook) ?? null;
         const coverUrl = grimmoryCoverUrl(grBook) ?? null;
 
-        const sourceId = upsertBookSource(db, "grimmory", grBook.id, {
+        const sourceId = upsertBookSource(db, "grimmory", profileId, grBook.id, {
           title,
           author,
           cover_url: coverUrl,
@@ -1000,7 +1011,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
         }
       }
 
-      pruneGrimmorySourcesMissingFromFetch(db, new Set(grimmoryBooks.map((b) => b.id)));
+      pruneGrimmorySourcesMissingFromFetch(db, profileId, new Set(grimmoryBooks.map((b) => b.id)));
       logger.info("Grimmory book_sources written", { profileId, count: grimmoryBooks.length });
     }
 
@@ -1100,7 +1111,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
         // (ABS-forced) media type — leave the previously persisted
         // edition id/format/audio_seconds alone rather than overwrite them
         // with mismatched data.
-        const sourceId = upsertBookSource(db, "hardcover", hcBook.book.id, sourceFields);
+        const sourceId = upsertBookSource(db, "hardcover", profileId, hcBook.book.id, sourceFields);
 
         if (coverUrl) {
           enqueueImageCacheTask(`cover:${sourceId}`, async () => {
@@ -1110,7 +1121,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
       }
 
       // Prune HC sources whose books are no longer in the HC library
-      pruneHardcoverSourcesMissingFromFetch(db, new Set(hcBooks.map((b) => b.book.id)));
+      pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set(hcBooks.map((b) => b.book.id)));
       pruneHardcoverUserStatesMissingFromFetch(db, profileId, new Set(hcBooks.map((b) => b.book.id)));
       logger.info("Hardcover book_sources written", { profileId, count: hcBooks.length });
     }
@@ -1146,7 +1157,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
     // AND the book_sources reconciliation), then apply conflict resolution and
     // write user_book_states.
     for (const hcBook of hcBooks) {
-      const hcSource = getBookSource(db, "hardcover", hcBook.book.id);
+      const hcSource = getBookSource(db, "hardcover", profileId, hcBook.book.id);
       if (!hcSource?.book_id) {
         // Should not happen after reconcile, but skip gracefully
         logger.warn("HC book source has no book_id after reconcile", { profileId, hardcoverBookId: hcBook.book.id });
@@ -1172,7 +1183,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
         : null;
       const grBook = match?.grimmoryBook ?? null;
       const localIdentityGrimmoryBook = !grBook && grimmoryAvailable
-        ? localGrimmoryBookForBookId(db, bookId, grimmoryBooks)
+        ? localGrimmoryBookForBookId(db, profileId, bookId, grimmoryBooks)
         : null;
       if (grBook) matchedGrimmoryIds.add(grBook.id);
       if (localIdentityGrimmoryBook) matchedGrimmoryIds.add(localIdentityGrimmoryBook.id);
@@ -1197,7 +1208,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
         ?? localIdentityGrimmoryBook?.readStatus
         ?? prevHcState?.status
         ?? null;
-      const audiobookRuntimeSeconds = audiobookRuntimeForBook(db, bookId);
+      const audiobookRuntimeSeconds = audiobookRuntimeForBook(db, profileId, bookId);
 
       const { decision, syncHealth, writeGrimmory, writeHardcover } = localIdentityGrimmoryBook
         ? {
@@ -1660,7 +1671,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
     // book_sources and should not create a user relationship by itself.
     if (grimmoryAvailable) {
       for (const grBook of grimmoryBooks) {
-        const grSource = getBookSource(db, "grimmory", grBook.id);
+        const grSource = getBookSource(db, "grimmory", profileId, grBook.id);
         if (!grSource?.book_id) {
           logger.warn("Grimmory source has no book_id after reconcile", { profileId, grimmoryBookId: grBook.id });
           continue;
@@ -1920,8 +1931,8 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
             if (writeTagEnabled) {
               // Tag the Grimmory book for this profile
               const grSource = db.prepare(
-                "SELECT CAST(external_id AS INTEGER) as grimmory_book_id FROM book_sources WHERE source_type='grimmory' AND book_id=? LIMIT 1"
-              ).get(bookId) as { grimmory_book_id: number } | undefined;
+                "SELECT CAST(external_id AS INTEGER) as grimmory_book_id FROM book_sources WHERE source_type='grimmory' AND source_instance_id = ? AND book_id=? LIMIT 1"
+              ).get(profileId, bookId) as { grimmory_book_id: number } | undefined;
               if (grSource?.grimmory_book_id) {
                 taggedSourceGrimmoryIds.add(grSource.grimmory_book_id);
                 taggedSourceTitles.set(grSource.grimmory_book_id, grBook.title);
@@ -1936,7 +1947,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
             });
 
             // Upsert GR book_source
-            const goodreadsSourceId = upsertBookSource(db, "goodreads", grBook.goodreadsId, {
+            const goodreadsSourceId = upsertBookSource(db, "goodreads", profileId, grBook.goodreadsId, {
               book_id: bookId,
               title: grBook.title,
               author: grBook.author,
@@ -1983,8 +1994,8 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
 
             // Sync Goodreads status → Grimmory when enabled and shelf changed
             const grSource = db.prepare(
-              "SELECT CAST(external_id AS INTEGER) as grimmory_book_id FROM book_sources WHERE source_type='grimmory' AND book_id=? LIMIT 1"
-            ).get(bookId) as { grimmory_book_id: number } | undefined;
+              "SELECT CAST(external_id AS INTEGER) as grimmory_book_id FROM book_sources WHERE source_type='grimmory' AND source_instance_id = ? AND book_id=? LIMIT 1"
+            ).get(profileId, bookId) as { grimmory_book_id: number } | undefined;
             const grimmoryBookId = grSource?.grimmory_book_id ?? null;
 
             if (syncGoodreadsStatus && hasGrimmory && grimmoryToken && grimmoryBookId && grBook.shelf !== previousShelf && previousShelf !== null) {
@@ -2061,7 +2072,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
             }
 
             // Create GR book_source (book_id will be assigned by reconcile)
-            const newSourceId = upsertBookSource(db, "goodreads", grBook.goodreadsId, {
+            const newSourceId = upsertBookSource(db, "goodreads", profileId, grBook.goodreadsId, {
               title: grBook.title,
               author: grBook.author,
               cover_url: grBook.coverUrl ?? null,
@@ -2232,10 +2243,12 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
             // Try to find an existing book_id to link this ABS item to
             let linkedBookId: number | null = null;
 
-            // Check if already stored with this ABS item ID
+            // Check if already stored with this ABS item ID, scoped to this profile's
+            // own ABS instance — another profile's ABS server could reuse the same
+            // local item id for an unrelated audiobook.
             const existing = db.prepare(
-              "SELECT book_id FROM book_sources WHERE source_type = 'audiobookshelf' AND external_id = ?"
-            ).get(item.id) as { book_id: number | null } | undefined;
+              "SELECT book_id FROM book_sources WHERE source_type = 'audiobookshelf' AND source_instance_id = ? AND external_id = ?"
+            ).get(profileId, item.id) as { book_id: number | null } | undefined;
 
             if (existing?.book_id) {
               linkedBookId = existing.book_id;
@@ -2300,7 +2313,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
               absFields["book_id"] = linkedBookId;
             }
 
-            upsertBookSource(db, "audiobookshelf", item.id, absFields);
+            upsertBookSource(db, "audiobookshelf", profileId, item.id, absFields);
           }
         }
 
@@ -2344,22 +2357,27 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
         const absProgressIndex = new Map(absProgressList.map((p) => [p.libraryItemId, p]));
         logger.info("Audiobookshelf progress fetched", { profileId, count: absProgressList.length });
 
-        // Get all ABS book_sources that are linked to a book
+        // Get this profile's own ABS book_sources that are linked to a book. Scoped to
+        // source_instance_id: absSource.abs_item_id is looked up against this profile's
+        // own absProgressIndex below, and an unscoped row from another profile's ABS
+        // instance could coincidentally share a local item id with an unrelated book.
         const absSources = db.prepare(`
           SELECT bs.external_id AS abs_item_id, bs.book_id,
                  bs.audiobookshelf_duration AS abs_duration,
                  bs.audiobookshelf_runtime_validated AS runtime_validated
           FROM book_sources bs
-          WHERE bs.source_type = 'audiobookshelf' AND bs.book_id IS NOT NULL
-        `).all() as Array<{ abs_item_id: string; book_id: number; abs_duration: number | null; runtime_validated: number | null }>;
+          WHERE bs.source_type = 'audiobookshelf' AND bs.source_instance_id = ? AND bs.book_id IS NOT NULL
+        `).all(profileId) as Array<{ abs_item_id: string; book_id: number; abs_duration: number | null; runtime_validated: number | null }>;
 
-        // Build book_id → Grimmory book_id lookup for use inside the loop
+        // Build book_id → Grimmory book_id lookup for use inside the loop, scoped to
+        // this profile's own Grimmory instance (the id is about to be sent back to
+        // this profile's Grimmory server).
         const grimmoryIdByBookId = new Map<number, number>();
         if (grimmoryAvailable) {
           (db.prepare(`
             SELECT book_id, CAST(external_id AS INTEGER) AS grimmory_book_id
-            FROM book_sources WHERE source_type = 'grimmory' AND book_id IS NOT NULL
-          `).all() as Array<{ book_id: number; grimmory_book_id: number }>).forEach((row) => {
+            FROM book_sources WHERE source_type = 'grimmory' AND source_instance_id = ? AND book_id IS NOT NULL
+          `).all(profileId) as Array<{ book_id: number; grimmory_book_id: number }>).forEach((row) => {
             grimmoryIdByBookId.set(row.book_id, row.grimmory_book_id);
           });
         }
@@ -2385,11 +2403,13 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
 
           // HC audio_seconds/edition from book_sources (used for mismatch logging
           // and to detect when Hardcover's "current edition" pointer has drifted
-          // away from the edition we're actually tracking progress against).
+          // away from the edition we're actually tracking progress against). Scoped
+          // to this profile's own Hardcover instance — each profile can track a
+          // different edition of the same book.
           const hcAudioSecondsRow = hasHardcover ? db.prepare(`
             SELECT hardcover_audio_seconds, source_edition_id, external_id FROM book_sources
-            WHERE source_type = 'hardcover' AND book_id = ?
-          `).get(absSource.book_id) as { hardcover_audio_seconds: number | null; source_edition_id: string | null; external_id: string } | undefined : undefined;
+            WHERE source_type = 'hardcover' AND source_instance_id = ? AND book_id = ?
+          `).get(profileId, absSource.book_id) as { hardcover_audio_seconds: number | null; source_edition_id: string | null; external_id: string } | undefined : undefined;
           const hcAudioSeconds = hcAudioSecondsRow?.hardcover_audio_seconds ?? null;
           const persistedAudioEditionId = hcAudioSecondsRow?.source_edition_id != null
             ? Number.parseInt(hcAudioSecondsRow.source_edition_id, 10)
@@ -2427,11 +2447,13 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
             : hcProgressPct;
           const absSourcePct = absProgress ? clampPercent(absProgress.progress * 100) : null;
 
-          // Backfill duration on book_sources if not yet stored (ABS item metadata may return 0)
+          // Backfill duration on book_sources if not yet stored (ABS item metadata may return 0).
+          // Scoped to this profile's own ABS instance — a colliding item id on another
+          // profile's ABS server must not have its duration overwritten.
           if (absDuration !== null && absDuration > 0 && !absSource.abs_duration) {
             db.prepare(
-              "UPDATE book_sources SET audiobookshelf_duration = ? WHERE source_type = 'audiobookshelf' AND external_id = ?"
-            ).run(Math.round(absDuration), absSource.abs_item_id);
+              "UPDATE book_sources SET audiobookshelf_duration = ? WHERE source_type = 'audiobookshelf' AND source_instance_id = ? AND external_id = ?"
+            ).run(Math.round(absDuration), profileId, absSource.abs_item_id);
           }
 
           // Upsert ABS user state regardless of progress sync eligibility
@@ -2569,22 +2591,25 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
             const hcSourceRow = hasHardcover ? db.prepare(`
               SELECT external_id, source_edition_id, source_media_type, source_audible_asin, hardcover_audio_seconds
               FROM book_sources
-              WHERE source_type = 'hardcover' AND book_id = ?
-            `).get(absSource.book_id) as {
+              WHERE source_type = 'hardcover' AND source_instance_id = ? AND book_id = ?
+            `).get(profileId, absSource.book_id) as {
               external_id: string;
               source_edition_id: string | number | null;
               source_media_type: string | null;
               source_audible_asin: string | null;
               hardcover_audio_seconds: number | null;
             } | undefined : undefined;
+            // Scoped to this profile's own Grimmory/ABS instances — these values feed a
+            // Hardcover edition lookup made through this profile's own Hardcover token,
+            // so another profile's cross-reference data must not leak in.
             const audiobookIdentityRow = db.prepare(`
               SELECT
-                MAX(CASE WHEN source_type = 'grimmory' THEN source_hardcover_book_id END) AS grimmory_hardcover_book_id,
-                MAX(CASE WHEN source_type = 'grimmory' THEN source_audible_asin END) AS grimmory_audible_asin,
-                MAX(CASE WHEN source_type = 'audiobookshelf' THEN audiobookshelf_asin END) AS audiobookshelf_asin
+                MAX(CASE WHEN source_type = 'grimmory' AND source_instance_id = ? THEN source_hardcover_book_id END) AS grimmory_hardcover_book_id,
+                MAX(CASE WHEN source_type = 'grimmory' AND source_instance_id = ? THEN source_audible_asin END) AS grimmory_audible_asin,
+                MAX(CASE WHEN source_type = 'audiobookshelf' AND source_instance_id = ? THEN audiobookshelf_asin END) AS audiobookshelf_asin
               FROM book_sources
               WHERE book_id = ?
-            `).get(absSource.book_id) as {
+            `).get(profileId, profileId, profileId, absSource.book_id) as {
               grimmory_hardcover_book_id: string | null;
               grimmory_audible_asin: string | null;
               audiobookshelf_asin: string | null;
@@ -2641,7 +2666,7 @@ async function runSyncImpl(profileId: number, runId: number, dryRun: boolean): P
               preferredEditionId = hcLibraryBook?.book.default_audio_edition_id ?? null;
             }
 
-            persistResolvedHardcoverAudioEdition(db, absSource.book_id, preferredEditionId);
+            persistResolvedHardcoverAudioEdition(db, profileId, absSource.book_id, preferredEditionId);
 
             if (hcState?.hardcover_user_book_id) {
               const progressSeconds = absProgress
@@ -2846,56 +2871,53 @@ function pruneHardcoverUserStatesMissingFromFetch(
     WHERE profile_id = ? AND source_type = 'hardcover'
       AND book_id IN (
         SELECT book_id FROM book_sources
-        WHERE source_type = 'hardcover'
+        WHERE source_type = 'hardcover' AND source_instance_id = ?
           AND CAST(external_id AS INTEGER) NOT IN (${placeholders})
       )
-  `).run(profileId, ...Array.from(fetchedHcBookIds));
+  `).run(profileId, profileId, ...Array.from(fetchedHcBookIds));
   if (result.changes > 0) {
     logger.info("Pruned HC user states missing from fetched library", { profileId, deleted: result.changes });
   }
 }
 
-// Prune HC book_sources for books not in any profile's HC library
-function pruneHardcoverSourcesMissingFromFetch(db: Db, fetchedHcBookIds: Set<number>): void {
+// Prune this profile's Hardcover book_sources for books no longer in its HC library.
+// Scoped to source_instance_id so another profile's Hardcover connection can't be pruned.
+function pruneHardcoverSourcesMissingFromFetch(db: Db, profileId: number, fetchedHcBookIds: Set<number>): void {
   if (fetchedHcBookIds.size === 0) return;
   const placeholders = Array.from(fetchedHcBookIds).map(() => "?").join(",");
-  // Only delete if no user_book_states reference this book via HC
+  // Only delete if this profile itself has no user_book_states referencing the book via
+  // HC — scoped to match the DELETE's own instance scope, so another profile's state
+  // can't keep this profile's orphaned source row alive indefinitely.
   const result = db.prepare(`
     DELETE FROM book_sources
-    WHERE source_type = 'hardcover'
+    WHERE source_type = 'hardcover' AND source_instance_id = ?
       AND CAST(external_id AS INTEGER) NOT IN (${placeholders})
       AND NOT EXISTS (
         SELECT 1 FROM user_book_states
-        WHERE book_id = book_sources.book_id AND source_type = 'hardcover'
+        WHERE book_id = book_sources.book_id AND source_type = 'hardcover' AND profile_id = ?
       )
-  `).run(...Array.from(fetchedHcBookIds));
+  `).run(profileId, ...Array.from(fetchedHcBookIds), profileId);
   if (result.changes > 0) {
-    logger.info("Pruned HC book_sources with no remaining user states", { deleted: result.changes });
+    logger.info("Pruned HC book_sources with no remaining user states", { profileId, deleted: result.changes });
   }
 }
 
-// Prune Grimmory book_sources for books no longer in the Grimmory library
-function pruneGrimmorySourcesMissingFromFetch(db: Db, fetchedGrimmoryIds: Set<number>): void {
+// Prune this profile's Grimmory book_sources for books no longer in its Grimmory library.
+// Scoped to source_instance_id so another profile's Grimmory connection can't be pruned.
+function pruneGrimmorySourcesMissingFromFetch(db: Db, profileId: number, fetchedGrimmoryIds: Set<number>): void {
   if (fetchedGrimmoryIds.size === 0) return;
-  const enabledProfileCount = (db.prepare("SELECT COUNT(*) AS count FROM profiles WHERE enabled = 1").get() as { count: number }).count;
-  if (enabledProfileCount > 1) {
-    // book_sources are not profile-scoped yet, so a single profile's Grimmory
-    // fetch cannot safely prove that another profile no longer owns a source.
-    logger.info("Skipping Grimmory source pruning until profile-scoped source ownership is available", { enabledProfileCount });
-    return;
-  }
   const placeholders = Array.from(fetchedGrimmoryIds).map(() => "?").join(",");
   const result = db.prepare(`
     DELETE FROM book_sources
-    WHERE source_type = 'grimmory'
+    WHERE source_type = 'grimmory' AND source_instance_id = ?
       AND CAST(external_id AS INTEGER) NOT IN (${placeholders})
       AND NOT EXISTS (
         SELECT 1 FROM user_book_states
-        WHERE book_id = book_sources.book_id AND source_type = 'grimmory'
+        WHERE book_id = book_sources.book_id AND source_type = 'grimmory' AND profile_id = ?
       )
-  `).run(...Array.from(fetchedGrimmoryIds));
+  `).run(profileId, ...Array.from(fetchedGrimmoryIds), profileId);
   if (result.changes > 0) {
-    logger.info("Pruned Grimmory book_sources with no remaining user states", { deleted: result.changes });
+    logger.info("Pruned Grimmory book_sources with no remaining user states", { profileId, deleted: result.changes });
   }
 }
 
@@ -2912,10 +2934,10 @@ function pruneGrimmoryUserStatesMissingFromFetch(
     WHERE profile_id = ? AND source_type = 'grimmory'
       AND book_id IN (
         SELECT book_id FROM book_sources
-        WHERE source_type = 'grimmory'
+        WHERE source_type = 'grimmory' AND source_instance_id = ?
           AND CAST(external_id AS INTEGER) NOT IN (${placeholders})
       )
-  `).run(profileId, ...Array.from(fetchedGrimmoryIds));
+  `).run(profileId, profileId, ...Array.from(fetchedGrimmoryIds));
   if (result.changes > 0) {
     logger.info("Pruned Grimmory user states missing from fetched library", { profileId, deleted: result.changes });
   }
@@ -2934,10 +2956,10 @@ function pruneGoodreadsUserStatesMissingFromFetch(
     WHERE profile_id = ? AND source_type = 'goodreads'
       AND book_id IN (
         SELECT book_id FROM book_sources
-        WHERE source_type = 'goodreads'
+        WHERE source_type = 'goodreads' AND source_instance_id = ?
           AND external_id NOT IN (${placeholders})
       )
-  `).run(profileId, ...Array.from(fetchedGoodreadsIds));
+  `).run(profileId, profileId, ...Array.from(fetchedGoodreadsIds));
   if (result.changes > 0) {
     logger.info("Pruned Goodreads user states missing from fetched library", { profileId, deleted: result.changes });
   }
@@ -2969,14 +2991,17 @@ async function syncGoodreadsShelvesToGrimmory(
   const grimmoryByIsbn10: Record<string, number> = {};
   const grimmoryByTitle: Record<string, number> = {};
 
+  // gr_src is scoped to this profile's own Grimmory instance — the resulting
+  // grimmory_book_id is about to be sent to this profile's Grimmory server, and
+  // another instance's local ID would point at an unrelated book there.
   const sourcePairs = db.prepare(`
     SELECT go_src.external_id as goodreads_id, go_src.isbn13 as go_isbn13, go_src.isbn10 as go_isbn10,
            go_src.title as go_title,
            CAST(gr_src.external_id AS INTEGER) as grimmory_book_id
     FROM book_sources go_src
-    JOIN book_sources gr_src ON gr_src.book_id = go_src.book_id AND gr_src.source_type = 'grimmory'
+    JOIN book_sources gr_src ON gr_src.book_id = go_src.book_id AND gr_src.source_type = 'grimmory' AND gr_src.source_instance_id = ?
     WHERE go_src.source_type = 'goodreads'
-  `).all() as { goodreads_id: string; go_isbn13: string | null; go_isbn10: string | null; go_title: string | null; grimmory_book_id: number }[];
+  `).all(profileId) as { goodreads_id: string; go_isbn13: string | null; go_isbn10: string | null; go_title: string | null; grimmory_book_id: number }[];
 
   for (const pair of sourcePairs) {
     grimmoryByGoodreadsId[pair.goodreads_id] = pair.grimmory_book_id;
@@ -3065,9 +3090,9 @@ async function syncGoodreadsShelvesToGrimmory(
         WHERE profile_id = ? AND source_type = 'grimmory'
           AND book_id IN (
             SELECT book_id FROM book_sources
-            WHERE source_type = 'grimmory' AND CAST(external_id AS INTEGER) IN (${shelfPlaceholders})
+            WHERE source_type = 'grimmory' AND source_instance_id = ? AND CAST(external_id AS INTEGER) IN (${shelfPlaceholders})
           )
-      `).run(grimmoryShelfName, grimmoryShelfName, grimmoryShelfName, profileId, ...allOnShelf);
+      `).run(grimmoryShelfName, grimmoryShelfName, grimmoryShelfName, profileId, profileId, ...allOnShelf);
     }
   }
 }
@@ -3164,13 +3189,13 @@ async function syncListsToShelves(
       grimmoryBookIds = (db.prepare(`
         SELECT DISTINCT CAST(gr_src.external_id AS INTEGER) as grimmory_book_id
         FROM book_sources hc_src
-        JOIN book_sources gr_src ON gr_src.book_id = hc_src.book_id AND gr_src.source_type = 'grimmory'
+        JOIN book_sources gr_src ON gr_src.book_id = hc_src.book_id AND gr_src.source_type = 'grimmory' AND gr_src.source_instance_id = ?
         WHERE hc_src.source_type = 'hardcover'
           AND (
             CAST(hc_src.external_id AS INTEGER) IN (${placeholders})
             OR gr_src.grimmory_hardcover_book_id IN (${placeholders})
           )
-      `).all(...hcList.bookIds, ...hcList.bookIds.map(String)) as { grimmory_book_id: number }[]).map((r) => r.grimmory_book_id);
+      `).all(profileId, ...hcList.bookIds, ...hcList.bookIds.map(String)) as { grimmory_book_id: number }[]).map((r) => r.grimmory_book_id);
     }
 
     if (hcList.bookIds.length > 0 && grimmoryBookIds.length === 0) {
@@ -3225,9 +3250,9 @@ async function syncListsToShelves(
         WHERE profile_id = ? AND source_type = 'grimmory'
           AND book_id IN (
             SELECT book_id FROM book_sources
-            WHERE source_type = 'grimmory' AND CAST(external_id AS INTEGER) IN (${shelfPlaceholders})
+            WHERE source_type = 'grimmory' AND source_instance_id = ? AND CAST(external_id AS INTEGER) IN (${shelfPlaceholders})
           )
-      `).run(shelfName, shelfName, shelfName, profileId, ...allOnShelf);
+      `).run(shelfName, shelfName, shelfName, profileId, profileId, ...allOnShelf);
     }
 
     if (currentIds.length === 0) continue;
@@ -3237,23 +3262,25 @@ async function syncListsToShelves(
     // 1. Books already matched through the book_sources join (canonical match)
     // 2. Books whose Grimmory record carries a grimmory_hardcover_book_id (unmatched
     //    but Grimmory knows the Hardcover ID — covers books added directly in Grimmory)
+    // Both Grimmory-side lookups are scoped to this profile's own Grimmory instance,
+    // since currentIds are local IDs from this profile's own shelf fetch.
     const hardcoverBookIds = (db.prepare(`
       SELECT DISTINCT hardcover_book_id FROM (
         SELECT CAST(hc_src.external_id AS INTEGER) AS hardcover_book_id
         FROM book_sources gr_src
         JOIN book_sources hc_src ON hc_src.book_id = gr_src.book_id AND hc_src.source_type = 'hardcover'
-        WHERE gr_src.source_type = 'grimmory'
+        WHERE gr_src.source_type = 'grimmory' AND gr_src.source_instance_id = ?
           AND CAST(gr_src.external_id AS INTEGER) IN (${reversePlaceholders})
         UNION
         SELECT CAST(grimmory_hardcover_book_id AS INTEGER) AS hardcover_book_id
         FROM book_sources
-        WHERE source_type = 'grimmory'
+        WHERE source_type = 'grimmory' AND source_instance_id = ?
           AND CAST(external_id AS INTEGER) IN (${reversePlaceholders})
           AND grimmory_hardcover_book_id IS NOT NULL
           AND grimmory_hardcover_book_id != ''
       )
       WHERE hardcover_book_id IS NOT NULL AND hardcover_book_id > 0
-    `).all(...currentIds, ...currentIds) as { hardcover_book_id: number | null }[])
+    `).all(profileId, ...currentIds, profileId, ...currentIds) as { hardcover_book_id: number | null }[])
       .map((r) => r.hardcover_book_id)
       .filter((id): id is number => typeof id === "number" && id > 0);
 
@@ -3415,70 +3442,114 @@ function recordEvent(
 /**
  * Re-fetch stale Grimmory covers for all book_sources where the cached cover
  * (stored without a source_url because it required an auth token) is past its
- * refresh_after date. Uses any configured Grimmory connection for authentication.
+ * refresh_after date. Grouped and authenticated per source_instance_id, since a
+ * local Grimmory book id is only meaningful against the server that issued it.
  */
 export async function refreshStaleGrimmoryCovers(): Promise<void> {
   const db = getDb();
 
   const stale = db.prepare(`
-    SELECT ic.entity_id, CAST(bs.external_id AS INTEGER) as grimmory_book_id
+    SELECT ic.entity_id, CAST(bs.external_id AS INTEGER) as grimmory_book_id, bs.source_instance_id
     FROM image_cache ic
     JOIN book_sources bs ON bs.id = CAST(ic.entity_id AS INTEGER)
     WHERE ic.source_url IS NULL
       AND bs.source_type = 'grimmory'
       AND (ic.last_refresh_at IS NULL OR ic.last_refresh_at < datetime('now', '-7 days'))
-  `).all() as { entity_id: string; grimmory_book_id: number }[];
+  `).all() as { entity_id: string; grimmory_book_id: number; source_instance_id: number | null }[];
 
   if (stale.length === 0) {
     logger.info("ImageCache: no stale Grimmory covers to refresh");
     return;
   }
 
-  logger.info("ImageCache: refreshing stale Grimmory covers", { count: stale.length });
+  // Legacy rows left unscoped by the v14 migration (see schema.ts) can't be safely
+  // attributed to any one profile's connection, so they're excluded here rather than
+  // guessed. They get replaced with a properly scoped row on that profile's next
+  // sync, but until then their cached cover simply won't refresh — log the count so
+  // that gap is diagnosable instead of invisible.
+  const unscoped = stale.filter((row) => row.source_instance_id === null);
+  if (unscoped.length > 0) {
+    logger.warn("ImageCache: skipping stale Grimmory covers with no scoped instance (pre-v14 legacy rows)", {
+      count: unscoped.length
+    });
+  }
+  const scoped = stale.filter((row): row is { entity_id: string; grimmory_book_id: number; source_instance_id: number } =>
+    row.source_instance_id !== null
+  );
 
-  // Use an enabled profile's credentials and honor the same profile-to-global
-  // base URL fallback as the main sync path.
-  const conn = db.prepare(`
-    SELECT g.base_url, g.username, g.encrypted_password
-    FROM grimmory_connections g
-    JOIN profiles p ON p.id = g.profile_id
-    WHERE p.enabled = 1
-      AND g.username IS NOT NULL
-      AND g.encrypted_password IS NOT NULL
-    ORDER BY g.profile_id
-    LIMIT 1
-  `).get() as { base_url: string | null; username: string; encrypted_password: string } | undefined;
-  const baseUrl = conn?.base_url || getSetting("grimmory.baseUrl", "");
+  if (scoped.length === 0) return;
 
-  if (!conn || !baseUrl) {
-    logger.warn("ImageCache: no Grimmory connection available for cover refresh");
-    return;
+  logger.info("ImageCache: refreshing stale Grimmory covers", { count: scoped.length });
+
+  const staleByInstance = new Map<number, { entity_id: string; grimmory_book_id: number }[]>();
+  for (const { entity_id, grimmory_book_id, source_instance_id } of scoped) {
+    const group = staleByInstance.get(source_instance_id) ?? [];
+    group.push({ entity_id, grimmory_book_id });
+    staleByInstance.set(source_instance_id, group);
   }
 
-  const password = decryptCredential(conn.encrypted_password);
-  if (!password) {
-    logger.warn("ImageCache: could not decrypt Grimmory password");
-    return;
-  }
+  let refreshed = 0;
 
-  const token = await getGrimmoryToken(baseUrl, conn.username, password);
-  if (!token) {
-    logger.warn("ImageCache: Grimmory login failed, skipping cover refresh");
-    return;
-  }
+  for (const [profileId, entries] of staleByInstance) {
+    // Isolate each instance's work — a login/decrypt/fetch failure for one profile's
+    // Grimmory connection must not abort the remaining profiles' cover refreshes.
+    try {
+      // Each group is authenticated against its own profile's Grimmory connection —
+      // a local book id from one Grimmory server must never be fetched through
+      // another profile's connection.
+      const conn = db.prepare(`
+        SELECT g.base_url, g.username, g.encrypted_password
+        FROM grimmory_connections g
+        JOIN profiles p ON p.id = g.profile_id
+        WHERE g.profile_id = ?
+          AND p.enabled = 1
+          AND g.username IS NOT NULL
+          AND g.encrypted_password IS NOT NULL
+      `).get(profileId) as { base_url: string | null; username: string; encrypted_password: string } | undefined;
+      // grimmory.baseUrl is a first-class global setting (see routes/settings.ts) used
+      // as the shared-server default everywhere else a profile's Grimmory URL is
+      // resolved (profiles.ts, the manual relationship route, the main sync entry
+      // point) — households running one shared Grimmory server for multiple profiles
+      // rely on setting it once and leaving each profile's own base_url blank. This
+      // loop is already correctly scoped to profileId's own connection row by this
+      // point, so falling back to that same shared default here is consistent with,
+      // not different from, every other Grimmory URL resolution in the app.
+      const baseUrl = conn?.base_url || getSetting("grimmory.baseUrl", "");
 
-  for (const { entity_id, grimmory_book_id } of stale) {
-    const sourceId = parseInt(entity_id, 10);
-    const source = db.prepare(
-      "SELECT source_media_type FROM book_sources WHERE id = ?"
-    ).get(sourceId) as { source_media_type: "physical" | "ebook" | "audiobook" | null } | undefined;
-    const data = await fetchGrimmoryCoverBuffer(baseUrl, token, grimmory_book_id, source?.source_media_type ?? null);
-    if (!data) continue;
-    const webPath = storeFetchedCover(sourceId, data);
-    if (webPath) {
-      db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(webPath, sourceId);
+      if (!conn || !baseUrl) {
+        logger.warn("ImageCache: no Grimmory connection available for cover refresh", { profileId });
+        continue;
+      }
+
+      const password = decryptCredential(conn.encrypted_password);
+      if (!password) {
+        logger.warn("ImageCache: could not decrypt Grimmory password", { profileId });
+        continue;
+      }
+
+      const token = await getGrimmoryToken(baseUrl, conn.username, password);
+      if (!token) {
+        logger.warn("ImageCache: Grimmory login failed, skipping cover refresh", { profileId });
+        continue;
+      }
+
+      for (const { entity_id, grimmory_book_id } of entries) {
+        const sourceId = parseInt(entity_id, 10);
+        const source = db.prepare(
+          "SELECT source_media_type FROM book_sources WHERE id = ?"
+        ).get(sourceId) as { source_media_type: "physical" | "ebook" | "audiobook" | null } | undefined;
+        const data = await fetchGrimmoryCoverBuffer(baseUrl, token, grimmory_book_id, source?.source_media_type ?? null);
+        if (!data) continue;
+        const webPath = storeFetchedCover(sourceId, data);
+        if (webPath) {
+          db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(webPath, sourceId);
+          refreshed++;
+        }
+      }
+    } catch (error) {
+      logger.warn("ImageCache: Grimmory cover refresh failed for instance; continuing with others", { profileId, error });
     }
   }
 
-  logger.info("ImageCache: Grimmory covers refreshed", { count: stale.length });
+  logger.info("ImageCache: Grimmory covers refreshed", { count: refreshed });
 }

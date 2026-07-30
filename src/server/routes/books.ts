@@ -322,12 +322,22 @@ function dbToDuplicateCandidate(rows: DbBookRow[]): BookDuplicateCandidate {
   };
 }
 
-// In the new schema, source IDs are book-level (not per-profile), so all rows for the same
-// book will have identical source ID values. This function is kept for API compatibility but
-// will effectively always return false with the new unified book_sources design.
+// book_sources rows for Grimmory/Hardcover/Goodreads are now scoped per profile
+// instance (see schema v14), so the same book can legitimately carry different
+// cross-reference IDs on different profiles' own servers — that's not a conflict.
+// Evaluate each profile's own rows independently rather than aggregating IDs
+// across every profile sharing this book.
 function hasIdentityReviewConflict(rows: DbBookRow[]): boolean {
-  return hasAggregateSourceReviewConflict(rows, "goodreads")
-    || hasAggregateSourceReviewConflict(rows, "hardcover");
+  const byProfile = new Map<number, DbBookRow[]>();
+  for (const row of rows) {
+    const group = byProfile.get(row.profile_id) ?? [];
+    group.push(row);
+    byProfile.set(row.profile_id, group);
+  }
+  return Array.from(byProfile.values()).some((profileRows) =>
+    hasAggregateSourceReviewConflict(profileRows, "goodreads")
+      || hasAggregateSourceReviewConflict(profileRows, "hardcover")
+  );
 }
 
 function hasBookNeedsIdReview(rows: DbBookRow[]): boolean {
@@ -769,12 +779,15 @@ function fetchRows(): DbBookRow[] {
     FROM book_profile bp
     JOIN books b ON b.id = bp.book_id
     JOIN profiles p ON p.id = bp.profile_id
-    LEFT JOIN book_sources hc_src   ON hc_src.book_id   = bp.book_id AND hc_src.source_type   = 'hardcover'
-    LEFT JOIN book_sources gr_src   ON gr_src.book_id   = bp.book_id AND gr_src.source_type   = 'goodreads'
-    LEFT JOIN book_sources grim_src ON grim_src.book_id = bp.book_id AND grim_src.source_type = 'grimmory'
+    -- Per-instance sources are scoped to this row's own profile so a book with
+    -- multiple configured instances of the same integration doesn't fan out into
+    -- extra rows (or attribute another profile's source data to this profile).
+    LEFT JOIN book_sources hc_src   ON hc_src.book_id   = bp.book_id AND hc_src.source_type   = 'hardcover' AND hc_src.source_instance_id = bp.profile_id
+    LEFT JOIN book_sources gr_src   ON gr_src.book_id   = bp.book_id AND gr_src.source_type   = 'goodreads' AND gr_src.source_instance_id = bp.profile_id
+    LEFT JOIN book_sources grim_src ON grim_src.book_id = bp.book_id AND grim_src.source_type = 'grimmory' AND grim_src.source_instance_id = bp.profile_id
     LEFT JOIN book_sources chap_src ON chap_src.book_id = bp.book_id AND chap_src.source_type = 'chaptarr'
     LEFT JOIN chaptarr_id_mismatch_dismissals chap_dismiss ON chap_dismiss.chaptarr_external_id = chap_src.external_id
-    LEFT JOIN book_sources abs_src  ON abs_src.book_id  = bp.book_id AND abs_src.source_type  = 'audiobookshelf'
+    LEFT JOIN book_sources abs_src  ON abs_src.book_id  = bp.book_id AND abs_src.source_type  = 'audiobookshelf' AND abs_src.source_instance_id = bp.profile_id
     LEFT JOIN user_book_states hc_ubs   ON hc_ubs.book_id   = bp.book_id AND hc_ubs.profile_id   = bp.profile_id AND hc_ubs.source_type   = 'hardcover'
     LEFT JOIN user_book_states gr_ubs   ON gr_ubs.book_id   = bp.book_id AND gr_ubs.profile_id   = bp.profile_id AND gr_ubs.source_type   = 'goodreads'
     LEFT JOIN user_book_states grim_ubs ON grim_ubs.book_id = bp.book_id AND grim_ubs.profile_id = bp.profile_id AND grim_ubs.source_type = 'grimmory'
@@ -799,7 +812,6 @@ function countGroups(rows: DbBookRow[]): number {
 // GET /api/books
 router.get("/", (req, res) => {
   const db = getDb();
-  reconcileBookIdentities(db);
 
   const VALID_SOURCES = new Set<SourceFilter>(["hardcover", "goodreads", "on-disk"]);
   const parseSourceList = (raw: string | undefined): SourceFilter[] =>
@@ -1051,11 +1063,12 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
     return;
   }
 
-  // Grimmory book is book-level — look it up from book_sources
+  // Grimmory local id/metadata is instance-specific — scope to this profile's own
+  // Grimmory connection so the write below targets the correct server/book.
   const grimSrc = db.prepare(`
     SELECT external_id, grimmory_hardcover_id
-    FROM book_sources WHERE source_type = 'grimmory' AND book_id = ?
-  `).get(bookId) as { external_id: string; grimmory_hardcover_id: string | null } | undefined;
+    FROM book_sources WHERE source_type = 'grimmory' AND source_instance_id = ? AND book_id = ?
+  `).get(profileId, bookId) as { external_id: string; grimmory_hardcover_id: string | null } | undefined;
 
   if (!grimSrc) {
     res.status(400).json({ error: "No Grimmory relationship is available for this book" });
@@ -1085,9 +1098,12 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
     }
 
     if (source === "goodreads") {
+      // Scoped to this profile's own Goodreads instance — otherwise this write could
+      // push another profile's selected Goodreads relationship into this profile's
+      // Grimmory server.
       const grSrc = db.prepare(`
-        SELECT external_id FROM book_sources WHERE source_type = 'goodreads' AND book_id = ?
-      `).get(bookId) as { external_id: string } | undefined;
+        SELECT external_id FROM book_sources WHERE source_type = 'goodreads' AND source_instance_id = ? AND book_id = ?
+      `).get(profileId, bookId) as { external_id: string } | undefined;
       const goodreadsId = grSrc?.external_id?.trim();
       if (!goodreadsId) {
         res.status(400).json({ error: "No Goodreads ID is available for this book" });
@@ -1096,13 +1112,14 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
       await writeGrimmoryExternalIds(baseUrl, token, grimmoryBookId, { goodreadsId });
       db.prepare(`
         UPDATE book_sources SET grimmory_goodreads_id = ?, last_modified_at = datetime('now')
-        WHERE book_id = ? AND source_type = 'grimmory'
-      `).run(goodreadsId, bookId);
+        WHERE book_id = ? AND source_type = 'grimmory' AND source_instance_id = ?
+      `).run(goodreadsId, bookId, profileId);
       logger.info("Wrote Goodreads ID to Grimmory metadata", { bookId, profileId, grimmoryBookId, goodreadsId });
     } else {
+      // Scoped to this profile's own Hardcover instance — same reasoning as Goodreads above.
       const hcSrc = db.prepare(`
-        SELECT external_id, hardcover_slug FROM book_sources WHERE source_type = 'hardcover' AND book_id = ?
-      `).get(bookId) as { external_id: string; hardcover_slug: string | null } | undefined;
+        SELECT external_id, hardcover_slug FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ? AND book_id = ?
+      `).get(profileId, bookId) as { external_id: string; hardcover_slug: string | null } | undefined;
       if (!hcSrc?.external_id) {
         res.status(400).json({ error: "No Hardcover ID is available for this book" });
         return;
@@ -1112,8 +1129,8 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
       await writeGrimmoryExternalIds(baseUrl, token, grimmoryBookId, { hardcoverBookId, hardcoverId: hardcoverId ?? undefined });
       db.prepare(`
         UPDATE book_sources SET grimmory_hardcover_book_id = ?, grimmory_hardcover_id = ?, last_modified_at = datetime('now')
-        WHERE book_id = ? AND source_type = 'grimmory'
-      `).run(hardcoverBookId, hardcoverId, bookId);
+        WHERE book_id = ? AND source_type = 'grimmory' AND source_instance_id = ?
+      `).run(hardcoverBookId, hardcoverId, bookId, profileId);
       logger.info("Wrote Hardcover ID to Grimmory metadata", { bookId, profileId, grimmoryBookId, hardcoverBookId, hardcoverId });
     }
 
@@ -1127,8 +1144,6 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
 
 // GET /api/books/:id
 router.get("/:id", (req, res) => {
-  const db = getDb();
-  reconcileBookIdentities(db);
   const id = parseInt(req.params["id"] ?? "0", 10);
   const allRows = fetchRows();
   const rows = allRows.filter((row) => row.book_id === id);
@@ -1141,7 +1156,6 @@ router.get("/:id", (req, res) => {
     .sort((a, b) => a.title.localeCompare(b.title));
 
   const summary = dbToSummary(rows);
-  const hasReviewConflict = hasIdentityReviewConflict(rows);
   const hasActiveChaptarrIdMismatch = rows.some((candidate) =>
     Boolean(candidate.chaptarr_id_mismatch) && !Boolean(candidate.chaptarr_id_mismatch_dismissed)
   );
@@ -1162,7 +1176,7 @@ router.get("/:id", (req, res) => {
     duplicateCandidates,
     relationships: bestRelationshipRowsByProfile(activeRelationshipRows).map((relationshipRow) => ({
       ...dbToRelationship(relationshipRow),
-      needsIdReview: hasReviewConflict
+      needsIdReview: hasIdentityReviewConflict([relationshipRow])
     }))
   };
 

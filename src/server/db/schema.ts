@@ -3,7 +3,7 @@ import { reconcileBookIdentities } from "./bookIdentity.js";
 import { migrateCredentialStorage } from "../security/credentials.js";
 import { logger } from "../logger.js";
 
-export const CURRENT_SCHEMA_VERSION = 13;
+export const CURRENT_SCHEMA_VERSION = 14;
 
 export function initSchema(db: Database.Database): void {
   db.pragma("journal_mode = WAL");
@@ -121,13 +121,19 @@ export function initSchema(db: Database.Database): void {
       created_at       TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
-    -- One row per (book × source system). No profile_id — this is book-level identity data.
-    -- external_id is the source's own ID for this book.
+    -- One row per (book × source system × source instance). external_id is the
+    -- source's own ID for this book, scoped by source_instance_id since two
+    -- configured instances of the same integration (e.g. two Grimmory servers) can
+    -- reuse the same local ID for different books — see the v14 migration below,
+    -- which is what actually reshapes this table on upgrade. This declared shape
+    -- only takes effect directly on a brand-new install; existing installs always
+    -- go through the sequential migrations, including v14.
     -- book_id is nullable until reconcileBookIdentities() assigns it.
     CREATE TABLE IF NOT EXISTS book_sources (
       id               INTEGER PRIMARY KEY AUTOINCREMENT,
       book_id          INTEGER REFERENCES books(id) ON DELETE CASCADE,
       source_type      TEXT NOT NULL CHECK(source_type IN ('hardcover','goodreads','grimmory','chaptarr')),
+      source_instance_id INTEGER,
       external_id      TEXT NOT NULL,
       title            TEXT,
       author           TEXT,
@@ -169,7 +175,7 @@ export function initSchema(db: Database.Database): void {
       last_sync_decision TEXT,
       last_modified_at TEXT NOT NULL DEFAULT (datetime('now')),
       created_at       TEXT NOT NULL DEFAULT (datetime('now')),
-      UNIQUE(source_type, external_id)
+      UNIQUE(source_type, source_instance_id, external_id)
     );
 
     -- One row per (book × profile × source) where the profile has user activity.
@@ -694,6 +700,86 @@ export function initSchema(db: Database.Database): void {
     }
     db.prepare("UPDATE schema_version SET version = 13").run();
     logger.info("Schema migrated to version 13: repaired literal last_sync_at values");
+  }
+
+  // v14: Scope book_sources uniqueness to (source_type, source_instance_id, external_id).
+  // Previously (source_type, external_id) was globally unique, which collided when a
+  // user configured two instances of the same integration (e.g. two Grimmory servers)
+  // that happen to reuse the same local ID for different books.
+  if (!row || row.version < 14) {
+    const existingCols = db.prepare("PRAGMA table_info(book_sources)").all() as {
+      name: string; type: string; notnull: number; dflt_value: string | null; pk: number;
+    }[];
+    const colNames = existingCols.map((c) => c.name);
+    const colDefs = existingCols.map((c) => {
+      if (c.name === "id") return "id INTEGER PRIMARY KEY AUTOINCREMENT";
+      if (c.name === "book_id") return "book_id INTEGER REFERENCES books(id) ON DELETE CASCADE";
+      let def = `${c.name} ${c.type}`;
+      if (c.notnull) def += " NOT NULL";
+      if (c.dflt_value !== null) def += ` DEFAULT (${c.dflt_value})`;
+      return def;
+    });
+
+    // foreign_keys is a no-op inside a transaction, so it must be toggled outside the
+    // BEGIN/COMMIT below. The rebuild + backfill + version bump run as a single
+    // transaction so a mid-migration failure can't leave book_sources half-rebuilt.
+    db.pragma("foreign_keys = OFF");
+    try {
+      const migrateV14 = db.transaction(() => {
+        db.exec(`
+          CREATE TABLE book_sources_v14 (
+            ${colDefs.join(",\n            ")},
+            source_instance_id INTEGER,
+            UNIQUE(source_type, source_instance_id, external_id)
+          );
+          INSERT INTO book_sources_v14 (${colNames.join(", ")})
+            SELECT ${colNames.join(", ")} FROM book_sources;
+          DROP TABLE book_sources;
+          ALTER TABLE book_sources_v14 RENAME TO book_sources;
+
+          CREATE INDEX IF NOT EXISTS idx_book_sources_book ON book_sources(book_id);
+          CREATE INDEX IF NOT EXISTS idx_book_sources_type ON book_sources(source_type);
+          CREATE INDEX IF NOT EXISTS idx_book_sources_instance ON book_sources(source_type, source_instance_id);
+        `);
+
+        // Chaptarr is a single global connection (not per-profile), so it always gets a
+        // fixed instance id — future upserts target the same row instead of duplicating.
+        db.prepare(`
+          UPDATE book_sources SET source_instance_id = 0
+          WHERE source_type = 'chaptarr' AND source_instance_id IS NULL
+        `).run();
+
+        // Per-profile sources (Grimmory/Hardcover/Goodreads/Audiobookshelf) are
+        // deliberately left unscoped (source_instance_id = NULL) rather than guessed from
+        // the currently configured connections. Even a single currently-configured
+        // connection isn't reliable proof of historical ownership — a second connection
+        // could have existed and been deleted, or the connection could have been
+        // reconfigured to point at a different server, before the upgrade. An unscoped
+        // row simply won't match any profile's upsert lookup, so each profile creates a
+        // fresh, correctly-scoped row for its own data on its next sync; identity
+        // reconciliation still clusters it with the same canonical book via ISBN/ID
+        // matching. Unscoped rows are not touched by per-instance pruning, so existing
+        // installs may carry a bounded amount of unscoped leftover data until cleaned up
+        // separately — safer than risking a misattributed row being overwritten by an
+        // unrelated book on a live connection.
+        const unscopedCount = (db.prepare(`
+          SELECT COUNT(*) AS count FROM book_sources
+          WHERE source_type IN ('grimmory', 'hardcover', 'goodreads', 'audiobookshelf')
+            AND source_instance_id IS NULL
+        `).get() as { count: number }).count;
+        if (unscopedCount > 0) {
+          logger.warn("Existing per-profile book_sources rows left unscoped after v14 migration; each profile's next sync creates fresh scoped rows and leaves these as inert historical rows", {
+            count: unscopedCount
+          });
+        }
+
+        db.prepare("UPDATE schema_version SET version = 14").run();
+      });
+      migrateV14();
+    } finally {
+      db.pragma("foreign_keys = ON");
+    }
+    logger.info("Schema migrated to version 14: scoped book_sources uniqueness to (source_type, source_instance_id, external_id)");
   }
 
   migrateCredentialStorage(db);
