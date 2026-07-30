@@ -121,13 +121,19 @@ export function initSchema(db: Database.Database): void {
       created_at       TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
-    -- One row per (book × source system). No profile_id — this is book-level identity data.
-    -- external_id is the source's own ID for this book.
+    -- One row per (book × source system × source instance). external_id is the
+    -- source's own ID for this book, scoped by source_instance_id since two
+    -- configured instances of the same integration (e.g. two Grimmory servers) can
+    -- reuse the same local ID for different books — see the v14 migration below,
+    -- which is what actually reshapes this table on upgrade. This declared shape
+    -- only takes effect directly on a brand-new install; existing installs always
+    -- go through the sequential migrations, including v14.
     -- book_id is nullable until reconcileBookIdentities() assigns it.
     CREATE TABLE IF NOT EXISTS book_sources (
       id               INTEGER PRIMARY KEY AUTOINCREMENT,
       book_id          INTEGER REFERENCES books(id) ON DELETE CASCADE,
       source_type      TEXT NOT NULL CHECK(source_type IN ('hardcover','goodreads','grimmory','chaptarr')),
+      source_instance_id INTEGER,
       external_id      TEXT NOT NULL,
       title            TEXT,
       author           TEXT,
@@ -169,7 +175,7 @@ export function initSchema(db: Database.Database): void {
       last_sync_decision TEXT,
       last_modified_at TEXT NOT NULL DEFAULT (datetime('now')),
       created_at       TEXT NOT NULL DEFAULT (datetime('now')),
-      UNIQUE(source_type, external_id)
+      UNIQUE(source_type, source_instance_id, external_id)
     );
 
     -- One row per (book × profile × source) where the profile has user activity.

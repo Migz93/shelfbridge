@@ -300,15 +300,6 @@ function titleAuthorKey(row: BookSourceRow): IdentityKey | null {
   return title && author ? `${bucket}.title_author:${title}||${author}` : null;
 }
 
-function groupTitleAuthorKeys(rows: BookSourceRow[], uf: UnionFind, root: number): Set<IdentityKey> {
-  return new Set(
-    rows
-      .filter((row) => uf.find(row.id) === root)
-      .map(titleAuthorKey)
-      .filter((key): key is IdentityKey => key !== null)
-  );
-}
-
 interface SeriesMatchInfo {
   // No contradictory series name/number between the two groups.
   compatible: boolean;
@@ -317,27 +308,11 @@ interface SeriesMatchInfo {
   strongMatch: boolean;
 }
 
-function seriesMatchInfo(rows: BookSourceRow[], uf: UnionFind, rootA: number, rootB: number): SeriesMatchInfo {
-  const namesA = new Set<string>();
-  const namesB = new Set<string>();
-  const numbersA = new Set<string>();
-  const numbersB = new Set<string>();
-
-  for (const row of rows) {
-    const root = uf.find(row.id);
-    if (root !== rootA && root !== rootB) continue;
-
-    const seriesName = normalizeTitle(row.series_name);
-    const seriesNumber = normalizeSeriesNumber(row.series_number);
-    if (root === rootA) {
-      if (seriesName) namesA.add(seriesName);
-      if (seriesNumber) numbersA.add(seriesNumber);
-    } else {
-      if (seriesName) namesB.add(seriesName);
-      if (seriesNumber) numbersB.add(seriesNumber);
-    }
-  }
-
+// Set-based version of the series compatibility check — callers maintain
+// per-root series name/number sets incrementally (see RootIndex below) instead
+// of rescanning every row for every candidate pair, which is what made the
+// original per-pair `rows.filter(...)` version quadratic on large libraries.
+function seriesMatchFromSets(namesA: Set<string>, numbersA: Set<string>, namesB: Set<string>, numbersB: Set<string>): SeriesMatchInfo {
   const namesOverlap = namesA.size > 0 && namesB.size > 0 && Array.from(namesA).some((name) => namesB.has(name));
   const numbersOverlap = numbersA.size > 0 && numbersB.size > 0 && Array.from(numbersA).some((number) => numbersB.has(number));
 
@@ -347,6 +322,30 @@ function seriesMatchInfo(rows: BookSourceRow[], uf: UnionFind, rootA: number, ro
   return {
     compatible: !nameConflict && !numberConflict,
     strongMatch: namesOverlap && numbersOverlap
+  };
+}
+
+// Per-root aggregate data used by the merge passes below, maintained incrementally
+// (merged on every union) so no pass needs to rescan all rows for a candidate pair.
+interface RootIndexEntry {
+  highKeys: Set<IdentityKey>;
+  titleAuthorKeys: Set<IdentityKey>;
+  seriesNames: Set<string>;
+  seriesNumbers: Set<string>;
+}
+
+function mergeSets<T>(a: Set<T> | undefined, b: Set<T> | undefined): Set<T> {
+  if (!a || a.size === 0) return new Set(b ?? []);
+  if (!b || b.size === 0) return new Set(a);
+  return new Set([...a, ...b]);
+}
+
+function mergeRootEntries(a: RootIndexEntry | undefined, b: RootIndexEntry | undefined): RootIndexEntry {
+  return {
+    highKeys: mergeSets(a?.highKeys, b?.highKeys),
+    titleAuthorKeys: mergeSets(a?.titleAuthorKeys, b?.titleAuthorKeys),
+    seriesNames: mergeSets(a?.seriesNames, b?.seriesNames),
+    seriesNumbers: mergeSets(a?.seriesNumbers, b?.seriesNumbers)
   };
 }
 
@@ -458,18 +457,41 @@ export function reconcileBookIdentities(db: Database.Database): void {
   const byHighKey = new Map<IdentityKey, number>();
   const byIsbnKey = new Map<IdentityKey, number[]>();
   const byFilePathKey = new Map<IdentityKey, number[]>();
-  const highKeysByRow = new Map<number, Set<IdentityKey>>();
+
+  // Aggregate data per current union-find root, merged incrementally on every union
+  // instead of rescanning all rows for every candidate pair — reconcileBookIdentities
+  // runs inside a write transaction on every sync, so an O(n) rescan per pair would be
+  // a meaningful stall on large libraries.
+  const rootIndex = new Map<number, RootIndexEntry>();
+  const unionRoots = (a: number, b: number): void => {
+    const rootA = uf.find(a);
+    const rootB = uf.find(b);
+    if (rootA === rootB) return;
+    uf.union(a, b);
+    const survivingRoot = uf.find(a);
+    const losingRoot = survivingRoot === rootA ? rootB : rootA;
+    rootIndex.set(survivingRoot, mergeRootEntries(rootIndex.get(rootA), rootIndex.get(rootB)));
+    rootIndex.delete(losingRoot);
+  };
 
   for (const row of rows) {
     uf.add(row.id);
     const highKeys = highIdentityKeys(row);
     const isbnKeys = isbnIdentityKeys(row);
     const filePathKeys = filePathIdentityKeys(row);
-    highKeysByRow.set(row.id, new Set(highKeys));
+    const titleKey = titleAuthorKey(row);
+    const seriesName = normalizeTitle(row.series_name);
+    const seriesNumber = normalizeSeriesNumber(row.series_number);
+    rootIndex.set(row.id, {
+      highKeys: new Set(highKeys),
+      titleAuthorKeys: new Set(titleKey ? [titleKey] : []),
+      seriesNames: new Set(seriesName ? [seriesName] : []),
+      seriesNumbers: new Set(seriesNumber ? [seriesNumber] : [])
+    });
 
     for (const key of highKeys) {
       const existing = byHighKey.get(key);
-      if (existing !== undefined) uf.union(existing, row.id);
+      if (existing !== undefined) unionRoots(existing, row.id);
       else byHighKey.set(key, row.id);
     }
 
@@ -491,8 +513,8 @@ export function reconcileBookIdentities(db: Database.Database): void {
       const rootA = uf.find(ids[0]!);
       const rootB = uf.find(id);
       if (rootA === rootB) continue;
-      const keysA = new Set(rows.filter((row) => uf.find(row.id) === rootA).flatMap((row) => Array.from(highKeysByRow.get(row.id) ?? [])));
-      const keysB = new Set(rows.filter((row) => uf.find(row.id) === rootB).flatMap((row) => Array.from(highKeysByRow.get(row.id) ?? [])));
+      const keysA = rootIndex.get(rootA)?.highKeys ?? new Set<IdentityKey>();
+      const keysB = rootIndex.get(rootB)?.highKeys ?? new Set<IdentityKey>();
       // A shared ISBN is strong corroborating evidence, but a conflicting authoritative
       // ID (e.g. different Hardcover/Goodreads IDs) always blocks the merge — matching
       // titles must never override an explicit identifier conflict.
@@ -502,7 +524,7 @@ export function reconcileBookIdentities(db: Database.Database): void {
         });
         continue;
       }
-      uf.union(rootA, rootB);
+      unionRoots(rootA, rootB);
     }
   }
 
@@ -516,15 +538,15 @@ export function reconcileBookIdentities(db: Database.Database): void {
       const rootA = uf.find(ids[0]!);
       const rootB = uf.find(id);
       if (rootA === rootB) continue;
-      const keysA = new Set(rows.filter((row) => uf.find(row.id) === rootA).flatMap((row) => Array.from(highKeysByRow.get(row.id) ?? [])));
-      const keysB = new Set(rows.filter((row) => uf.find(row.id) === rootB).flatMap((row) => Array.from(highKeysByRow.get(row.id) ?? [])));
+      const keysA = rootIndex.get(rootA)?.highKeys ?? new Set<IdentityKey>();
+      const keysB = rootIndex.get(rootB)?.highKeys ?? new Set<IdentityKey>();
       if (highKeyConflict(keysA, keysB)) {
         logger.debug("Skipped file-path book merge: conflicting authoritative identifiers", { rootA, rootB });
         continue;
       }
 
-      const titleKeysA = groupTitleAuthorKeys(rows, uf, rootA);
-      const titleKeysB = groupTitleAuthorKeys(rows, uf, rootB);
+      const titleKeysA = rootIndex.get(rootA)?.titleAuthorKeys ?? new Set<IdentityKey>();
+      const titleKeysB = rootIndex.get(rootB)?.titleAuthorKeys ?? new Set<IdentityKey>();
       const bothHaveTitles = titleKeysA.size > 0 && titleKeysB.size > 0;
       const titlesAgree = Array.from(titleKeysA).some((key) => titleKeysB.has(key));
       if (bothHaveTitles && !titlesAgree) {
@@ -532,7 +554,7 @@ export function reconcileBookIdentities(db: Database.Database): void {
         continue;
       }
 
-      uf.union(rootA, rootB);
+      unionRoots(rootA, rootB);
     }
   }
 
@@ -551,17 +573,22 @@ export function reconcileBookIdentities(db: Database.Database): void {
       const rootB = uf.find(row.id);
       if (rootA === rootB) continue;
 
-      const keysA = new Set(rows.filter((r) => uf.find(r.id) === rootA).flatMap((r) => Array.from(highKeysByRow.get(r.id) ?? [])));
-      const keysB = new Set(rows.filter((r) => uf.find(r.id) === rootB).flatMap((r) => Array.from(highKeysByRow.get(r.id) ?? [])));
+      const dataA = rootIndex.get(rootA);
+      const dataB = rootIndex.get(rootB);
+      const keysA = dataA?.highKeys ?? new Set<IdentityKey>();
+      const keysB = dataB?.highKeys ?? new Set<IdentityKey>();
       if (highKeyConflict(keysA, keysB)) {
         logger.debug("Skipped title/author book merge: conflicting authoritative identifiers", { rootA, rootB });
         continue;
       }
 
-      const series = seriesMatchInfo(rows, uf, rootA, rootB);
+      const series = seriesMatchFromSets(
+        dataA?.seriesNames ?? new Set<string>(), dataA?.seriesNumbers ?? new Set<string>(),
+        dataB?.seriesNames ?? new Set<string>(), dataB?.seriesNumbers ?? new Set<string>()
+      );
       if (!series.compatible || !series.strongMatch) continue;
 
-      uf.union(existing, row.id);
+      unionRoots(existing, row.id);
     }
     existingIds.push(row.id);
     byTitle.set(key, existingIds);

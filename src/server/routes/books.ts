@@ -322,12 +322,22 @@ function dbToDuplicateCandidate(rows: DbBookRow[]): BookDuplicateCandidate {
   };
 }
 
-// In the new schema, source IDs are book-level (not per-profile), so all rows for the same
-// book will have identical source ID values. This function is kept for API compatibility but
-// will effectively always return false with the new unified book_sources design.
+// book_sources rows for Grimmory/Hardcover/Goodreads are now scoped per profile
+// instance (see schema v14), so the same book can legitimately carry different
+// cross-reference IDs on different profiles' own servers — that's not a conflict.
+// Evaluate each profile's own rows independently rather than aggregating IDs
+// across every profile sharing this book.
 function hasIdentityReviewConflict(rows: DbBookRow[]): boolean {
-  return hasAggregateSourceReviewConflict(rows, "goodreads")
-    || hasAggregateSourceReviewConflict(rows, "hardcover");
+  const byProfile = new Map<number, DbBookRow[]>();
+  for (const row of rows) {
+    const group = byProfile.get(row.profile_id) ?? [];
+    group.push(row);
+    byProfile.set(row.profile_id, group);
+  }
+  return Array.from(byProfile.values()).some((profileRows) =>
+    hasAggregateSourceReviewConflict(profileRows, "goodreads")
+      || hasAggregateSourceReviewConflict(profileRows, "hardcover")
+  );
 }
 
 function hasBookNeedsIdReview(rows: DbBookRow[]): boolean {
@@ -1146,7 +1156,6 @@ router.get("/:id", (req, res) => {
     .sort((a, b) => a.title.localeCompare(b.title));
 
   const summary = dbToSummary(rows);
-  const hasReviewConflict = hasIdentityReviewConflict(rows);
   const hasActiveChaptarrIdMismatch = rows.some((candidate) =>
     Boolean(candidate.chaptarr_id_mismatch) && !Boolean(candidate.chaptarr_id_mismatch_dismissed)
   );
@@ -1167,7 +1176,7 @@ router.get("/:id", (req, res) => {
     duplicateCandidates,
     relationships: bestRelationshipRowsByProfile(activeRelationshipRows).map((relationshipRow) => ({
       ...dbToRelationship(relationshipRow),
-      needsIdReview: hasReviewConflict
+      needsIdReview: hasIdentityReviewConflict([relationshipRow])
     }))
   };
 

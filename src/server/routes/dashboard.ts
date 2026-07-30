@@ -259,9 +259,22 @@ function hasAggregateSourceReviewConflict(
   return grimmoryId !== undefined && sourceIds.length > 0 && !sourceIds.includes(grimmoryId);
 }
 
+// book_sources rows for Grimmory/Hardcover/Goodreads are now scoped per profile
+// instance (see schema v14), so the same book can legitimately carry different
+// cross-reference IDs on different profiles' own servers — that's not a conflict.
+// Evaluate each profile's own rows independently rather than aggregating IDs
+// across every profile sharing this book.
 function hasIdentityReviewConflict(rows: DbBook[]): boolean {
-  return hasAggregateSourceReviewConflict(rows, "goodreads")
-    || hasAggregateSourceReviewConflict(rows, "hardcover");
+  const byProfile = new Map<number, DbBook[]>();
+  for (const row of rows) {
+    const group = byProfile.get(row.profile_id) ?? [];
+    group.push(row);
+    byProfile.set(row.profile_id, group);
+  }
+  return Array.from(byProfile.values()).some((profileRows) =>
+    hasAggregateSourceReviewConflict(profileRows, "goodreads")
+      || hasAggregateSourceReviewConflict(profileRows, "hardcover")
+  );
 }
 
 function hasBookNeedsIdReview(rows: DbBook[]): boolean {
