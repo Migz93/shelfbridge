@@ -1,14 +1,84 @@
 # Testing
 
-ShelfBridge currently has build and type-check verification, with room for Playwright or server tests as the app settles.
+ShelfBridge uses Node's built-in [test runner](https://nodejs.org/api/test.html) (`node:test` + `node:assert/strict`, run through `tsx`) for server-side tests — no Jest/Vitest, no mocking library. Tests either exercise a real, isolated SQLite database (via `tests/server/test-db.ts`) or run the sync engine with hand-rolled fake adapters standing in for Hardcover/Grimmory/Goodreads/Chaptarr HTTP calls.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
+| `npm test` | Runs the automated test suite (`tests/server/`). Also what CI runs. |
 | `npm run check` | Runs TypeScript checks for client and server projects |
 | `npm run build` | Builds the Vite client and TypeScript server |
 | `npm audit --omit=dev` | Checks production dependency advisories |
+
+`npm test` sets `DATA_DIR=./.test-data` so tests never touch your real `./data` directory; `.test-data/` is gitignored.
+
+## Adding automated tests
+
+Create a `*.test.ts` file under `tests/server/` and it's picked up automatically. Most tests should use `createTestDatabase()` from `test-db.ts`, which spins up a fresh temp-dir SQLite database with the current schema applied — no shared state between tests.
+
+`sync-engine.test.ts` is the one exception: `runSyncImpl` always operates on the `db/index.ts` singleton rather than an injected database, so that file points `DATA_DIR` at its own private temp dir before importing the engine, and every test in it seeds its own profile and scopes assertions to that profile's id.
+
+---
+
+## Automated test suite
+
+### `tests/server/schema-migrations.test.ts` — Schema & migrations
+
+| Test | What it checks |
+|---|---|
+| Fresh database lands on the current schema version | `initSchema` on an empty DB reaches `CURRENT_SCHEMA_VERSION` with no foreign-key violations |
+| Idempotent re-run | Running `initSchema` twice makes no further changes and never duplicates the `schema_version` row |
+| v14 migration | Rebuilding `book_sources` with the per-instance unique constraint preserves existing rows, adds `source_instance_id`, and backfills Chaptarr's single global instance to `0` |
+| v3 migration | Orphan books (empty title, Chaptarr-only source) are deleted; books with a real source survive |
+| v13 migration | `book_sources` rows with the literal string `"datetime('now')"` as `last_sync_at` are repaired to `NULL` |
+
+### `tests/server/book-identity.test.ts` — Identity reconciliation
+
+| Test | What it checks |
+|---|---|
+| ISBN13 match | Two sources sharing an ISBN13 merge into one canonical book |
+| Conflicting Hardcover book id | Two sources with the same title but different authoritative Hardcover ids stay separate books |
+| Idempotency | Running `reconcileBookIdentities` twice doesn't duplicate books |
+| Orphan cleanup | A book left with zero `book_sources` rows is deleted on the next reconcile pass |
+
+### `tests/server/settings.test.ts` — App settings
+
+`getSetting`/`setSetting` fallback and round-trip behavior.
+
+### `tests/server/sync-decision.test.ts` — Sync decision table
+
+Table-driven coverage of `computeSyncDecision` for every `conflict_strategy` (`latest_wins`, `grimmory_wins`, `hardcover_wins`) across: no Grimmory match, status sync disabled, already synced, one side changed, both sides changed, steady-state conflicts with and without timestamps, and one-sided statuses with/without a valid cross-source mapping.
+
+### `tests/server/pruning.test.ts` — Pruning
+
+Each `prune*UserStatesMissingFromFetch` / `prune*SourcesMissingFromFetch` helper, checked for: only pruning the calling profile's own rows (never another profile's), never pruning a source with live user state, and treating an empty fetched-id set as a no-op (a failed fetch must never be mistaken for "the library is now empty").
+
+### `tests/server/normalization.test.ts` — Title/date helpers
+
+`normalizeTitle`, `normalizeSeriesNumber`, `newerSource`, `shouldGoodreadsOverwriteGrimmory`.
+
+### `tests/server/sync-engine.test.ts` — Sync engine integration
+
+Runs `runSyncImpl` end-to-end against a real (isolated) SQLite database with fake source adapters (`SyncAdapters` — see `src/server/sync/engine.ts`) instead of real HTTP calls.
+
+| Test | What it checks |
+|---|---|
+| No connections configured | Completes successfully, writes nothing, never calls an adapter |
+| Hardcover fetch failure | Skips book and library-data writes, records a `source_unavailable` sync event, and marks the run `error` |
+| Hardcover-only sync | Writes `book_sources` + `user_book_states`; re-running with the same fetched data is idempotent (no duplicate rows) |
+| Dry run | Computes and caches the resolved decision locally but never calls the Grimmory write adapter |
+| Real run | Calls the Grimmory write adapter with the resolved status once conflict resolution picks a winner |
+| Two profiles | Each profile's `book_sources` stay scoped to its own `source_instance_id` — no cross-profile leakage |
+
+Adapters not relevant to a given test are left unimplemented via `createFakeAdapters` (`test-helpers.ts`), which makes any unexpected call throw immediately instead of failing confusingly deep inside `runSyncImpl`.
+
+### Known gaps
+
+- No coverage yet for Goodreads/Chaptarr/Audiobookshelf sync paths or shelf/list syncing.
+- The Grimmory cover-caching path (`cacheGrimmoryCover` in `engine.ts`) makes a real `fetch()` call outside the adapter seam — `sync-engine.test.ts` stubs `globalThis.fetch` globally so it never hits the network, but the cover-caching logic itself has no dedicated test coverage.
+- No forced mid-transaction failure test for `reconcileBookIdentities`'s rollback behavior.
+- No auth/session-expiry tests.
 
 ## Manual Smoke Test
 
@@ -41,7 +111,3 @@ Then open `http://localhost:9303`, create or enter the ShelfBridge admin passwor
 - Credential fields never echo stored secrets back to the browser
 - `/api/settings` returns `401` from an unauthenticated browser/session
 - `/images/...` returns `401` without a valid session
-
-## Adding Automated Tests
-
-When adding automated tests, keep generated artifacts under `tests/` and ensure `.gitignore` excludes auth state, reports, and test results.
