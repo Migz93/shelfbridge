@@ -12,27 +12,10 @@
 
 ## Running It
 
-```bash
-docker compose up -d --build
-```
-
-Or without compose:
-
-```bash
-docker build -t shelfbridge .
-docker rm -f shelfbridge
-docker run -d \
-  --name shelfbridge \
-  --network bridge \
-  -p 9303:9303 \
-  -v /opt/shelfbridge:/config \
-  --restart unless-stopped \
-  shelfbridge
-```
-
-Keep the image and container name as `shelfbridge`, use bridge networking, and
-preserve the `/opt/shelfbridge:/config` bind mount so config, database, and logs
-survive the container being recreated.
+Build, run, and rebuild commands live in `AGENTS.md` under "Rebuilding The
+Container After Code Changes", alongside the container conventions they have
+to stay consistent with. This file covers what the deployment *is*, not how to
+drive it.
 
 ## Persistent Data
 
