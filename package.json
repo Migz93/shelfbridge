@@ -11,7 +11,7 @@
     "build:server": "tsc -p tsconfig.server.json",
     "start": "node dist/server/server/index.js",
     "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.server.json",
-    "test": "DATA_DIR=./.test-data tsx --test 'tests/server/**/*.test.ts'"
+    "test": "rm -rf .test-data && DATA_DIR=./.test-data tsx --test 'tests/server/**/*.test.ts'"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",

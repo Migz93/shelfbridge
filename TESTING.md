@@ -65,7 +65,7 @@ Runs `runSyncImpl` end-to-end against a real (isolated) SQLite database with fak
 | Test | What it checks |
 |---|---|
 | No connections configured | Completes successfully, writes nothing, never calls an adapter |
-| Hardcover fetch failure | Aborts before any local writes, records a `source_unavailable` sync event, marks the run `error` |
+| Hardcover fetch failure | Skips book and library-data writes, records a `source_unavailable` sync event, and marks the run `error` |
 | Hardcover-only sync | Writes `book_sources` + `user_book_states`; re-running with the same fetched data is idempotent (no duplicate rows) |
 | Dry run | Computes and caches the resolved decision locally but never calls the Grimmory write adapter |
 | Real run | Calls the Grimmory write adapter with the resolved status once conflict resolution picks a winner |

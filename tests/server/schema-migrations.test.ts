@@ -113,6 +113,17 @@ test("v14 migration: rebuilds book_sources with a per-instance unique constraint
     const grimmoryRow = sources.find((s) => s.source_type === "grimmory")!;
     assert.equal(grimmoryRow.source_instance_id, null, "per-profile sources are left unscoped rather than guessed");
 
+    // The v14 constraint must scope external IDs to an integration instance,
+    // allowing different servers to reuse an ID while rejecting a local duplicate.
+    db.exec("INSERT INTO books (id, title) VALUES (2, 'Instance One'), (3, 'Instance Two'), (4, 'Duplicate')");
+    const insertSource = db.prepare(`
+      INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id)
+      VALUES (?, 'grimmory', ?, 'shared-id')
+    `);
+    insertSource.run(2, 1);
+    insertSource.run(3, 2);
+    assert.throws(() => insertSource.run(4, 1), /UNIQUE constraint failed/);
+
     const fkViolations = db.pragma("foreign_key_check") as unknown[];
     assert.deepEqual(fkViolations, []);
   } finally {

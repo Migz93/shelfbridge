@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -20,7 +20,8 @@ import {
 // keep this file's runs off the shared ./.test-data database (and off any other
 // test file that touches the singleton, e.g. settings.test.ts), point DATA_DIR
 // at a private temp dir before the very first import of the singleton module.
-process.env["DATA_DIR"] = mkdtempSync(path.join(os.tmpdir(), "shelfbridge-sync-engine-test-"));
+const dataDir = mkdtempSync(path.join(os.tmpdir(), "shelfbridge-sync-engine-test-"));
+process.env["DATA_DIR"] = dataDir;
 
 // Cover caching (cacheGrimmoryCover / fetchGrimmoryCoverFromPath in engine.ts) calls
 // the global fetch() directly — it isn't part of the SyncAdapters seam (see
@@ -33,8 +34,19 @@ globalThis.fetch = (async () => new Response(null, { status: 404 })) as typeof f
 
 const { runSyncImpl } = await import("../../src/server/sync/engine.js");
 const { getDb } = await import("../../src/server/db/index.js");
+const { logger } = await import("../../src/server/logger.js");
 
 const db = getDb();
+
+test.after(async () => {
+  await new Promise<void>((resolve) => {
+    logger.once("finish", resolve);
+    logger.end();
+  });
+  logger.close();
+  db.close();
+  rmSync(dataDir, { recursive: true, force: true });
+});
 
 function hcBook(overrides: Partial<HardcoverUserBook> = {}): HardcoverUserBook {
   return {

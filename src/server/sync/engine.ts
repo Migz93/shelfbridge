@@ -1086,7 +1086,6 @@ export async function runSyncImpl(
         }
       }
 
-      pruneGrimmorySourcesMissingFromFetch(db, profileId, new Set(grimmoryBooks.map((b) => b.id)));
       logger.info("Grimmory book_sources written", { profileId, count: grimmoryBooks.length });
     }
 
@@ -1195,9 +1194,9 @@ export async function runSyncImpl(
         }
       }
 
-      // Prune HC sources whose books are no longer in the HC library
-      pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set(hcBooks.map((b) => b.book.id)));
+      // Prune states first: source pruning preserves rows with a live state.
       pruneHardcoverUserStatesMissingFromFetch(db, profileId, new Set(hcBooks.map((b) => b.book.id)));
+      pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set(hcBooks.map((b) => b.book.id)));
       logger.info("Hardcover book_sources written", { profileId, count: hcBooks.length });
     }
 
@@ -1878,6 +1877,8 @@ export async function runSyncImpl(
       }
 
       pruneGrimmoryUserStatesMissingFromFetch(db, profileId, new Set(grimmoryBooks.map((b) => b.id)));
+      // Source pruning preserves rows with a live state, so it must run second.
+      pruneGrimmorySourcesMissingFromFetch(db, profileId, new Set(grimmoryBooks.map((b) => b.id)));
       logger.info("Grimmory user_book_states written", { profileId, count: grimmoryBooks.length });
     }
 
@@ -3137,7 +3138,12 @@ async function syncGoodreadsShelvesToGrimmory(
     }
 
     let currentIds: number[];
-    try { currentIds = await adapters.fetchGrimmoryShelfBookIds(baseUrl, grimmoryToken, shelfId); } catch { currentIds = []; }
+    try {
+      currentIds = await adapters.fetchGrimmoryShelfBookIds(baseUrl, grimmoryToken, shelfId);
+    } catch (err) {
+      logger.warn("Failed to fetch Grimmory shelf for Goodreads sync", { profileId, shelfName, grimmoryShelfName: mapping.grimmory_shelf_name, error: err });
+      continue;
+    }
 
     const toAdd = grimmoryBookIds.filter((id) => !currentIds.includes(id));
     if (toAdd.length > 0) {
@@ -3300,7 +3306,12 @@ async function syncListsToShelves(
     }
 
     let currentIds: number[];
-    try { currentIds = await adapters.fetchGrimmoryShelfBookIds(baseUrl, grimmoryToken, shelfId); } catch { currentIds = []; }
+    try {
+      currentIds = await adapters.fetchGrimmoryShelfBookIds(baseUrl, grimmoryToken, shelfId);
+    } catch (err) {
+      logger.warn("Failed to fetch Grimmory shelf for Hardcover list sync", { profileId, listName: hcList.name, shelfName: mapping.grimmory_shelf_name, error: err });
+      continue;
+    }
 
     const toAdd = grimmoryBookIds.filter((id) => !currentIds.includes(id));
     if (toAdd.length > 0) {
