@@ -29,3 +29,4 @@ plans/
 
 # node:test run artifacts (logger writes here when DATA_DIR is unset)
 .test-data/
+__pycache__/
