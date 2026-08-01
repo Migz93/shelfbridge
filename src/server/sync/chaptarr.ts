@@ -2,6 +2,17 @@ import { getDb, getSetting } from "../db/index.js";
 import { logger } from "../logger.js";
 import { identifierVariants, normalizeExternalId } from "../identifiers.js";
 import { decryptCredential } from "../security/credentials.js";
+import { mapWithConcurrency } from "./concurrency.js";
+
+const DEFAULT_BOOKFILE_CONCURRENCY = 5;
+const MAX_BOOKFILE_CONCURRENCY = 10;
+
+function bookfileConcurrency(): number {
+  const configured = Number(process.env["CHAPTARR_BOOKFILE_CONCURRENCY"] ?? DEFAULT_BOOKFILE_CONCURRENCY);
+  return Number.isInteger(configured) && configured > 0
+    ? Math.min(configured, MAX_BOOKFILE_CONCURRENCY)
+    : DEFAULT_BOOKFILE_CONCURRENCY;
+}
 
 async function chaptarrGet<T>(baseUrl: string, apiKey: string, path: string): Promise<T> {
   const url = `${baseUrl.replace(/\/$/, "")}${path}`;
@@ -168,19 +179,20 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
       if (id && name) authorNameById.set(id, name);
     }
 
-    // Fetch all book file paths in parallel (one request per author).
+    // Fetch book file paths with a bounded pool (one request per author).
     // Both Chaptarr and Grimmory point at the same NAS share, so matching paths
     // are an unambiguous identity signal for books that failed ID/ISBN/title matching.
     const authorIds = [...authorNameById.keys()];
-    const bookfileResults = await Promise.all(
-      authorIds.map((authorId) =>
+    const bookfileResults = await mapWithConcurrency(
+      authorIds,
+      bookfileConcurrency(),
+      async (authorId) =>
         chaptarrGet<Record<string, unknown>[]>(baseUrl, apiKey, `/api/v1/bookfile?authorId=${authorId}`)
           .catch((error) => {
             uncertainFileInventoryAuthorIds.add(authorId);
             logger.warn("Chaptarr bookfile fetch failed; preserving prior file state", { profileId, authorId, error });
             return [] as Record<string, unknown>[];
           })
-      )
     );
     for (const files of bookfileResults) {
       for (const f of files) {

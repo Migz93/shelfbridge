@@ -85,6 +85,18 @@ Each `prune*UserStatesMissingFromFetch` / `prune*SourcesMissingFromFetch` helper
 
 `normalizeTitle`, `normalizeSeriesNumber`, `newerSource`, `shouldGoodreadsOverwriteGrimmory`.
 
+### `tests/server/concurrency.test.ts` — Bounded work queues
+
+| Test | What it checks |
+|---|---|
+| Large author list | The Chaptarr book-file request queue preserves all results while never exceeding its configured concurrency cap. |
+
+### `tests/server/logger.test.ts` — Recent log tail
+
+| Test | What it checks |
+|---|---|
+| Oversized machine log | Only the recent bounded tail is parsed, malformed lines are skipped, and the requested newest entries are returned. |
+
 ### `tests/server/sync-engine.test.ts` — Sync engine integration
 
 Runs `runSyncImpl` end-to-end against a real (isolated) SQLite database with fake source adapters (`SyncAdapters` — see `src/server/sync/engine.ts`) instead of real HTTP calls.

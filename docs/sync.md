@@ -494,8 +494,8 @@ decorated Goodreads or Hardcover IDs still match their plain numeric source IDs.
     resolves mapped Grimmory shelves, then additively syncs missing matched books
     in both directions — see [Shelf Sync](#shelf-sync) below
 13. **Chaptarr status pass** (if Chaptarr is configured in Settings): fetches
-    monitored books from Chaptarr, fetches all book file paths per author in
-    parallel, matches books via the eight-step chain (IDs → ISBNs → title+author
+    monitored books from Chaptarr, fetches book file paths per author through a
+    bounded request pool, matches books via the eight-step chain (IDs → ISBNs → title+author
     → file-path fallback), upserts `book_sources(source_type='chaptarr')` rows
     with `chaptarr_monitored / chaptarr_has_file / chaptarr_primary_file_path`,
     and promotes `'missing'` → `'pending_download'` on `user_book_states` rows
@@ -764,7 +764,9 @@ Grimmory/Hardcover/Goodreads passes complete.
 2. Fetches `/api/v1/book` and filters to `monitored = true`.
 3. Fetches `/api/v1/author` to build an `authorId → name` map (books carry only
    `authorId`, not a name, so this is required for title+author matching). Then
-   fetches `/api/v1/bookfile?authorId=<id>` for every author **in parallel** to
+   fetches `/api/v1/bookfile?authorId=<id>` for every author with at most five
+   concurrent requests (set `CHAPTARR_BOOKFILE_CONCURRENCY`, capped at 10, to
+   adjust this) to
    build a `chaptarrBookId → filePath` map used for file-path matching (step 8).
 4. Matches each monitored Chaptarr book to a canonical `book_id` using this chain
    against `book_sources` rows:

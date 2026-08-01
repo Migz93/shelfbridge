@@ -8,6 +8,7 @@ import type { LogEntry } from "../shared/types.js";
 const DATA_DIR = process.env["DATA_DIR"] ?? "./data";
 const SECRET_KEY_PATTERN = /(password|token|secret|credential|authorization|api[_-]?key)/i;
 const LOG_RING_SIZE = 500;
+const LOG_TAIL_BYTES = 1024 * 1024;
 
 function localISOTimestamp(): string {
   const d = new Date();
@@ -84,6 +85,42 @@ export function getRecentLogs(limit = 200): LogEntry[] {
 
 /** Stable path to the machine-readable JSON log file (via symlink). */
 export const MACHINE_LOG_PATH = path.join(DATA_DIR, ".machinelogs.json");
+
+/** Reads a bounded recent tail, avoiding a synchronous full-log read per request. */
+export async function readRecentMachineLogs(filePath = MACHINE_LOG_PATH, limit = LOG_RING_SIZE): Promise<LogEntry[]> {
+  const handle = await fs.promises.open(filePath, "r");
+  try {
+    const { size } = await handle.stat();
+    const start = Math.max(0, size - LOG_TAIL_BYTES);
+    const buffer = Buffer.alloc(size - start);
+    await handle.read(buffer, 0, buffer.length, start);
+
+    const lines = buffer.toString("utf8").split("\n");
+    if (start > 0) lines.shift(); // the tail can start part-way through a JSON line
+
+    const entries: LogEntry[] = [];
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const parsed = JSON.parse(line) as Record<string, unknown>;
+        if (typeof parsed["timestamp"] !== "string" || typeof parsed["message"] !== "string") continue;
+        if (!["debug", "info", "warn", "error"].includes(String(parsed["level"]))) continue;
+        const { timestamp, level, message, ...meta } = parsed;
+        entries.push({
+          timestamp,
+          level: level as LogEntry["level"],
+          message,
+          ...(Object.keys(meta).length > 0 ? { meta } : {})
+        });
+      } catch {
+        // A rotation or concurrent write can leave an incomplete line; ignore it.
+      }
+    }
+    return entries.slice(-limit);
+  } finally {
+    await handle.close();
+  }
+}
 
 // ─── Logger ───────────────────────────────────────────────────────────────────
 
