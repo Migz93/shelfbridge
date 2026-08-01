@@ -108,8 +108,15 @@ Adapters not relevant to a given test are left unimplemented via `createFakeAdap
 
 ## Adding New Tests
 
-Create a `*.test.ts` file under `tests/server/` and it's picked up
-automatically.
+Which layer to reach for — server test or Playwright — is covered in `AGENTS.md`
+under Tests. Mechanically:
+
+- **Server tests:** create a `*.test.ts` file under `tests/server/` and it is
+  picked up automatically by `npm test`. Use `createTestDatabase()` from
+  `test-db.ts` so each test gets a fresh isolated database.
+- **Playwright:** not wired up yet — see
+  [#59](https://github.com/Migz93/shelfbridge/issues/59). Say so rather than
+  substituting a server test for a UI concern.
 
 When a test is agreed and written, add a row for it in the relevant table above.
 
