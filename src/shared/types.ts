@@ -415,6 +415,7 @@ export interface LogEntry {
 
 export interface LogsPageResponse {
   results: LogEntry[];
+  windowed: boolean;
   pageInfo: {
     page: number;
     pageSize: number;

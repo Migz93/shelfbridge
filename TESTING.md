@@ -91,6 +91,12 @@ Each `prune*UserStatesMissingFromFetch` / `prune*SourcesMissingFromFetch` helper
 |---|---|
 | Large author list | The Chaptarr book-file request queue preserves all results while never exceeding its configured concurrency cap. |
 
+### `tests/server/duplicate-review.test.ts` — Duplicate merge eligibility
+
+| Test | What it checks |
+|---|---|
+| Live probable-duplicate guard | Only an undismissed title-and-author probable-duplicate pair is eligible for the destructive merge route; unrelated or dismissed pairs are rejected. |
+
 ### `tests/server/logger.test.ts` — Recent log tail
 
 | Test | What it checks |

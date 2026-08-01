@@ -566,6 +566,11 @@ function LogsTab() {
       )}
 
       <SectionCard title="Logs" description="Application logs. Also written to the data directory on the host.">
+        {data?.windowed && (
+          <p className="text-xs text-on-surface-variant">
+            Showing a recent window of up to 500 entries from the latest 1 MB of the current log file.
+          </p>
+        )}
         {/* Controls */}
         <div className="flex flex-wrap gap-2 items-center">
           <input

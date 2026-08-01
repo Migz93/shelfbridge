@@ -20,4 +20,4 @@ function normalizeBuildChannel(value: string | undefined): BuildChannel {
 
 export const APP_VERSION = readPackageVersion();
 export const BUILD_CHANNEL = normalizeBuildChannel(process.env["BUILD_CHANNEL"]);
-export const BUILD_COMMIT = process.env["COMMIT_SHA"] ?? "local";
+export const BUILD_COMMIT = process.env["COMMIT_SHA"]?.trim() || "local";

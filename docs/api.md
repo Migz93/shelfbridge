@@ -614,7 +614,8 @@ detail page.
 Repairs an eligible probable-duplicate pair after user confirmation. The endpoint
 only accepts a split where one canonical record is Goodreads and/or Hardcover
 metadata and the other is a Grimmory-only local record for the same profile. It
-writes just the Goodreads and Hardcover identifiers to Grimmory, then reconciles
+also requires the pair to remain a live, undismissed probable-duplicate suggestion.
+It writes just the Goodreads and Hardcover identifiers to Grimmory, then reconciles
 the local identities. ISBN, ASIN, and Chaptarr identifiers are never written.
 
 ## Dashboard

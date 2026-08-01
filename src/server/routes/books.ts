@@ -304,6 +304,15 @@ function probableDuplicateCandidateIds(rows: DbBookRow[], bookId: number, dismis
   return candidates;
 }
 
+export function isLiveProbableDuplicatePair(
+  rows: DbBookRow[],
+  bookId: number,
+  duplicateId: number,
+  dismissedPairs = dismissedDuplicatePairKeys()
+): boolean {
+  return probableDuplicateCandidateIds(rows, bookId, dismissedPairs).has(duplicateId);
+}
+
 function duplicateMergePlans(db: ReturnType<typeof getDb>, firstBookId: number, secondBookId: number) {
   const rows = db.prepare(`
     SELECT id, book_id, source_type, source_instance_id, external_id, hardcover_slug, grimmory_hardcover_id
@@ -1060,6 +1069,9 @@ router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
   const duplicateId = parseInt(req.params["duplicateId"] ?? "0", 10);
   if (!Number.isFinite(bookId) || !Number.isFinite(duplicateId) || bookId <= 0 || duplicateId <= 0 || bookId === duplicateId) {
     res.status(400).json({ error: "Invalid duplicate pair" }); return;
+  }
+  if (!isLiveProbableDuplicatePair(fetchRows(), bookId, duplicateId)) {
+    res.status(400).json({ error: "Merge requires a live probable-duplicate pair" }); return;
   }
   const plans = duplicateMergePlans(db, bookId, duplicateId);
   if (plans.length === 0) {

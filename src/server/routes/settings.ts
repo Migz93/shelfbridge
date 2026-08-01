@@ -254,6 +254,7 @@ router.get("/logs", async (req, res) => {
 
   const response: LogsPageResponse = {
     results,
+    windowed: true,
     pageInfo: { page, pageSize, pages, total }
   };
   res.json(response);
