@@ -68,6 +68,8 @@ section with hubarr's Playwright section, modified to suit.
 | Corroborated Chaptarr bridge | A Goodreads edition joins a Chaptarr/Grimmory cluster only with matching edition-ID and same-format file-path evidence; a stale Chaptarr Hardcover ID cannot merge an unrelated book |
 | File-path media separation | Ebook and audiobook Chaptarr path matches join only their matching format canonical |
 | File-path ID precedence | An exact Grimmory/Chaptarr path keeps local records together after a Goodreads edition ID is repaired |
+| Cross-profile path isolation | A shared global Chaptarr path cannot merge unrelated Grimmory instances from different profiles |
+| Chaptarr reassignment state preservation | User state moves before stale Chaptarr-only books are deleted |
 
 ### `tests/server/settings.test.ts` — App settings
 
@@ -130,6 +132,7 @@ Adapters not relevant to a given test are left unimplemented via `createFakeAdap
 |---|---|
 | ABS ownership scope | Runtime-validated Audiobookshelf ownership and its Grimmory Hardcover IDs never leak between profiles. |
 | Hardcover list editions | Partial edition-detail fetches preserve metadata already obtained for list-only books. |
+| Large ABS ownership snapshot | Runtime ownership lookup batches a 500-book ABS library below SQLite's parameter limit. |
 
 ### Known gaps
 

@@ -591,8 +591,12 @@ export function reconcileBookIdentities(db: Database.Database): void {
   for (const ids of byFilePathKey.values()) {
     const chaptarrIds = ids.filter((id) => rowsById.get(id)?.source_type === "chaptarr");
     const grimmoryIds = ids.filter((id) => rowsById.get(id)?.source_type === "grimmory");
-    for (const chaptarrId of chaptarrIds) {
-      for (const grimmoryId of grimmoryIds) unionRoots(uf.find(chaptarrId), uf.find(grimmoryId));
+    const grimmoryInstances = new Set(grimmoryIds.map((id) => rowsById.get(id)?.source_instance_id));
+    const canBridgeChaptarrToGrimmory = grimmoryInstances.size <= 1;
+    if (canBridgeChaptarrToGrimmory) {
+      for (const chaptarrId of chaptarrIds) {
+        for (const grimmoryId of grimmoryIds) unionRoots(uf.find(chaptarrId), uf.find(grimmoryId));
+      }
     }
     for (const id of ids.slice(1)) {
       const rootA = uf.find(ids[0]!);
@@ -602,10 +606,11 @@ export function reconcileBookIdentities(db: Database.Database): void {
       const rowB = rowsById.get(id);
       const isChaptarrGrimmoryPair = (rowA?.source_type === "chaptarr" && rowB?.source_type === "grimmory")
         || (rowA?.source_type === "grimmory" && rowB?.source_type === "chaptarr");
-      if (isChaptarrGrimmoryPair) {
+      if (isChaptarrGrimmoryPair && canBridgeChaptarrToGrimmory) {
         unionRoots(rootA, rootB);
         continue;
       }
+      if (isChaptarrGrimmoryPair) continue;
       const keysA = rootIndex.get(rootA)?.highKeys ?? new Set<IdentityKey>();
       const keysB = rootIndex.get(rootB)?.highKeys ?? new Set<IdentityKey>();
       if (highKeyConflict(keysA, keysB)) {
@@ -855,6 +860,7 @@ export function reconcileBookIdentities(db: Database.Database): void {
   let created = 0;
   let reassigned = 0;
   let merged = 0;
+  const chaptarrOrphanReassignments = new Map<number, number>();
 
   const transaction = db.transaction(() => {
     clearKeys.run();
@@ -878,7 +884,10 @@ export function reconcileBookIdentities(db: Database.Database): void {
             .find((id) => !group.some((row) => row.book_id === id));
         if (filePathCanonicalId !== undefined) {
           for (const row of group) {
-            if (row.book_id !== filePathCanonicalId) reassigned++;
+            if (row.book_id !== filePathCanonicalId) {
+              reassigned++;
+              if (row.book_id !== null) chaptarrOrphanReassignments.set(row.book_id, filePathCanonicalId);
+            }
             updateSource.run(filePathCanonicalId, row.id);
           }
           logger.info("Reassigned Chaptarr source to same-format file-path canonical book", {
@@ -967,6 +976,13 @@ export function reconcileBookIdentities(db: Database.Database): void {
         const [keyType, ...rest] = key.split(":");
         insertKey.run(bookId, keyType, rest.join(":"));
       }
+    }
+
+    // A Chaptarr-only reassignment can leave its former book with no sources.
+    // Move its state first, otherwise the stale-book cleanup below cascades it.
+    for (const [oldBookId, targetBookId] of chaptarrOrphanReassignments) {
+      const remaining = db.prepare("SELECT 1 FROM book_sources WHERE book_id = ? LIMIT 1").get(oldBookId);
+      if (!remaining) moveUserStates(targetBookId, oldBookId);
     }
 
     // Clean up books that have no source rows

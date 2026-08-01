@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { reconcileBookIdentities } from "../../src/server/db/bookIdentity.js";
 import { createTestDatabase } from "./test-db.js";
+import { seedProfile } from "./test-helpers.js";
 
 /** Inserts a book_sources row with book_id left NULL, as a fresh sync would. */
 function insertSource(
@@ -174,6 +175,52 @@ test("reconcileBookIdentities keeps ebook and audiobook Chaptarr file-path match
     assert.equal(byExternalId.get("gr-audio"), audiobookBookId);
     assert.equal(byExternalId.get("chap-audio"), audiobookBookId);
     assert.equal(booksByTitle(db).length, 2, "ebook and audiobook canonicals must remain separate");
+  } finally {
+    cleanup();
+  }
+});
+
+test("reconcileBookIdentities does not bridge one Chaptarr path across Grimmory profiles", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const firstProfile = seedProfile(db, "First");
+    const secondProfile = seedProfile(db, "Second");
+    const firstBookId = Number(db.prepare("INSERT INTO books (title) VALUES ('First book')").run().lastInsertRowid);
+    const secondBookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Second book')").run().lastInsertRowid);
+    const path = "/library/shared-path.epub";
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, author, source_media_type, chaptarr_primary_file_path) VALUES (?, 'chaptarr', 0, 'chap', 'First book', 'Author', 'book', ?)").run(firstBookId, path);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, author, source_media_type, grimmory_primary_file_path) VALUES (?, 'grimmory', ?, '1', 'First book', 'Author', 'book', ?)").run(firstBookId, firstProfile, path);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, author, source_media_type, grimmory_primary_file_path) VALUES (?, 'grimmory', ?, '1', 'Second book', 'Other author', 'book', ?)").run(secondBookId, secondProfile, path);
+
+    reconcileBookIdentities(db);
+
+    const secondGrimmory = db.prepare("SELECT book_id FROM book_sources WHERE source_type = 'grimmory' AND source_instance_id = ?").get(secondProfile) as { book_id: number };
+    assert.equal(secondGrimmory.book_id, secondBookId);
+  } finally {
+    cleanup();
+  }
+});
+
+test("reconcileBookIdentities moves state before deleting a reassigned Chaptarr-only book", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const firstProfile = seedProfile(db, "First");
+    const secondProfile = seedProfile(db, "Second");
+    const oldBookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Old Chaptarr record')").run().lastInsertRowid);
+    const targetBookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Canonical record')").run().lastInsertRowid);
+    const otherProfileBookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Other profile record')").run().lastInsertRowid);
+    const path = "/library/reassigned-path.epub";
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, author, source_media_type, grimmory_primary_file_path) VALUES (?, 'grimmory', ?, '10', 'Canonical record', 'Author', 'book', ?)").run(targetBookId, firstProfile, path);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, author, source_media_type, grimmory_primary_file_path) VALUES (?, 'grimmory', ?, '10', 'Other profile record', 'Other author', 'book', ?)").run(otherProfileBookId, secondProfile, path);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, author, source_media_type, chaptarr_primary_file_path) VALUES (?, 'chaptarr', 0, 'chap', 'Old Chaptarr record', 'Author', 'book', ?)").run(oldBookId, path);
+    db.prepare("INSERT INTO user_book_states (book_id, profile_id, source_type, progress) VALUES (?, ?, 'grimmory', 42)").run(oldBookId, firstProfile);
+
+    reconcileBookIdentities(db);
+
+    const state = db.prepare("SELECT book_id, progress FROM user_book_states WHERE profile_id = ? AND source_type = 'grimmory'").get(firstProfile) as { book_id: number; progress: number };
+    assert.equal(state.book_id, targetBookId);
+    assert.equal(state.progress, 42);
+    assert.equal(db.prepare("SELECT 1 FROM books WHERE id = ?").get(oldBookId), undefined);
   } finally {
     cleanup();
   }

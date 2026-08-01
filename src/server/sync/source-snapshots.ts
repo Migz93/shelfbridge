@@ -178,21 +178,27 @@ const absOwnedBookIds = new Set(
 // that shared book outside of Phase N, and Phase C below must keep
 // routing this Hardcover book to its audiobook sibling regardless of
 // which edition Hardcover currently reports as "current" for it.
-const absOwnedHardcoverBookIds = absOwnedBookIds.size > 0
-  ? new Set(
-      (db.prepare(`
+const absOwnedHardcoverBookIds = new Set<string>();
+if (absOwnedBookIds.size > 0) {
+  const ids = Array.from(absOwnedBookIds);
+  for (let start = 0; start < ids.length; start += 400) {
+    const batch = ids.slice(start, start + 400);
+    const placeholders = batch.map(() => "?").join(",");
+    const rows = db.prepare(`
         SELECT DISTINCT gr.grimmory_hardcover_book_id AS hardcover_book_id
         FROM book_sources gr
         WHERE gr.source_type = 'grimmory'
           AND gr.source_instance_id = ?
           AND gr.source_media_type = 'audiobook'
           AND gr.grimmory_hardcover_book_id IS NOT NULL
-          AND gr.book_id IN (${Array.from(absOwnedBookIds).map(() => "?").join(",")})
-      `).all(profileId, ...Array.from(absOwnedBookIds)) as { hardcover_book_id: string }[])
-        .map((row) => normalizeExternalId(row.hardcover_book_id))
-        .filter((id): id is string => id !== null)
-    )
-  : new Set<string>();
+          AND gr.book_id IN (${placeholders})
+      `).all(profileId, ...batch) as { hardcover_book_id: string }[];
+    for (const row of rows) {
+      const id = normalizeExternalId(row.hardcover_book_id);
+      if (id !== null) absOwnedHardcoverBookIds.add(id);
+    }
+  }
+}
 
   return { hcBooks, hcEditions, hcLists, hardcoverSnapshotStatus, grimmoryBooks, grimmoryAvailable, grimmorySnapshotStatus, grimmoryToken, absOwnedBookIds, absOwnedHardcoverBookIds, grimmoryProgressById };
 }

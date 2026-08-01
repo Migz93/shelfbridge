@@ -38,3 +38,21 @@ test("Hardcover detail fetch preserves list-only edition metadata", async () => 
     assert.equal(result.hcEditions.get(20)?.pages, 200);
   } finally { cleanup(); }
 });
+
+test("ABS ownership snapshot batches a large audiobook library", async () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const insert = db.transaction(() => {
+      for (let id = 1; id <= 500; id++) {
+        const bookId = Number(db.prepare("INSERT INTO books (title) VALUES (?)").run(`Audio ${id}`).lastInsertRowid);
+        db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, audiobookshelf_runtime_validated) VALUES (?, 'audiobookshelf', ?, ?, 1)").run(bookId, profileId, `abs-${id}`);
+        db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, source_media_type, grimmory_hardcover_book_id) VALUES (?, 'grimmory', ?, ?, 'audiobook', ?)").run(bookId, profileId, `grim-${id}`, String(id));
+      }
+    });
+    insert();
+
+    const result = await fetchSourceSnapshots(context(db, profileId) as any);
+    assert.equal(result.absOwnedHardcoverBookIds.size, 500);
+  } finally { cleanup(); }
+});
