@@ -8,6 +8,7 @@ import { testAudiobookshelfServer } from "../sync/audiobookshelf.js";
 import { scheduler } from "../scheduler.js";
 import { getRecentLogs, readRecentMachineLogs } from "../logger.js";
 import { decryptCredential, encryptCredential } from "../security/credentials.js";
+import { APP_VERSION, BUILD_CHANNEL, BUILD_COMMIT } from "../version.js";
 
 const router = Router();
 
@@ -260,9 +261,9 @@ router.get("/logs", async (req, res) => {
 
 router.get("/about", (_req, res) => {
   const info: AboutInfo = {
-    version: "0.1.0",
-    buildChannel: process.env["BUILD_CHANNEL"] ?? "custom",
-    commitSha: process.env["COMMIT_SHA"] ?? "local",
+    version: APP_VERSION,
+    buildChannel: BUILD_CHANNEL,
+    commitSha: BUILD_COMMIT,
     dataDir: process.env["DATA_DIR"] ?? "./data",
     tz: process.env["TZ"] ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
     dbVersion: CURRENT_SCHEMA_VERSION
