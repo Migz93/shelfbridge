@@ -39,6 +39,7 @@ These are specific to this app and have no equivalent in the sibling projects.
 |---|---|
 | [sync.md](sync.md) | Changing how data flows between services, or conflict/superseded-write logic |
 | [api.md](api.md) | Adding routes, changing request/response shapes, or integrating from an external client |
+| [books-and-identity.md](books-and-identity.md) | Changing book matching, identity reconciliation, the source/state tables, or the Books page filters |
 | [image-caching.md](image-caching.md) | Changing cover fetch, storage, refresh, or serving behaviour |
 
 ## Maintenance Rule
