@@ -76,7 +76,7 @@ Table-driven coverage of `computeSyncDecision` for every `conflict_strategy` (`l
 
 ### `tests/server/pruning.test.ts` — Pruning
 
-Each `prune*UserStatesMissingFromFetch` / `prune*SourcesMissingFromFetch` helper, checked for: only pruning the calling profile's own rows (never another profile's), never pruning a source with live user state, and treating an empty fetched-id set as a no-op (a failed fetch must never be mistaken for "the library is now empty").
+Each `prune*UserStatesMissingFromFetch` / `prune*SourcesMissingFromFetch` helper, checked for: only pruning the calling profile's own rows (never another profile's), never pruning a source with live user state, pruning a complete empty snapshot, and preserving all rows for partial or failed snapshots.
 
 ### `tests/server/normalization.test.ts` — Title/date helpers
 
