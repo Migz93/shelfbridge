@@ -292,7 +292,7 @@ router.get("/logs", (req, res) => {
 router.get("/about", (_req, res) => {
   const info: AboutInfo = {
     version: "0.1.0",
-    buildChannel: process.env["BUILD_CHANNEL"] ?? "develop",
+    buildChannel: process.env["BUILD_CHANNEL"] ?? "custom",
     commitSha: process.env["COMMIT_SHA"] ?? "local",
     dataDir: process.env["DATA_DIR"] ?? "./data",
     tz: process.env["TZ"] ?? Intl.DateTimeFormat().resolvedOptions().timeZone,

@@ -31,7 +31,7 @@ ENV NODE_ENV=production
 ENV PORT=9303
 ENV DATA_DIR=/config
 # Build metadata — overridden by CI workflows via --build-arg
-ARG BUILD_CHANNEL=develop
+ARG BUILD_CHANNEL=custom
 ARG COMMIT_SHA=local
 ENV BUILD_CHANNEL=$BUILD_CHANNEL
 ENV COMMIT_SHA=$COMMIT_SHA
