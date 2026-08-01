@@ -682,7 +682,7 @@ Triggers a sync run in the background. Returns immediately with the run ID(s).
 
 Sync runs are started in the background and the response returns immediately with
 the created run IDs. When multiple profile syncs overlap, Grimmory source-tag
-writes are serialized per Grimmory book inside the ShelfBridge process so
+writes are serialised per Grimmory book inside the ShelfBridge process so
 read-merge-write tag updates do not drop another user's tag.
 
 **Response**

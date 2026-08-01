@@ -1,3 +1,5 @@
+<!-- shared: structure — headings kept in sync across Migz93 self-hosted apps, content is app-specific -->
+
 # ShelfBridge Architecture Overview
 
 ## What ShelfBridge Is
@@ -25,6 +27,8 @@ download management services:
 ShelfBridge requires a local admin password before the UI can be used. The
 Express API and cached image routes are protected by signed, HTTP-only session
 cookies after setup.
+
+---
 
 ---
 
@@ -63,6 +67,8 @@ Other rules:
 
 ---
 
+---
+
 ## Deployment Model
 
 ShelfBridge runs as a single self-hosted container:
@@ -86,7 +92,9 @@ headers without accepting arbitrary proxy chains.
 
 ---
 
-## Database
+---
+
+## Database Migrations
 
 ShelfBridge uses SQLite with WAL (Write-Ahead Logging) mode enabled at startup.
 
@@ -94,8 +102,19 @@ WAL mode matters here because the background sync worker writes concurrently wit
 the web server serving API reads. WAL prevents the sync worker from blocking HTTP
 responses by allowing concurrent readers and a single writer.
 
-Schema version is tracked in the `schema_version` table. The current schema
-version is defined in `src/server/db/schema.ts` as `CURRENT_SCHEMA_VERSION = 9`.
+Schema version is tracked in the `schema_version` table, with the current version
+defined in `src/server/db/schema.ts` as `CURRENT_SCHEMA_VERSION`. `initSchema()`
+creates every table, then applies a sequential run of version-guarded
+`ALTER TABLE` and table-rebuild blocks in the same file.
+
+> **This diverges from the sibling projects.** Hubarr and Pacearr use SQLite's
+> built-in `PRAGMA user_version` with a `Migration[]` array in
+> `src/server/db/migrations.ts`, where each migration runs inside its own
+> transaction. Moving ShelfBridge onto that pattern is tracked in
+> [#58](https://github.com/Migz93/shelfbridge/issues/58), together with
+> [#32](https://github.com/Migz93/shelfbridge/issues/32) for the crash-safety
+> properties it should deliver. Do not hardcode the current version number in
+> this doc — it goes stale.
 
 ### Tables
 
@@ -120,31 +139,29 @@ version is defined in `src/server/db/schema.ts` as `CURRENT_SCHEMA_VERSION = 9`.
 
 ---
 
-## Security Notes
+---
+
+## Auth And Setup
 
 ShelfBridge protects the web UI, REST API, and cached image route with a local
 admin password. Password hashes are derived with `scrypt` and sessions are stored
 server-side in `auth_sessions`; the browser receives a signed, HTTP-only,
 SameSite cookie.
 
-Grimmory passwords, Grimmory refresh tokens, Hardcover API tokens, and
-Audiobookshelf per-user API keys are stored in the `encrypted_*` database columns
-using an AES-256-GCM envelope. Chaptarr's global API key is stored with the same
-envelope in `app_settings`. On startup, ShelfBridge migrates any older plaintext
-values in those storage locations to encrypted storage. Runtime code decrypts
-credentials only at the service-call boundary and does not store third-party
+Third-party credentials — Grimmory passwords and refresh tokens, Hardcover API
+tokens, Audiobookshelf per-user API keys, and Chaptarr's global API key — are
+stored in `encrypted_*` columns using an AES-256-GCM envelope. Runtime code
+decrypts them only at the service-call boundary and does not store third-party
 access tokens long term.
 
-The encryption key is loaded from `SHELFBRIDGE_CREDENTIAL_KEY` when set. The
-value must be a 32-byte key encoded as base64 or 64-character hex. If the
-environment variable is not set, ShelfBridge generates `/config/credential-key`
-with `0600` permissions and reuses it on later starts. Back up this key with the
-database; losing it means encrypted credentials must be re-entered.
+> Key management is under review in
+> [#55](https://github.com/Migz93/shelfbridge/issues/55) — the goal is for
+> encryption to stay while the key stops being something the user has to know
+> about. Don't document the current key lifecycle here until that lands.
 
 Logs pass through a redaction formatter that masks metadata keys containing
 password, token, secret, credential, authorization, or API key. Do not expose
-`/opt/shelfbridge`, database backups, logs, the generated credential key, or the
-web UI to untrusted users.
+`/opt/shelfbridge`, database backups, logs, or the web UI to untrusted users.
 
 ---
 
@@ -165,6 +182,8 @@ title matching removes common subtitle/sales-copy suffixes and is treated as
 low confidence so it can be reviewed before any IDs are written back to Grimmory.
 When a newly observed Hardcover book matches a Grimmory book by identity keys,
 the `book_sources` rows for both sources are linked via the same `books.id`.
+
+---
 
 ---
 
@@ -313,7 +332,7 @@ Book identity reconciliation (`src/server/db/bookIdentity.ts`) clusters
   ID, Grimmory-stored HC/GR IDs, Grimmory internal book ID) group rows immediately
 - ISBN-13 and ISBN-10 group rows unless the clusters already have conflicting
   high-confidence IDs and no overlapping title+author evidence
-- exact normalized title + author groups remaining rows even when source identifiers
+- exact normalised title + author groups remaining rows even when source identifiers
   differ; differing IDs remain visible as ID review work rather than creating
   separate book entries
 
@@ -327,7 +346,7 @@ high-confidence identity keys (HC book ID, Grimmory ID, ISBNs) so that, for
 example, separate HC library entries for the physical and audio editions of the
 same work are not incorrectly merged. The **title+author key is format-agnostic**:
 physical, ebook, and audiobook editions of the same work that share no common
-high-confidence identifier are merged by normalized title+author rather than being
+high-confidence identifier are merged by normalised title+author rather than being
 kept in separate canonical records — preventing duplicate `books` rows when a
 user's HC edition points at the physical book but their ABS file was matched via
 the audiobook edition.
@@ -396,62 +415,11 @@ book-level cover.
 
 ### Image Cache
 
-`src/server/image-cache.ts` — stale-while-refresh cover image caching.
+`src/server/image-cache.ts` — stale-while-refresh cover image caching, backed by
+the `image_cache` table and served from `/images`.
 
-Cached files are stored under `DATA_DIR/image-cache/` and served by an Express
-static route at `/images`. The `image_cache` table tracks each entry:
-
-| Column | Description |
-|---|---|
-| `id` | Auto-increment |
-| `cache_key` | Logical key (e.g. `cover:<bookSourceId>`) |
-| `entity_id` | The `book_sources.id` the entry belongs to |
-| `source_url` | Original external URL (used for re-fetching public covers) |
-| `local_file_path` | Absolute path to the file on disk |
-| `local_web_path` | Web-accessible path returned to clients (e.g. `/images/<uuid>.jpg`) |
-| `cached_at` | When the entry was first created |
-| `last_refresh_at` | When the file was last successfully refreshed |
-| `refresh_after` | Timestamp after which the entry is considered stale |
-| `last_attempted_at` | Timestamp of the most recent fetch attempt |
-| `last_error` | Error message from the last failed attempt (if any) |
-
-**Two entry points:**
-
-- `ensureCoverCached(bookSourceId, sourceUrl)` — used for public URLs (Hardcover,
-  Goodreads). Cache key: `cover:<bookSourceId>`. Three states:
-  - *Fresh*: refreshed within the last seven days → return `local_web_path` immediately
-  - *Stale*: older than seven days → return existing path immediately and trigger a
-    background refresh (stale-while-revalidate)
-  - *Miss*: no entry → fetch inline, write file atomically, insert row
-  - Validates that the response `Content-Type` starts with `image/`; enforces a
-    20 MB size cap and a hard 15-second end-to-end timeout. A changed public
-    source URL triggers an early background refresh because it is a strong signal
-    that the upstream cover changed.
-
-- `storeFetchedCover(bookSourceId, data)` — used for pre-fetched authenticated
-  covers (Grimmory). Ordinary profile syncs reuse an existing on-disk cover and
-  never re-download it. No source URL is stored; re-fetching is handled by the
-  daily `image-cache-refresh` job via `refreshStaleGrimmoryCovers`.
-
-All cover work discovered by a profile sync runs through a four-worker in-process
-queue. Tasks are de-duplicated by cache key, have hard network deadlines, and do
-not block identity reconciliation or status/progress sync. The daily refresh job
-checks both public and authenticated covers and downloads them again only after
-seven days, allowing ShelfBridge to detect changed upstream artwork without
-re-fetching hundreds of images every few minutes.
-
-**Atomic writes:** cover data is written to a temp file in the same directory,
-then renamed into place with `fs.renameSync` to avoid partial reads. Background
-refreshes replace the file with a new UUID filename and delete the old one after
-the rename succeeds.
-
-After identity reconciliation, ShelfBridge removes orphaned `image_cache` rows
-whose `entity_id` no longer points at an existing `book_sources.id`. The cached
-file is deleted only when no other cache row references it and the file path is
-inside `DATA_DIR/image-cache/`.
-
-`cover_cache_path` in `book_sources` is the only cover path sent to API clients —
-external source URLs are never exposed to the browser.
+See [image-caching.md](image-caching.md) for the cache states, the table schema,
+the two entry points, atomic-write behaviour, and orphan cleanup.
 
 ### Job Scheduler
 
@@ -487,119 +455,11 @@ The `GET /api/settings/jobs` endpoint returns live state for all registered jobs
 
 ### Sync Engine
 
-`src/server/sync/engine.ts` — the live implementation. For each profile it:
+`src/server/sync/engine.ts` — the live implementation, run per profile.
 
-1. Authenticates with Grimmory (`POST /api/v1/auth/login`) to get a JWT when
-   Grimmory is configured
-2. Fetches the complete Grimmory book library in paginated batches when Grimmory
-   is configured and reachable (`GET /api/v1/books/page?page=N&size=250`),
-   including physical-only books
-3. If a Hardcover API token is configured, fetches the Hardcover user ID
-   (`me { id }`) then the full library (`user_books` GraphQL query, batched 250
-   at a time, deduplicated by `book.id`). If no token is configured, skips the
-   Hardcover source pass.
-4. Runs the matcher (`src/server/sync/matcher.ts`): builds external-ID, ISBN,
-   exact title+author, and relaxed title+author indexes from Grimmory books, then
-   matches each fetched Hardcover book against them
-5. **Phase B+C — Upserts `book_sources` rows** for every source: one
-   `source_type='hardcover'` row per fetched Hardcover book, one
-   `source_type='grimmory'` row per Grimmory book, one `source_type='goodreads'`
-   row per Goodreads book (during enrichment). These are book-level writes with
-   no profile attached.
-6. **Phase D — Reconciles book identities** (`reconcileBookIdentities`): clusters
-   all `book_sources` rows into canonical `books` records using union-find over
-   shared identity keys. This is a global pass, not per-profile.
-7. **Phases F–H — Upserts `user_book_states` rows** for each profile using the
-   assigned `book_id` from Phase D. One row per (book, profile, source_type)
-   where the user has reading activity. Computes sync decisions using
-   `conflictStrategy`, timestamp comparison, and adaptive rating normalisation.
-8. Applies status and rating writes if `dryRun = false` — `PUT
-   /api/v1/app/books/:id/status` and `PUT /api/v1/app/books/:id/rating` for
-   Grimmory when available, `update_user_book` or `insert_user_book` mutations
-   for Hardcover when configured
-9. Applies progress writes when `syncProgressEnabled = true` — Grimmory receives
-   a percentage write against `primaryFile.id` when available, while Hardcover
-   receives `progress_pages` on a user-book read record when configured
-10. Records a `sync_events` row for every book-level decision
-11. Enriches matched rows from Goodreads when configured, including optional
-    Goodreads status/rating writes and optional Goodreads shelf writes to Grimmory
-12. Applies Grimmory source tags when `syncWriteTagEnabled` is true, using a
-    per-book metadata lock around the tag read-merge-write operation
-13. **Hardcover shelf sync** (if a Hardcover token is configured and
-    `syncShelvesEnabled`): loads Hardcover list ↔ Grimmory shelf mappings,
-    fetches the profile's Hardcover lists in one GraphQL query, resolves Grimmory
-    book IDs via `book_sources`, ensures each mapped shelf exists in Grimmory
-    (creating it if absent), then additively syncs matched membership in both
-    directions
-14. **Chaptarr status pass** (if `chaptarr.baseUrl` and `chaptarr.apiKey` are
-    set in `app_settings`): fetches monitored books from Chaptarr, fetches book
-    file paths per author in parallel, matches each book to `book_sources` rows
-    via an eight-step chain (IDs → ISBNs → title+author → file-path fallback),
-    upserts `book_sources(source_type='chaptarr')` with `chaptarr_monitored /
-    chaptarr_has_file / chaptarr_primary_file_path`, and promotes
-    `sync_health = 'missing'` to `'pending_download'` on `user_book_states` rows
-    for books in Chaptarr's queue that have no file yet
-15. **Phase M — Audiobookshelf library sync** (if `audiobookshelf.baseUrl` is set
-    globally and the profile has an ABS API key): fetches all ABS libraries,
-    filters to `mediaType = 'book'` (audiobook libraries only, excluding podcasts),
-    then for each item attempts to match by: existing ABS source row, file path vs
-    audiobook-capable Grimmory/Chaptarr rows, audiobook ASIN vs audiobook-capable
-    rows, or ISBN vs audiobook-capable rows. Upserts
-    `book_sources(source_type='audiobookshelf')` with duration, file path, ASIN,
-    and sets `audiobookshelf_runtime_validated = 1` for matched items. Rows are
-    only treated as audiobook-capable when their own format/path metadata says so;
-    stray audio-adjacent identifiers on ebook rows are not enough
-16. **Phase N — Audiobookshelf progress sync** (if ABS is configured and at least
-    one of Grimmory or Hardcover is available): fetches all ABS listening progress
-    (`/api/me`, filtered to non-podcast items), then performs a three-way
-    latest-wins comparison across ABS, Grimmory, and Hardcover. Writes the winning
-    progress to every source that needs it — either because the source has no
-    progress yet or because its progress differs from the winner by ≥ 0.1
-    percentage points. ABS is updated via `PATCH /api/me/progress/{itemId}`;
-    Grimmory via percentage progress write; Hardcover via `progress_seconds` on
-    `insert_user_book_read` / `update_user_book_read` (audiobook editions use
-    `progress_seconds` instead of `progress_pages`). When a Hardcover match exists
-    but no `user_books` entry does (e.g., the book is in the user's "Owned" list
-    with a specific edition but has never been marked as reading), Phase N
-    automatically creates the `user_books` entry using the edition pinned in the
-    list before writing progress. Logs a mismatch warning when ABS duration differs
-    from HC `audio_seconds` by more than 5% — visible in the Books page ABS
-    Runtime Mismatch filter
-17. Updates the `sync_runs` record with final counts and `status = 'success'`
-
-### Status Mapping
-
-Hardcover exposes six current API statuses. Grimmory exposes those concepts plus
-`UNSET`, `RE_READING`, and `PARTIALLY_READ`. ShelfBridge keeps the original source
-status values in `user_book_states`, but groups some Grimmory states into the same
-Hardcover write action.
-
-Hardcover to Grimmory:
-
-| Hardcover status_id | Grimmory ReadStatus |
-|---|---|
-| 1 — Want to Read | `UNREAD` |
-| 2 — Currently Reading | `READING` |
-| 3 — Read | `READ` |
-| 4 — Paused | `PAUSED` |
-| 5 — Did Not Finish | `ABANDONED` |
-| 6 — Ignored | `WONT_READ` |
-
-Grimmory to Hardcover:
-
-| Grimmory ReadStatus | Hardcover status_id | Notes |
-|---|---|---|
-| `UNSET` | none | Ignored; no actionable reading state |
-| `UNREAD` | none | Ignored to avoid adding default Grimmory books to Hardcover as Want to Read |
-| `READING` | 2 — Currently Reading | Direct active-reading match |
-| `RE_READING` | 2 — Currently Reading | Preserved locally, collapsed for Hardcover writes |
-| `PARTIALLY_READ` | 2 — Currently Reading | Preserved locally, collapsed for Hardcover writes |
-| `READ` | 3 — Read | Writes Grimmory `dateFinished` to Hardcover `last_read_date` when present |
-| `PAUSED` | 4 — Paused | Hardcover API supports this status even if the website UI may hide it |
-| `ABANDONED` | 5 — Did Not Finish | Direct match |
-| `WONT_READ` | 6 — Ignored | Hardcover API supports this status even if the website UI may hide it |
-
-Key files:
+The step-by-step behaviour, conflict resolution, status mapping, and per-source
+passes are documented in [sync.md](sync.md). That file is the source of truth;
+this section only records which module owns what.
 
 | File | Role |
 |---|---|
@@ -609,11 +469,9 @@ Key files:
 | `src/server/sync/grimmory.ts` | Grimmory REST client, library fetch, status/rating/tag write helpers |
 | `src/server/sync/audiobookshelf.ts` | Audiobookshelf REST client, library/progress fetch, progress write helpers |
 
-Grimmory connection is optional — if Grimmory is unreachable or credentials fail,
-the engine still fetches and stores Hardcover books when Hardcover is configured,
-recording them as `missing`.
-Hardcover connection is optional too — without a token, Hardcover fetches/writes
-and list mappings are skipped while Grimmory and Goodreads processing continues.
+Grimmory and Hardcover connections are both optional. If either is unreachable or
+unconfigured, the engine continues with the sources that remain and records
+affected books as `missing`.
 
 ### Frontend
 
@@ -625,6 +483,8 @@ Pages that auto-refresh while open: Dashboard, Sync History, Users.
 Polling cadence: 2.5 s while a sync is actively running, 15 s at idle.
 Polling pauses in the background; a fast-refresh window exits as soon as the
 running sync completes.
+
+---
 
 ---
 
@@ -641,7 +501,7 @@ running sync completes.
   only one `runSync` call executes at a time. `reconcileBookIdentities` mutates
   global shared state (`books` and `book_sources`) and concurrent runs produce
   merge/remap collisions
-- Grimmory source-tag writes are serialized per Grimmory base URL and book ID in
+- Grimmory source-tag writes are serialised per Grimmory base URL and book ID in
   the running ShelfBridge process so concurrent profile syncs do not overwrite
   each other's tags during metadata read-merge-write updates
 - The "Superseded" filter on the Books page shows books where at least one write

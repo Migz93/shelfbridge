@@ -79,12 +79,12 @@ profile's configured source scope:
 - matched Hardcover books after the optional Hardcover `Sync List` filter
 - matched Goodreads books after the optional Goodreads `Sync Shelf` filter
 
-The username segment is based on the profile's Grimmory username, normalized to a
+The username segment is based on the profile's Grimmory username, normalised to a
 lowercase tag-safe value. Existing Grimmory tags are preserved; ShelfBridge reads
 the current Grimmory metadata for each book and writes the merged tag list back.
 Dry runs report the tag writes without changing Grimmory.
 
-Tag writes are serialized per Grimmory base URL and book ID inside the ShelfBridge
+Tag writes are serialised per Grimmory base URL and book ID inside the ShelfBridge
 process. This prevents concurrent profile syncs from racing on the same
 read-merge-write metadata update and dropping another user's tag.
 
@@ -368,7 +368,7 @@ and auto-loaded on mount if the profile has a Goodreads connection.
 Configured Goodreads custom shelf mappings are mirrored into Grimmory shelves.
 For each mapping, ShelfBridge
 fetches the Goodreads RSS shelf, matches those books to existing Grimmory-linked
-`book_sources` rows by Goodreads ID, ISBN, or normalized title, resolves the mapped
+`book_sources` rows by Goodreads ID, ISBN, or normalised title, resolves the mapped
 Grimmory shelf by name, and creates it via `POST /api/v1/shelves` if it does not
 already exist. The shelf is resolved or created even when no Goodreads books can
 currently be matched to Grimmory books, so an empty mapped Grimmory shelf can be
@@ -448,7 +448,7 @@ decorated Goodreads or Hardcover IDs still match their plain numeric source IDs.
    `source_type='hardcover'` row per fetched Hardcover book, one
    `source_type='grimmory'` row per Grimmory book. These are book-level writes
    with no profile attached. Hardcover, Grimmory, Goodreads, and Chaptarr source
-   rows store normalized identity metadata when the upstream source provides it:
+   rows store normalised identity metadata when the upstream source provides it:
    title, author, ISBNs, cover, and series fields. Rows that share identity keys
    will be clustered in Phase D.
 6. **Reconciles book identities** (Phase D): `reconcileBookIdentities` runs
@@ -561,6 +561,9 @@ current API status for "Currently Reading":
 | `PAUSED` | 4 — Paused |
 | `ABANDONED` | 5 — Did Not Finish |
 | `WONT_READ` | 6 — Ignored |
+
+`PAUSED` and `WONT_READ` are both supported by the Hardcover API even though the
+Hardcover website UI may not surface them.
 
 `UNSET` and `UNREAD` are intentionally ignored as Grimmory → Hardcover sources.
 Grimmory often stores newly added books as `UNREAD`, and ShelfBridge should not
@@ -983,5 +986,5 @@ Hardcover, it targets a specific `user_book_reads` row. Two related pitfalls:
   finished read (e.g. correcting its date) can therefore make Hardcover's own
   UI feature that read instead of the actively-progressing one, even though
   all underlying data is otherwise correct. This is a Hardcover-side display
-  behavior, not something ShelfBridge's sync state controls; it resolves
+  behaviour, not something ShelfBridge's sync state controls; it resolves
   itself once the actively-tracked read is written to again.

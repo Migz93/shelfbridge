@@ -1,6 +1,12 @@
+<!-- shared: structure — headings kept in sync across Migz93 self-hosted apps, content is app-specific -->
+
 # Testing
 
-ShelfBridge uses Node's built-in [test runner](https://nodejs.org/api/test.html) (`node:test` + `node:assert/strict`, run through `tsx`) for server-side tests — no Jest/Vitest, no mocking library. Tests either exercise a real, isolated SQLite database (via `tests/server/test-db.ts`) or run the sync engine with hand-rolled fake adapters standing in for Hardcover/Grimmory/Goodreads/Chaptarr HTTP calls.
+ShelfBridge uses Node's built-in [test runner](https://nodejs.org/api/test.html)
+(`node:test` + `node:assert/strict`, run through `tsx`) for server-side tests —
+no Jest/Vitest, no mocking library. Tests either exercise a real, isolated SQLite
+database (via `tests/server/test-db.ts`) or run the sync engine with hand-rolled
+fake adapters standing in for Hardcover/Grimmory/Goodreads/Chaptarr HTTP calls.
 
 ## Commands
 
@@ -11,17 +17,35 @@ ShelfBridge uses Node's built-in [test runner](https://nodejs.org/api/test.html)
 | `npm run build` | Builds the Vite client and TypeScript server |
 | `npm audit --omit=dev` | Checks production dependency advisories |
 
-`npm test` sets `DATA_DIR=./.test-data` so tests never touch your real `./data` directory; `.test-data/` is gitignored.
+## Server Tests
 
-## Adding automated tests
+`npm test` sets `DATA_DIR=./.test-data` so tests never touch your real `./data`
+directory; `.test-data/` is gitignored.
 
-Create a `*.test.ts` file under `tests/server/` and it's picked up automatically. Most tests should use `createTestDatabase()` from `test-db.ts`, which spins up a fresh temp-dir SQLite database with the current schema applied — no shared state between tests.
+Most tests should use `createTestDatabase()` from `test-db.ts`, which spins up a
+fresh temp-dir SQLite database with the current schema applied — no shared state
+between tests.
 
-`sync-engine.test.ts` is the one exception: `runSyncImpl` always operates on the `db/index.ts` singleton rather than an injected database, so that file points `DATA_DIR` at its own private temp dir before importing the engine, and every test in it seeds its own profile and scopes assertions to that profile's id.
+`sync-engine.test.ts` is the one exception: `runSyncImpl` always operates on the
+`db/index.ts` singleton rather than an injected database, so that file points
+`DATA_DIR` at its own private temp dir before importing the engine, and every
+test in it seeds its own profile and scopes assertions to that profile's id.
+
+## Playwright End-To-End Tests
+
+Not implemented yet. Tracked in
+[#59](https://github.com/Migz93/shelfbridge/issues/59).
+
+When Playwright is added, copy the setup from
+[hubarr](https://github.com/Migz93/hubarr) — `playwright.config.ts`,
+`.env.playwright.example`, `tests/playwright/auth.setup.ts`, and the `test:e2e`
+scripts — and adjust for ShelfBridge: the session cookie is
+`shelfbridge_session` and `BASE_URL` points at port `9303`. Then replace this
+section with hubarr's Playwright section, modified to suit.
 
 ---
 
-## Automated test suite
+## Test Suite
 
 ### `tests/server/schema-migrations.test.ts` — Schema & migrations
 
@@ -44,7 +68,7 @@ Create a `*.test.ts` file under `tests/server/` and it's picked up automatically
 
 ### `tests/server/settings.test.ts` — App settings
 
-`getSetting`/`setSetting` fallback and round-trip behavior.
+`getSetting`/`setSetting` fallback and round-trip behaviour.
 
 ### `tests/server/sync-decision.test.ts` — Sync decision table
 
@@ -77,8 +101,17 @@ Adapters not relevant to a given test are left unimplemented via `createFakeAdap
 
 - No coverage yet for Goodreads/Chaptarr/Audiobookshelf sync paths or shelf/list syncing.
 - The Grimmory cover-caching path (`cacheGrimmoryCover` in `engine.ts`) makes a real `fetch()` call outside the adapter seam — `sync-engine.test.ts` stubs `globalThis.fetch` globally so it never hits the network, but the cover-caching logic itself has no dedicated test coverage.
-- No forced mid-transaction failure test for `reconcileBookIdentities`'s rollback behavior.
+- No forced mid-transaction failure test for `reconcileBookIdentities`'s rollback behaviour.
 - No auth/session-expiry tests.
+
+---
+
+## Adding New Tests
+
+Create a `*.test.ts` file under `tests/server/` and it's picked up
+automatically.
+
+When a test is agreed and written, add a row for it in the relevant table above.
 
 ## Manual Smoke Test
 
@@ -103,7 +136,8 @@ Expected log line:
 ShelfBridge listening on port 9303
 ```
 
-Then open `http://localhost:9303`, create or enter the ShelfBridge admin password, and smoke-test:
+Then open `http://localhost:9303`, create or enter the ShelfBridge admin
+password, and smoke-test:
 
 - Dashboard loads after authentication
 - Settings loads and the About tab reports version/build info
@@ -111,3 +145,6 @@ Then open `http://localhost:9303`, create or enter the ShelfBridge admin passwor
 - Credential fields never echo stored secrets back to the browser
 - `/api/settings` returns `401` from an unauthenticated browser/session
 - `/images/...` returns `401` without a valid session
+
+This section needs Docker. See "Where You're Running" in `AGENTS.md` — where it
+is unavailable, say so rather than substituting a workspace check.

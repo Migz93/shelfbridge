@@ -1,3 +1,5 @@
+<!-- shared: content — keep in sync across Migz93 self-hosted apps -->
+
 # Deployment
 
 ## Image And Container
@@ -10,18 +12,23 @@
 | Host data directory | `/opt/shelfbridge` |
 | Container data directory | `/config` |
 
+The image holds the built React client in `dist/client`, the compiled Express
+server in `dist/server`, and production dependencies only. The server command is
+`node dist/server/server/index.js`.
+
 ## Running It
 
 Build, run, and rebuild commands live in `AGENTS.md` under "Rebuilding The
-Container After Code Changes", alongside the container conventions they have
-to stay consistent with. This file covers what the deployment *is*, not how to
-drive it.
+Container After Code Changes", alongside the container and environment
+conventions they have to stay consistent with. This file covers what the
+deployment *is*, not how to drive it.
 
 ## Persistent Data
 
-Everything ShelfBridge keeps — config, SQLite database, image cache, logs —
-lives in `/config`, bind-mounted from `/opt/shelfbridge` on the host. Keep it
-flat; don't add `config/`, `data/`, or `logs/` subdirectories.
+Everything ShelfBridge keeps — config, SQLite database, image cache, logs — lives in `/config`,
+bind-mounted from `/opt/shelfbridge` on the host. Keep it flat; don't add
+`config/`, `data/`, or `logs/` subdirectories. Don't use named Docker volumes for
+this app; the user needs host-visible files.
 
 ## Container User
 
@@ -64,7 +71,6 @@ distributions) blocks creating such a link without access to the target.
 | `DATA_DIR` | `/config` | Persistent config/database/log directory |
 | `LOG_LEVEL` | `info` | Server log level |
 | `TZ` | `UTC` | Container timezone |
-| `SHELFBRIDGE_CREDENTIAL_KEY` | generated | Credential encryption key; generated into `/config/credential-key` if unset |
 | `BUILD_CHANNEL` | `develop` | Build metadata shown by the app |
 | `COMMIT_SHA` | `local` | Build metadata shown by the app |
 
@@ -79,11 +85,9 @@ lines:
 docker buildx imagetools inspect node:22-trixie-slim
 ```
 
-## DooD Notes
+## Reverse Proxy
 
-The devcontainer talks to the host Docker daemon through
-Docker-outside-of-Docker:
-
-- always use bridge networking; never `network_mode: host`
-- don't browse or inspect `/opt/shelfbridge` from inside the devcontainer
-- referencing `/opt/shelfbridge` in Docker bind mounts is fine
+When ShelfBridge runs behind a reverse proxy such as Nginx, Traefik, or Caddy,
+enable **Settings → General → Network → Trust Proxy** and restart the container.
+This makes Express trust one proxy hop so rate limiting uses the real client IP
+from `X-Forwarded-For` headers without accepting arbitrary proxy chains.

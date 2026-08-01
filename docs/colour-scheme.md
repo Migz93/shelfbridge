@@ -1,3 +1,5 @@
+<!-- shared: structure — headings kept in sync across Migz93 self-hosted apps, content is app-specific -->
+
 # Colour Scheme
 
 ShelfBridge uses a fixed dark-mode palette defined as CSS custom properties in
@@ -73,7 +75,7 @@ All text/background pairings in active use pass WCAG AA (4.5:1 for normal text).
 
 ---
 
-## Status Colour Usage in the UI
+## Status Colour Usage In The UI
 
 Status colours have specific jobs across the app:
 

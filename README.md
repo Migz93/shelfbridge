@@ -132,7 +132,7 @@ ShelfBridge is deliberately conservative about writes:
 
 ### Early Development
 
-ShelfBridge is still early in development. Database schema, sync behavior, UI layout, and supported integrations may change before a stable release.
+ShelfBridge is still early in development. Database schema, sync behaviour, UI layout, and supported integrations may change before a stable release.
 
 ## AI Transparency
 

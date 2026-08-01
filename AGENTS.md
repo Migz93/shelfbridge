@@ -1,7 +1,13 @@
-# Agent Guidelines — Docker Outside of Docker
+<!-- shared: content — keep in sync across Migz93 self-hosted apps; only the Project Facts table differs -->
 
-You are running inside a VS Code devcontainer. Read this file before doing any
-Docker-related work.
+# Agent Guidelines
+
+Read this file before doing any work in this repo.
+
+Everything here is **always relevant** — environment, conventions, and the gates
+you have to stop at. Material that only matters at a particular moment (opening
+a PR, cutting a release, triaging a Snyk finding) lives in `docs/` instead, and
+the table below says when to go and read it.
 
 > If a `LOCAL.md` file exists in this directory, read it — it contains
 > environment-specific setup details for this machine. If it doesn't exist,
@@ -22,27 +28,88 @@ This table is the only place the projects differ — when a rule below refers to
 | Workspace path | `/workspaces/shelfbridge` (same as `app/` on the host at `/opt/vscode/node/shelfbridge/app/`) |
 | Version files | `package.json` and `package-lock.json` |
 | Checks to run before closing out work | `npm run check` |
-| Test suite | Server tests — `npm test`. No Playwright suite. |
+| Test suite | Server tests — `npm test`. No Playwright suite yet ([#59](https://github.com/Migz93/shelfbridge/issues/59)). |
 | Integrations to flag in review | Audiobookshelf, Hardcover, Grimmory, Chaptarr |
 
 > **Until [#54](https://github.com/Migz93/shelfbridge/issues/54) lands**, a version bump also has to update the hardcoded literal in
 > `src/server/routes/settings.ts`. That issue removes the literal so this table becomes accurate on its own.
 
-## Your environment
+## Before You Start — What To Read
 
-- You are inside a devcontainer, not on the host machine directly.
-- You have access to the host's Docker daemon via Docker-outside-of-Docker
-  (DooD). You can run `docker` and `docker compose` commands normally.
-- You **cannot** browse the host filesystem. Paths like `/opt/...` that you
-  reference in Docker configs exist on the host, not inside this container. Do
-  not try to read or write them — just reference them correctly in your Docker
-  configuration.
+If the task you're about to do appears here, open the matching file **first**.
+Don't guess at these — they contain conventions you will otherwise get wrong.
 
-## Host filesystem conventions
+| If you're about to… | Read |
+|---|---|
+| Open a PR, or write PR/issue text | [docs/workflow.md](docs/workflow.md) |
+| Cut a release or bump a version | [docs/workflow.md](docs/workflow.md) |
+| Act on a Snyk finding | [docs/workflow.md](docs/workflow.md) |
+| Add logging or comments to new code | [docs/workflow.md](docs/workflow.md) |
+| Add or change tests | [TESTING.md](TESTING.md) |
+| Change the database schema | [docs/architecture.md](docs/architecture.md) |
+| Pick a colour for any UI element | [docs/colour-scheme.md](docs/colour-scheme.md) |
+| Change Docker, ports, or bind mounts | [docs/deployment.md](docs/deployment.md) |
+| Add background cleanup or retention | [docs/maintenance.md](docs/maintenance.md) |
 
-`/opt` paths exist on the **host only**. The agent runs inside a devcontainer
-and cannot read, list, or inspect anything under `/opt` — do not attempt to
-`ls`, `cat`, or browse those paths.
+[docs/README.md](docs/README.md) indexes everything else, including the docs that
+are specific to this app.
+
+**Where new information belongs**, when you learn something worth writing down:
+
+| Kind of information | Where it goes |
+|---|---|
+| Always true, needed on every task | this file |
+| True only while doing a particular kind of work | the matching `docs/*.md` |
+| True only for one branch or issue | that issue or PR, not a file |
+
+## Where You're Running
+
+This repo is worked on from two different places, and they are **not equally
+capable**. Check which one you're in before doing anything Docker-related:
+
+```bash
+uname -s
+docker info >/dev/null 2>&1 && echo "docker: available" || echo "docker: unavailable"
+```
+
+| | Devcontainer (Linux, DooD) | Mac (Claude/Codex desktop app) |
+|---|---|---|
+| `uname -s` | `Linux` | `Darwin` |
+| Docker build / run / logs | Yes | **No** |
+| `/opt/shelfbridge` bind mount | On the Docker host | **Absent — never create it** |
+| `npm ci`, build, checks | Yes | Yes |
+| Server tests | Yes | Yes |
+| Playwright | Yes | Only against a remote `BASE_URL` |
+| Docs, refactors, review, git, `gh` | Yes | Yes |
+
+**If a task needs a container built, run, or inspected and Docker is
+unavailable, stop and say so.** Do not improvise a workaround, do not try to
+install or configure Docker, and do not report a change as verified when it was
+only type-checked. Name the step that needs the devcontainer and let the user
+decide how to proceed.
+
+The line falls at *"does this need a running container to verify?"* — Dockerfile
+changes, entrypoint changes, and anything touching startup or the bind mount
+need the devcontainer. Docs, refactors, server tests, and review do not.
+
+## Docker Outside Of Docker
+
+In the devcontainer you have access to the host's Docker daemon via
+Docker-outside-of-Docker (DooD). `docker` and `docker compose` work normally,
+with two constraints:
+
+- You **cannot** browse the host filesystem. Paths like `/opt/...` exist on the
+  host, not inside this container. Do not `ls`, `cat`, or browse them — just
+  reference them correctly in Docker configuration.
+- Always use **bridge networking**. It is the only mode that works reliably with
+  DooD on this host.
+  - `docker run`: include `--network bridge`
+  - Compose services: set `network_mode: bridge`
+  - `docker build`: do **not** pass `--network`
+
+  Do not use `host`, `none`, or custom named networks unless explicitly asked.
+
+## Host Filesystem Conventions
 
 Everything for ShelfBridge lives under a single directory on the host:
 
@@ -54,7 +121,7 @@ All files the app needs — config, database, logs, whatever — go directly in
 there. Do not create subdirectories like `config/`, `data/`, or `logs/` unless
 the app itself requires a specific path inside the container. Keep it flat.
 
-## Docker naming conventions
+## Docker Naming Conventions
 
 When building images or creating containers for this app, use the app name
 directly — do not suffix with `-app`, `-container`, `-service`, or similar.
@@ -68,7 +135,7 @@ directly — do not suffix with `-app`, `-container`, `-service`, or similar.
 If the app gains multiple distinct services (e.g. a frontend and an API), use
 `shelfbridge-frontend`, `shelfbridge-api` etc.
 
-## Bind mounts
+## Bind Mounts
 
 Bind-mount the entire app directory from the host into the container as a single
 volume. Do not use named Docker volumes — the user needs to be able to inspect
@@ -92,28 +159,18 @@ services:
     restart: unless-stopped
 ```
 
-## Where your app code is
+## Where Your App Code Is
 
-Your workspace is mounted at `/workspaces/shelfbridge` inside this container. This
-is the same directory as `app/` on the host at `/opt/vscode/node/shelfbridge/app/`.
-
-## Networking
-
-Always use bridge networking — it is the only mode that works reliably with DooD
-on this host.
-
-- `docker run`: include `--network bridge`
-- Compose services: set `network_mode: bridge`
-- `docker build`: do **not** pass `--network`
-
-Do not use `host`, `none`, or custom named networks unless explicitly requested.
+Your workspace is mounted at `/workspaces/shelfbridge` inside the devcontainer.
+This is the same directory as `app/` on the host at
+`/opt/vscode/node/shelfbridge/app/`.
 
 ## Port
 
 ShelfBridge runs on port **9303**. Always map `9303:9303` — do not
 change the port unless the user explicitly asks.
 
-## Summary checklist before creating any container
+## Checklist Before Creating Any Container
 
 - [ ] Image name matches the app name
 - [ ] Container name matches the app name
@@ -157,9 +214,16 @@ docker logs shelfbridge 2>&1 | tail -5
 
 You should see: `ShelfBridge listening on port 9303`.
 
+This whole section needs Docker. On a machine where it is unavailable, say so
+rather than substituting a workspace check for a real rebuild.
+
 ---
 
-## GitHub Workflow And Release Process
+## GitHub Workflow
+
+The gates below are mandatory and apply on every piece of work. The mechanical
+detail — PR body format, `gh` commands, release steps, Snyk handling — lives in
+[docs/workflow.md](docs/workflow.md).
 
 ### Before Starting Any Work — Branch Check (Mandatory)
 
@@ -196,9 +260,9 @@ type/branch-name branch → PR into develop → develop → chore/bump-version �
 2. **Do the work** on that branch. Commit as many times as needed.
 3. **Stop at the review gate.** When the work is complete, do not open the PR —
    go to "The Review Gate" below and ask the user how they want to proceed.
-4. **Open a PR** from that branch into `develop` using `gh pr create`. This is
-   what feeds the release notes — the PR title becomes the changelog entry. Use
-   a semantic title (`feat:`, `fix:`, `chore:`, etc.).
+4. **Open a PR** from that branch into `develop`. This is what feeds the release
+   notes — the PR title becomes the changelog entry. Use a semantic title
+   (`feat:`, `fix:`, `chore:`, etc.).
 5. **Merge the PR** into `develop`. Delete the branch after merging.
 6. **Repeat** steps 1–5 for each piece of work. `develop` accumulates all the
    merged PRs.
@@ -351,6 +415,20 @@ short.
 
 ---
 
+### Branch Rules Summary
+
+| Branch | Purpose | Direct commits? |
+|---|---|---|
+| `main` | Stable, released code | Never |
+| `develop` | Integration branch | Never — PRs only |
+| `feat/*` | New features | Yes, this is where work happens |
+| `fix/*` | Bug fixes | Yes |
+| `chore/*` | Maintenance, version bumps, dependencies | Yes |
+| `ci/*` | CI/workflow changes | Yes |
+| `docs/*` | Documentation only | Yes |
+
+---
+
 ### How The Agent Should Interpret The User's Instructions
 
 The user will not always use precise git terminology. They may say things like:
@@ -361,7 +439,7 @@ The user will not always use precise git terminology. They may say things like:
   commit
 - *"let's get this into develop"* — same as above, open a PR
 - *"merge develop into main"* or *"push to main"* — this is a release step, see
-  release flow above
+  the release flow in [docs/workflow.md](docs/workflow.md)
 
 **When the user's instruction is ambiguous**, the agent should either:
 
@@ -378,174 +456,7 @@ without re-litigating, but say what you're doing.
 
 ---
 
-### GitHub CLI Usage
-
-Use `gh` for all GitHub operations:
-
-- `gh pr create --base develop --title "..." --body "..."`
-- `gh pr merge --squash --delete-branch`
-- `gh release create vX.Y.Z --generate-notes`
-- `gh issue create --title "..." --body "..."`
-
-Always confirm the base branch is correct before creating a PR. Work-branch PRs
-target `develop`; only the release PR targets `main`.
-
----
-
-### AI Sign-Off For GitHub Text
-
-Any text an agent writes that lands on GitHub — PR descriptions, issue bodies,
-PR comments, review responses — must be attributable. Sign off with the agent's
-name at the end so a human reading the thread later knows what wrote it.
-
-Commit messages carry a `Co-Authored-By` trailer instead; don't duplicate the
-sign-off there.
-
----
-
-### Pull Request Description Format
-
-Use this structure for PR bodies:
-
-```markdown
-## Summary
-
-One or two sentences on what this change does and why.
-
-## Changes
-
-- Bullet per meaningful change
-- Group related edits rather than listing every file
-
-## Test plan
-
-- How this was verified
-- Note anything that could not be verified locally
-```
-
-Keep it factual. Describe what changed and how it was checked, not how
-significant it is.
-
-- Call out explicitly if the change affects: release behaviour, Docker
-  publishing, auth, database schema, Audiobookshelf/Hardcover/Grimmory/Chaptarr integrations, or user-visible
-  setup
-
----
-
-### Branch Rules Summary
-
-| Branch | Purpose | Direct commits? |
-|---|---|---|
-| `main` | Stable, released code | Never |
-| `develop` | Integration branch | Never — PRs only |
-| `feat/*` | New features | Yes, this is where work happens |
-| `fix/*` | Bug fixes | Yes |
-| `chore/*` | Maintenance, version bumps, dependencies | Yes |
-| `ci/*` | CI/workflow changes | Yes |
-| `docs/*` | Documentation only | Yes |
-
----
-
-### Pull Request Conventions
-
-- PR titles are semantic and become changelog entries: `feat: add poster
-  caching`, `fix: correct sync ordering`, `chore: bump to 1.2.0`
-- One logical change per PR. Split unrelated work.
-- Squash-merge into `develop` so each PR is one commit in the history.
-- Delete the branch after merging.
-
----
-
-### Release Process
-
-When the user says it's time to release:
-
-1. Confirm the version number with the user — patch, minor, or major
-2. Create `chore/bump-version-X.Y.Z` from `develop`
-3. Update the version files listed in Project Facts
-4. Open a PR from that branch into `develop` and merge it
-5. Open a PR from `develop` into `main`, take it through the review gate, and
-   merge it
-6. Push the tag `vX.Y.Z` from `main`
-7. Review the release-drafter draft on GitHub and publish it
-
-Do not invent the version — always confirm with the user if ambiguous.
-
-**Tag format:** `vX.Y.Z` — always from `main`, never from `develop`.
-
----
-
-### Agent Behaviour — Snyk
-
-When working through Snyk findings:
-
-1. **Always explain the finding first** — describe what Snyk flagged, why it
-   flagged it, and whether it is a genuine issue or a false positive before
-   suggesting any action.
-2. **Recommend Fix or Won't Fix honestly** — if fixing the issue would require
-   writing worse code (less readable, against best practice, or purely to
-   satisfy static analysis), say so clearly and recommend Won't Fix instead.
-3. **When recommending Won't Fix**, always provide:
-   - A plain-English comment the user can paste into the Snyk GUI, explaining
-     why the code is safe
-   - The correct Snyk category to select: **Won't Fix** for false positives or
-     deliberate decisions, **Ignore Temporarily** only if there is a genuine
-     plan to revisit
-4. **Never suggest a change purely to appease Snyk** if it doesn't improve
-   actual security or code quality.
-
-See `SECURITY.md` for the full Snyk tooling guide, scan commands, and
-philosophy.
-
----
-
-### Implementation Expectations — Logging And Comments
-
-When implementing new functionality, treat logging and code clarity as part of
-the feature work, not as optional polish.
-
-#### Checks
-
-Run the checks listed in Project Facts before closing out work. Keep any tooling
-changes practical and correctness-focused — do not introduce broad style-only
-rule churn as part of unrelated feature work.
-
-#### Logging
-
-- Consider logging for every new feature, workflow, integration, or background
-  process where runtime visibility would help with debugging, support, or
-  diagnosing failures
-- Think through logging across the full implementation path, not just one layer
-  — request handling, service logic, scheduled work, external API calls, and
-  error paths where relevant
-- Add logs that are useful and intentional: enough context to understand what
-  happened, without spamming noisy or redundant messages
-- Prioritise logs around important state changes, failures, retries, skipped
-  work, destructive cleanup, and external-system interactions when those would
-  otherwise be hard to trace
-- Use the appropriate log level: `info` for normal significant events (sync
-  started/completed, item matched), `warn` for recoverable failures or skipped
-  work, `error` for failures that need attention, and `debug` for diagnostic
-  detail
-- Pass structured data as the second `meta` argument rather than interpolating
-  values into the message string (e.g. `logger.info("Sync complete", { count: 5
-  })` not `logger.info(\`Sync complete: 5\`)`)
-- If rewriting an existing section of code that has no logging, add appropriate
-  logging at that point — the absence of logs is often what made the original
-  issue hard to diagnose
-
-#### Code comments
-
-- Add explanatory comments where they materially improve readability or
-  maintainability, especially around non-obvious logic, edge cases, or decisions
-  that are easy to misread later
-- Comments should explain intent and reasoning, not restate what the code
-  literally does
-- When a future maintainer might reasonably ask "why is this written this way?",
-  prefer a short comment that answers that question at the point of
-  implementation
-
-#### Technical docs
+### Technical Docs Are Part Of The Work
 
 - Treat technical documentation as part of the implementation for major or
   long-lived changes, not optional follow-up work
@@ -557,6 +468,8 @@ rule churn as part of unrelated feature work.
   under `docs/` and link it from `docs/README.md`
 - Keep `docs/` files to operational facts — tables, short steps, commands.
   Detailed rationale belongs in code comments next to the code, not in prose
+- A doc whose first line carries a `shared: content` marker is kept identical
+  across hubarr and pacearr — change it in all of them, or not at all
 
 ---
 
