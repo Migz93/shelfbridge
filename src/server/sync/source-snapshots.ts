@@ -89,8 +89,9 @@ if (hasHardcover) {
   const editionIds = hcBooks.map((book) => book.edition_id ?? 0).filter((id) => id > 0);
   if (editionIds.length > 0) {
     try {
-      hcEditions = await adapters.fetchHardcoverEditions(hardcoverToken, editionIds);
-      logger.info("Hardcover edition details fetched", { profileId, requested: editionIds.length, fetched: hcEditions.size });
+      const fetchedEditions = await adapters.fetchHardcoverEditions(hardcoverToken, editionIds);
+      for (const [editionId, edition] of fetchedEditions) hcEditions.set(editionId, edition);
+      logger.info("Hardcover edition details fetched", { profileId, requested: editionIds.length, fetched: fetchedEditions.size });
     } catch (err) {
       logger.warn("Hardcover edition detail fetch failed; falling back to default edition metadata", { profileId, error: err });
     }
@@ -160,8 +161,9 @@ if (grimmoryAvailable && grimmoryToken && profile["sync_progress_enabled"] !== 0
 const absOwnedBookIds = new Set(
   (db.prepare(`
     SELECT DISTINCT book_id FROM book_sources
-    WHERE source_type = 'audiobookshelf' AND book_id IS NOT NULL AND audiobookshelf_runtime_validated = 1
-  `).all() as { book_id: number }[]).map((row) => row.book_id)
+    WHERE source_type = 'audiobookshelf' AND source_instance_id = ?
+      AND book_id IS NOT NULL AND audiobookshelf_runtime_validated = 1
+  `).all(profileId) as { book_id: number }[]).map((row) => row.book_id)
 );
 
 // The Hardcover book ID shared by an ABS-owned audiobook, anchored via
@@ -182,10 +184,11 @@ const absOwnedHardcoverBookIds = absOwnedBookIds.size > 0
         SELECT DISTINCT gr.grimmory_hardcover_book_id AS hardcover_book_id
         FROM book_sources gr
         WHERE gr.source_type = 'grimmory'
+          AND gr.source_instance_id = ?
           AND gr.source_media_type = 'audiobook'
           AND gr.grimmory_hardcover_book_id IS NOT NULL
           AND gr.book_id IN (${Array.from(absOwnedBookIds).map(() => "?").join(",")})
-      `).all(...Array.from(absOwnedBookIds)) as { hardcover_book_id: string }[])
+      `).all(profileId, ...Array.from(absOwnedBookIds)) as { hardcover_book_id: string }[])
         .map((row) => normalizeExternalId(row.hardcover_book_id))
         .filter((id): id is string => id !== null)
     )

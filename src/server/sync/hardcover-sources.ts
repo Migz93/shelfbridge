@@ -95,7 +95,9 @@ if (hasHardcover) {
       // media type this run — safe to persist.
       sourceFields.source_edition_id = hcBook.edition_id ?? null;
       sourceFields.source_edition_format = editionFormat;
-      sourceFields.hardcover_audio_seconds = hcAudioSeconds;
+      // A partial edition-detail response must not erase a duration that was
+      // already verified during an earlier complete fetch.
+      if (userEdition) sourceFields.hardcover_audio_seconds = hcAudioSeconds;
     }
     // else: Hardcover's current edition has drifted away from this row's
     // (ABS-forced) media type — leave the previously persisted

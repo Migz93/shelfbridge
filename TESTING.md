@@ -103,6 +103,12 @@ Each `prune*UserStatesMissingFromFetch` / `prune*SourcesMissingFromFetch` helper
 |---|---|
 | Oversized machine log | Only the recent bounded tail is parsed, malformed lines are skipped, and the requested newest entries are returned. |
 
+### `tests/server/shelves.test.ts` — Shelf synchronization
+
+| Test | What it checks |
+|---|---|
+| Large reverse shelf lookup | A 500-book Grimmory shelf is processed in SQLite-safe batches while preserving all membership and Hardcover-list updates. |
+
 ### `tests/server/sync-engine.test.ts` — Sync engine integration
 
 Runs `runSyncImpl` end-to-end against a real (isolated) SQLite database with fake source adapters (`SyncAdapters` — see `src/server/sync/engine.ts`) instead of real HTTP calls.
@@ -117,6 +123,13 @@ Runs `runSyncImpl` end-to-end against a real (isolated) SQLite database with fak
 | Two profiles | Each profile's `book_sources` stay scoped to its own `source_instance_id` — no cross-profile leakage |
 
 Adapters not relevant to a given test are left unimplemented via `createFakeAdapters` (`test-helpers.ts`), which makes any unexpected call throw immediately instead of failing confusingly deep inside `runSyncImpl`.
+
+### `tests/server/source-snapshots.test.ts` — Source snapshot isolation
+
+| Test | What it checks |
+|---|---|
+| ABS ownership scope | Runtime-validated Audiobookshelf ownership and its Grimmory Hardcover IDs never leak between profiles. |
+| Hardcover list editions | Partial edition-detail fetches preserve metadata already obtained for list-only books. |
 
 ### Known gaps
 

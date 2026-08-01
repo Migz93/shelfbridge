@@ -1078,6 +1078,7 @@ router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
     res.status(400).json({ error: "Merge requires an authoritative Goodreads or Hardcover record and a Grimmory record" }); return;
   }
   try {
+    const resolvedPlans: Array<{ plan: typeof plans[number]; baseUrl: string; token: string; grimmoryLocalId: number }> = [];
     for (const plan of plans) {
       const connection = db.prepare("SELECT base_url, username, encrypted_password FROM grimmory_connections WHERE profile_id = ?").get(plan.profileId) as { base_url: string; username: string; encrypted_password: string } | undefined;
       const baseUrl = connection?.base_url?.trim() || getSetting("grimmory.baseUrl", "");
@@ -1085,14 +1086,27 @@ router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
       if (!baseUrl || !connection?.username || !password) { res.status(400).json({ error: "Grimmory connection is not configured" }); return; }
       const token = await getGrimmoryToken(baseUrl, connection.username, password);
       if (!token) { res.status(502).json({ error: "Could not authenticate with Grimmory" }); return; }
+      const grimmoryLocalId = Number(plan.grimmory.external_id);
+      if (!Number.isSafeInteger(grimmoryLocalId) || grimmoryLocalId <= 0) {
+        res.status(400).json({ error: "Grimmory record has a non-numeric local ID" }); return;
+      }
+      resolvedPlans.push({ plan, baseUrl, token, grimmoryLocalId });
+    }
+
+    for (const { plan, baseUrl, token, grimmoryLocalId } of resolvedPlans) {
       const hardcoverId = plan.hardcover?.hardcover_slug?.trim() || plan.grimmory.grimmory_hardcover_id?.trim() || undefined;
-      await writeGrimmoryExternalIds(baseUrl, token, Number(plan.grimmory.external_id), {
+      await writeGrimmoryExternalIds(baseUrl, token, grimmoryLocalId, {
         ...(plan.goodreads?.external_id ? { goodreadsId: plan.goodreads.external_id } : {}),
         ...(plan.hardcover?.external_id ? { hardcoverBookId: plan.hardcover.external_id, hardcoverId } : {})
       });
-      db.prepare(`UPDATE book_sources SET grimmory_goodreads_id = COALESCE(?, grimmory_goodreads_id), grimmory_hardcover_book_id = COALESCE(?, grimmory_hardcover_book_id), grimmory_hardcover_id = COALESCE(?, grimmory_hardcover_id), last_modified_at = datetime('now') WHERE book_id = ? AND source_type = 'grimmory' AND source_instance_id = ?`).run(plan.goodreads?.external_id ?? null, plan.hardcover?.external_id ?? null, hardcoverId ?? null, plan.grimmoryBookId, plan.profileId);
     }
-    reconcileBookIdentities(db);
+    db.transaction(() => {
+      for (const { plan } of resolvedPlans) {
+        const hardcoverId = plan.hardcover?.hardcover_slug?.trim() || plan.grimmory.grimmory_hardcover_id?.trim() || undefined;
+        db.prepare(`UPDATE book_sources SET grimmory_goodreads_id = COALESCE(?, grimmory_goodreads_id), grimmory_hardcover_book_id = COALESCE(?, grimmory_hardcover_book_id), grimmory_hardcover_id = COALESCE(?, grimmory_hardcover_id), last_modified_at = datetime('now') WHERE book_id = ? AND source_type = 'grimmory' AND source_instance_id = ?`).run(plan.goodreads?.external_id ?? null, plan.hardcover?.external_id ?? null, hardcoverId ?? null, plan.grimmoryBookId, plan.profileId);
+      }
+      reconcileBookIdentities(db);
+    })();
     const reconciled = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(plans[0]!.grimmory.id) as { book_id: number } | undefined;
     if (!reconciled) throw new Error("Reconciled Grimmory record could not be found");
     logger.info("Merged duplicate by repairing Grimmory authoritative IDs", { bookId, duplicateId, plans: plans.map((plan) => ({ authoritativeBookId: plan.authoritativeBookId, grimmoryBookId: plan.grimmoryBookId, profileId: plan.profileId, goodreads: Boolean(plan.goodreads), hardcover: Boolean(plan.hardcover) })) });

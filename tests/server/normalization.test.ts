@@ -6,6 +6,7 @@ import {
   normalizeTitle,
   shouldGoodreadsOverwriteGrimmory
 } from "../../src/server/sync/engine.js";
+import { normalizeIsbn } from "../../src/server/identifiers.js";
 
 test("normalizeTitle strips parenthetical series info, case, and punctuation", () => {
   assert.equal(normalizeTitle("Dune (Dune, #1)"), "dune");
@@ -20,6 +21,12 @@ test("normalizeSeriesNumber extracts the leading numeric portion", () => {
   assert.equal(normalizeSeriesNumber(undefined), null);
   assert.equal(normalizeSeriesNumber("  "), null);
   assert.equal(normalizeSeriesNumber("Prequel"), "prequel");
+});
+
+test("normalizeIsbn ignores conventional separators", () => {
+  assert.equal(normalizeIsbn("978-1-4028-9462-6"), "9781402894626");
+  assert.equal(normalizeIsbn("0 306 40615 2"), "0306406152");
+  assert.equal(normalizeIsbn("  "), null);
 });
 
 test("newerSource returns whichever timestamp is later, or null when either side is missing", () => {

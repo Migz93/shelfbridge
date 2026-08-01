@@ -88,8 +88,9 @@ if (hasAbs) {
               WHERE ${audiobookCandidateWhereSql()} AND (
                 grimmory_primary_file_path = ? OR chaptarr_primary_file_path = ?
               )
+                AND (source_instance_id = ? OR (source_type = 'chaptarr' AND source_instance_id = 0))
               LIMIT 1
-            `).get(absFilePath, absFilePath) as { book_id: number } | undefined;
+            `).get(absFilePath, absFilePath, profileId) as { book_id: number } | undefined;
             if (fileMatch) linkedBookId = fileMatch.book_id;
           }
 
@@ -101,8 +102,9 @@ if (hasAbs) {
               SELECT book_id FROM book_sources
               WHERE ${audiobookCandidateWhereSql()}
                 AND (source_audible_asin = ? OR audiobookshelf_asin = ?)
+                AND (source_instance_id = ? OR (source_type = 'chaptarr' AND source_instance_id = 0))
               LIMIT 1
-            `).get(absAsin, absAsin) as { book_id: number } | undefined;
+            `).get(absAsin, absAsin, profileId) as { book_id: number } | undefined;
             if (asinMatch) linkedBookId = asinMatch.book_id;
           }
 
@@ -113,15 +115,25 @@ if (hasAbs) {
             const isbnMatch = db.prepare(`
               SELECT book_id FROM book_sources
               WHERE ${audiobookCandidateWhereSql()} AND (isbn13 = ? OR isbn10 = ?)
+                AND (source_instance_id = ? OR (source_type = 'chaptarr' AND source_instance_id = 0))
               LIMIT 1
-            `).get(absIsbn, absIsbn) as { book_id: number } | undefined;
+            `).get(absIsbn, absIsbn, profileId) as { book_id: number } | undefined;
             if (isbnMatch) linkedBookId = isbnMatch.book_id;
           }
         }
 
-        // Runtime validation: compare ABS duration with HC edition duration if available
-        // Currently HC edition pages exist but not audio duration — mark validated when matched
-        const runtimeValidated = linkedBookId !== null ? 1 : null;
+        // A linked item is not necessarily runtime-validated: editions of the
+        // same work can have materially different audiobook durations.
+        const hardcoverAudioSeconds = linkedBookId === null ? null : (db.prepare(`
+          SELECT hardcover_audio_seconds FROM book_sources
+          WHERE book_id = ? AND source_type = 'hardcover' AND source_instance_id = ?
+            AND hardcover_audio_seconds IS NOT NULL
+          LIMIT 1
+        `).get(linkedBookId, profileId) as { hardcover_audio_seconds: number } | undefined)?.hardcover_audio_seconds ?? null;
+        const runtimeDelta = absDuration && hardcoverAudioSeconds && hardcoverAudioSeconds > 0
+          ? Math.abs(absDuration - hardcoverAudioSeconds) / hardcoverAudioSeconds
+          : null;
+        const runtimeValidated = runtimeDelta !== null && runtimeDelta <= 0.05 ? 1 : null;
 
         const absFields: Record<string, unknown> = {
           title: meta.title ?? null,
@@ -133,7 +145,7 @@ if (hasAbs) {
           audiobookshelf_file_path: absFilePath,
           audiobookshelf_asin: absAsin,
           audiobookshelf_runtime_validated: runtimeValidated,
-          audiobookshelf_runtime_delta: null
+          audiobookshelf_runtime_delta: runtimeDelta
         };
         if (linkedBookId !== null) {
           absFields["book_id"] = linkedBookId;
@@ -149,14 +161,17 @@ if (hasAbs) {
         liveItemCount: liveAbsIds.size
       });
     } else if (liveAbsIds.size > 0) {
-      const placeholders = Array.from(liveAbsIds).map(() => "?").join(",");
+      db.exec("CREATE TEMP TABLE IF NOT EXISTS shelfbridge_live_abs_ids (id TEXT PRIMARY KEY)");
+      db.prepare("DELETE FROM shelfbridge_live_abs_ids").run();
+      const insertLiveAbsId = db.prepare("INSERT INTO shelfbridge_live_abs_ids (id) VALUES (?)");
+      db.transaction(() => { for (const id of liveAbsIds) insertLiveAbsId.run(id); })();
       db.prepare(`
         DELETE FROM user_book_states
         WHERE profile_id = ?
           AND source_type = 'audiobookshelf'
           AND audiobookshelf_item_id IS NOT NULL
-          AND audiobookshelf_item_id NOT IN (${placeholders})
-      `).run(profileId, ...Array.from(liveAbsIds));
+          AND audiobookshelf_item_id NOT IN (SELECT id FROM shelfbridge_live_abs_ids)
+      `).run(profileId);
     } else {
       db.prepare(`
         DELETE FROM user_book_states

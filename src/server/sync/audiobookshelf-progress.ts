@@ -126,8 +126,14 @@ if (hasAbs && (hasHardcover || grimmoryAvailable)) {
 
       // Upsert ABS user state regardless of progress sync eligibility
       if (absProgress) {
-        const absProgressPct = absProgress.progress * 100;
-        const absUpdatedAt = new Date(absProgress.lastUpdate).toISOString();
+        const absProgressPct = clampPercent(absProgress.progress * 100);
+        const parsedLastUpdate = Date.parse(absProgress.lastUpdate);
+        const absUpdatedAt = Number.isFinite(parsedLastUpdate) ? new Date(parsedLastUpdate).toISOString() : null;
+        if (absUpdatedAt === null) {
+          logger.warn("Audiobookshelf progress has an invalid lastUpdate; storing progress without a source timestamp", {
+            profileId, bookId: absSource.book_id, itemId: absSource.abs_item_id, lastUpdate: absProgress.lastUpdate
+          });
+        }
         const absCurrentTimeSeconds = effectiveAbsCurrentTimeSeconds(absProgress, absDuration);
         db.prepare(`
           DELETE FROM user_book_states
@@ -343,14 +349,6 @@ if (hasAbs && (hasHardcover || grimmoryAvailable)) {
           const direction = "abs_to_hardcover";
           const decision = "abs_newer_progress";
           const desiredStatusText = desiredStatusId === 3 ? "READ" : "READING";
-          const readFields: HardcoverReadFields = {
-            edition_id: preferredEditionId ?? undefined,
-            progress_pages: 0,
-            progress_seconds: progressSeconds,
-            started_at: todayDate(),
-            finished_at: null,
-            finished_at_precision: null
-          };
           if (!dryRun) {
             try {
               // Only patch edition_id/status_id when they actually differ —
@@ -378,9 +376,19 @@ if (hasAbs && (hasHardcover || grimmoryAvailable)) {
               const liveReads = hcLibraryBook?.user_book_reads ?? [];
               const cachedReadStillLive = hcState.hardcover_read_id != null
                 && liveReads.some((read: any) => read.id === hcState.hardcover_read_id);
-              const targetReadId = cachedReadStillLive
-                ? hcState.hardcover_read_id
-                : liveReads.find((read: any) => read.edition_id === preferredEditionId && read.finished_at === null)?.id ?? null;
+              const targetRead = cachedReadStillLive
+                ? liveReads.find((read: any) => read.id === hcState.hardcover_read_id)
+                : liveReads.find((read: any) => read.edition_id === preferredEditionId && read.finished_at === null);
+              const targetReadId = targetRead?.id ?? null;
+              const readFields: HardcoverReadFields = {
+                edition_id: preferredEditionId ?? undefined,
+                progress_pages: 0,
+                progress_seconds: progressSeconds,
+                // Progress refreshes must not restart an existing Hardcover read.
+                started_at: targetRead?.started_at ?? todayDate(),
+                finished_at: desiredStatusId === 3 ? todayDate() : null,
+                finished_at_precision: null
+              };
 
               if (targetReadId) {
                 await adapters.updateHardcoverUserBookRead(hardcoverToken, targetReadId, readFields);
@@ -436,7 +444,7 @@ if (hasAbs && (hasHardcover || grimmoryAvailable)) {
                   progress_pages: 0,
                   progress_seconds: progressSeconds,
                   started_at: todayDate(),
-                  finished_at: null,
+                  finished_at: desiredStatusId === 3 ? todayDate() : null,
                   finished_at_precision: null
                 });
                 db.prepare(`

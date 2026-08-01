@@ -589,6 +589,11 @@ export function reconcileBookIdentities(db: Database.Database): void {
   // Other source combinations remain conservative: they still require compatible
   // authoritative IDs and title/author data.
   for (const ids of byFilePathKey.values()) {
+    const chaptarrIds = ids.filter((id) => rowsById.get(id)?.source_type === "chaptarr");
+    const grimmoryIds = ids.filter((id) => rowsById.get(id)?.source_type === "grimmory");
+    for (const chaptarrId of chaptarrIds) {
+      for (const grimmoryId of grimmoryIds) unionRoots(uf.find(chaptarrId), uf.find(grimmoryId));
+    }
     for (const id of ids.slice(1)) {
       const rootA = uf.find(ids[0]!);
       const rootB = uf.find(id);
@@ -866,7 +871,11 @@ export function reconcileBookIdentities(db: Database.Database): void {
         const filePathCanonicalId = group
           .flatMap((row) => filePathIdentityKeys(row))
           .flatMap((key) => canonicalBookIdsByFilePath.get(key) ?? [])
-          .find((id) => !group.some((row) => row.book_id === id));
+          .find((id) => group.some((row) => row.book_id === id))
+          ?? group
+            .flatMap((row) => filePathIdentityKeys(row))
+            .flatMap((key) => canonicalBookIdsByFilePath.get(key) ?? [])
+            .find((id) => !group.some((row) => row.book_id === id));
         if (filePathCanonicalId !== undefined) {
           for (const row of group) {
             if (row.book_id !== filePathCanonicalId) reassigned++;

@@ -22,15 +22,14 @@ export function pruneGoodreadsUserStatesMissingFromFetch(db: Db, profileId: numb
 
 function pruneUserStates(db: Db, profileId: number, sourceType: string, fetchedIds: Set<string | number>, snapshotStatus: SourceSnapshotStatus, sourceIdSql: string, sourceName: string): void {
   if (!canPruneSnapshot(profileId, sourceName, fetchedIds.size, snapshotStatus)) return;
-  const ids = Array.from(fetchedIds);
-  const placeholders = ids.map(() => "?").join(",");
+  stageFetchedIds(db, fetchedIds);
   const result = db.prepare(`
     DELETE FROM user_book_states
     WHERE profile_id = ? AND source_type = ? AND book_id IN (
       SELECT book_id FROM book_sources
-      WHERE source_type = ? AND source_instance_id = ? AND ${sourceIdSql} NOT IN (${placeholders})
+      WHERE source_type = ? AND source_instance_id = ? AND CAST(${sourceIdSql} AS TEXT) NOT IN (SELECT id FROM shelfbridge_fetched_ids)
     )
-  `).run(profileId, sourceType, sourceType, profileId, ...ids);
+  `).run(profileId, sourceType, sourceType, profileId);
   if (result.changes > 0) logger.info(`Pruned ${sourceName} user states missing from fetched library`, { profileId, deleted: result.changes });
 }
 
@@ -44,19 +43,26 @@ export function pruneGrimmorySourcesMissingFromFetch(db: Db, profileId: number, 
 
 function pruneSources(db: Db, profileId: number, sourceType: "hardcover" | "grimmory", fetchedIds: Set<number>, snapshotStatus: SourceSnapshotStatus, sourceName: string): void {
   if (!canPruneSnapshot(profileId, sourceName, fetchedIds.size, snapshotStatus)) return;
-  const ids = Array.from(fetchedIds);
-  const placeholders = ids.map(() => "?").join(",");
+  stageFetchedIds(db, fetchedIds);
   // Scope both the source and its state guard to this profile's integration.
   const result = db.prepare(`
     DELETE FROM book_sources
     WHERE source_type = ? AND source_instance_id = ?
-      AND CAST(external_id AS INTEGER) NOT IN (${placeholders})
+      AND CAST(external_id AS TEXT) NOT IN (SELECT id FROM shelfbridge_fetched_ids)
       AND NOT EXISTS (
         SELECT 1 FROM user_book_states
         WHERE book_id = book_sources.book_id AND source_type = ? AND profile_id = ?
       )
-  `).run(sourceType, profileId, ...ids, sourceType, profileId);
+  `).run(sourceType, profileId, sourceType, profileId);
   if (result.changes > 0) logger.info(`Pruned ${sourceName} book_sources with no remaining user states`, { profileId, deleted: result.changes });
+}
+
+function stageFetchedIds(db: Db, ids: Set<string | number>): void {
+  db.exec("CREATE TEMP TABLE IF NOT EXISTS shelfbridge_fetched_ids (id TEXT PRIMARY KEY)");
+  db.prepare("DELETE FROM shelfbridge_fetched_ids").run();
+  const insert = db.prepare("INSERT INTO shelfbridge_fetched_ids (id) VALUES (?)");
+  const transaction = db.transaction(() => { for (const id of ids) insert.run(String(id)); });
+  transaction();
 }
 
 function canPruneSnapshot(profileId: number, sourceName: string, fetchedCount: number, snapshotStatus: SourceSnapshotStatus): boolean {

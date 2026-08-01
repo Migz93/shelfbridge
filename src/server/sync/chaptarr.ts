@@ -301,7 +301,7 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
   const byIsbn10 = new Map<string, number>();
   const byTitleAuthor = new Map<string, number>();
   const byRelaxedTitle = new Map<string, number>();
-  const byGrimmoryFilePath = new Map<string, number>();
+  const byGrimmoryFilePath = new Map<string, number | null>();
   const titleByBookId = new Map<number, string>();
 
   for (const row of rows) {
@@ -318,7 +318,11 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
     setIdentifierLookup(byGoodreadsId, row.source_goodreads_edition_id, row.book_id);
     if (row.isbn13) byIsbn13.set(row.isbn13.replace(/[^0-9X]/g, ""), row.book_id);
     if (row.isbn10) byIsbn10.set(row.isbn10.replace(/[^0-9X]/g, ""), row.book_id);
-    if (row.grimmory_primary_file_path) byGrimmoryFilePath.set(row.grimmory_primary_file_path.trim(), row.book_id);
+    if (row.grimmory_primary_file_path) {
+      const filePath = row.grimmory_primary_file_path.trim();
+      const existing = byGrimmoryFilePath.get(filePath);
+      byGrimmoryFilePath.set(filePath, existing === undefined || existing === row.book_id ? row.book_id : null);
+    }
     if (row.title && row.author) {
       byTitleAuthor.set(`${normalise(row.title)}|${normalise(row.author)}`, row.book_id);
       byRelaxedTitle.set(`${normalise(stripSubtitle(row.title))}|${normalise(row.author)}`, row.book_id);
@@ -411,8 +415,8 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
     // An exact NAS path identifies the actual local file and therefore takes
     // precedence over Chaptarr's upstream IDs. Those IDs can point at a shared
     // work whose ebook and audiobook canonicals are distinct.
-    const matchedFilePath = chaptarrFilePaths.find((path) => byGrimmoryFilePath.has(path));
-    bookId = matchedFilePath ? byGrimmoryFilePath.get(matchedFilePath) : undefined;
+    const matchedFilePath = chaptarrFilePaths.find((path) => byGrimmoryFilePath.get(path) !== undefined && byGrimmoryFilePath.get(path) !== null);
+    bookId = matchedFilePath ? byGrimmoryFilePath.get(matchedFilePath) ?? undefined : undefined;
     if (bookId !== undefined) {
       logger.info("Chaptarr book matched via file path", { profileId, chaptarrId, title, filePath: matchedFilePath });
     }

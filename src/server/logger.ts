@@ -93,9 +93,9 @@ export async function readRecentMachineLogs(filePath = MACHINE_LOG_PATH, limit =
     const { size } = await handle.stat();
     const start = Math.max(0, size - LOG_TAIL_BYTES);
     const buffer = Buffer.alloc(size - start);
-    await handle.read(buffer, 0, buffer.length, start);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
 
-    const lines = buffer.toString("utf8").split("\n");
+    const lines = buffer.subarray(0, bytesRead).toString("utf8").split("\n");
     if (start > 0) lines.shift(); // the tail can start part-way through a JSON line
 
     const entries: LogEntry[] = [];

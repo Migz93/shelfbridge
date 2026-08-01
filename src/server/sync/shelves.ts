@@ -1,9 +1,22 @@
 import type { getDb } from "../db/index.js";
 import { logger } from "../logger.js";
 import type { SyncAdapters } from "./adapters.js";
+import { identifierVariants, normalizeIsbn } from "../identifiers.js";
 import { normalizeTitle } from "./normalization.js";
 
 type Db = ReturnType<typeof getDb>;
+
+// Some supported SQLite builds retain the historical 999-variable limit. The
+// reverse shelf query binds an ID list twice, so leave room for its fixed args.
+const SQLITE_ID_BATCH_SIZE = 400;
+
+function batches<T>(values: readonly T[]): T[][] {
+  const result: T[][] = [];
+  for (let start = 0; start < values.length; start += SQLITE_ID_BATCH_SIZE) {
+    result.push(values.slice(start, start + SQLITE_ID_BATCH_SIZE));
+  }
+  return result;
+}
 
 export async function syncGoodreadsShelvesToGrimmory(
   db: Db,
@@ -43,9 +56,11 @@ export async function syncGoodreadsShelvesToGrimmory(
   `).all(profileId) as { goodreads_id: string; go_isbn13: string | null; go_isbn10: string | null; go_title: string | null; grimmory_book_id: number }[];
 
   for (const pair of sourcePairs) {
-    grimmoryByGoodreadsId[pair.goodreads_id] = pair.grimmory_book_id;
-    if (pair.go_isbn13) grimmoryByIsbn13[pair.go_isbn13] ??= pair.grimmory_book_id;
-    if (pair.go_isbn10) grimmoryByIsbn10[pair.go_isbn10] ??= pair.grimmory_book_id;
+    for (const id of identifierVariants(pair.goodreads_id)) grimmoryByGoodreadsId[id] ??= pair.grimmory_book_id;
+    const isbn13 = normalizeIsbn(pair.go_isbn13);
+    const isbn10 = normalizeIsbn(pair.go_isbn10);
+    if (isbn13) grimmoryByIsbn13[isbn13] ??= pair.grimmory_book_id;
+    if (isbn10) grimmoryByIsbn10[isbn10] ??= pair.grimmory_book_id;
     const norm = pair.go_title ? normalizeTitle(pair.go_title) : "";
     if (norm) grimmoryByTitle[norm] ??= pair.grimmory_book_id;
   }
@@ -61,9 +76,12 @@ export async function syncGoodreadsShelvesToGrimmory(
         const { books, hasMore: more } = await adapters.fetchShelfPage(goodreadsUserId, shelfName, page);
         for (const book of books) {
           let gId: number | undefined;
-          if (book.goodreadsId && grimmoryByGoodreadsId[book.goodreadsId]) gId = grimmoryByGoodreadsId[book.goodreadsId];
-          else if (book.isbn13 && grimmoryByIsbn13[book.isbn13]) gId = grimmoryByIsbn13[book.isbn13];
-          else if (book.isbn10 && grimmoryByIsbn10[book.isbn10]) gId = grimmoryByIsbn10[book.isbn10];
+          const goodreadsId = identifierVariants(book.goodreadsId).find((id) => grimmoryByGoodreadsId[id] !== undefined);
+          const isbn13 = normalizeIsbn(book.isbn13);
+          const isbn10 = normalizeIsbn(book.isbn10);
+          if (goodreadsId) gId = grimmoryByGoodreadsId[goodreadsId];
+          else if (isbn13 && grimmoryByIsbn13[isbn13]) gId = grimmoryByIsbn13[isbn13];
+          else if (isbn10 && grimmoryByIsbn10[isbn10]) gId = grimmoryByIsbn10[isbn10];
           else { const norm = normalizeTitle(book.title); if (norm && grimmoryByTitle[norm]) gId = grimmoryByTitle[norm]; }
           if (gId && !grimmoryBookIds.includes(gId)) grimmoryBookIds.push(gId);
         }
@@ -124,11 +142,12 @@ export async function syncGoodreadsShelvesToGrimmory(
     const allOnShelf = [...new Set([...currentIds, ...toAdd])];
     if (allOnShelf.length > 0 && !dryRun) {
       const grimmoryShelfName = mapping.grimmory_shelf_name;
-      const shelfPlaceholders = allOnShelf.map(() => "?").join(",");
-      db.prepare(`
+      for (const ids of batches(allOnShelf)) {
+        const shelfPlaceholders = ids.map(() => "?").join(",");
+        db.prepare(`
         UPDATE user_book_states SET grimmory_shelves = CASE
           WHEN grimmory_shelves IS NULL THEN ?
-          WHEN (',' || grimmory_shelves || ',') NOT LIKE ('%,' || ? || ',%') THEN grimmory_shelves || ',' || ?
+          WHEN instr(',' || grimmory_shelves || ',', ',' || ? || ',') = 0 THEN grimmory_shelves || ',' || ?
           ELSE grimmory_shelves
         END
         WHERE profile_id = ? AND source_type = 'grimmory'
@@ -136,7 +155,8 @@ export async function syncGoodreadsShelvesToGrimmory(
             SELECT book_id FROM book_sources
             WHERE source_type = 'grimmory' AND source_instance_id = ? AND CAST(external_id AS INTEGER) IN (${shelfPlaceholders})
           )
-      `).run(grimmoryShelfName, grimmoryShelfName, grimmoryShelfName, profileId, profileId, ...allOnShelf);
+        `).run(grimmoryShelfName, grimmoryShelfName, grimmoryShelfName, profileId, profileId, ...ids);
+      }
     }
   }
 }
@@ -182,8 +202,10 @@ export async function syncListsToShelves(
 
     let grimmoryBookIds: number[] = [];
     if (hcList.bookIds.length > 0) {
-      const placeholders = hcList.bookIds.map(() => "?").join(",");
-      grimmoryBookIds = (db.prepare(`
+      const ids = new Set<number>();
+      for (const bookIds of batches(hcList.bookIds)) {
+        const placeholders = bookIds.map(() => "?").join(",");
+        const matched = db.prepare(`
         SELECT DISTINCT CAST(gr_src.external_id AS INTEGER) as grimmory_book_id
         FROM book_sources hc_src
         JOIN book_sources gr_src ON gr_src.book_id = hc_src.book_id AND gr_src.source_type = 'grimmory' AND gr_src.source_instance_id = ?
@@ -192,7 +214,10 @@ export async function syncListsToShelves(
             CAST(hc_src.external_id AS INTEGER) IN (${placeholders})
             OR gr_src.grimmory_hardcover_book_id IN (${placeholders})
           )
-      `).all(profileId, ...hcList.bookIds, ...hcList.bookIds.map(String)) as { grimmory_book_id: number }[]).map((r) => r.grimmory_book_id);
+        `).all(profileId, ...bookIds, ...bookIds.map(String)) as { grimmory_book_id: number }[];
+        for (const row of matched) ids.add(row.grimmory_book_id);
+      }
+      grimmoryBookIds = Array.from(ids);
     }
 
     if (hcList.bookIds.length > 0 && grimmoryBookIds.length === 0) {
@@ -242,11 +267,12 @@ export async function syncListsToShelves(
     const allOnShelf = [...new Set([...currentIds, ...toAdd])];
     if (allOnShelf.length > 0 && !dryRun) {
       const shelfName = mapping.grimmory_shelf_name;
-      const shelfPlaceholders = allOnShelf.map(() => "?").join(",");
-      db.prepare(`
+      for (const ids of batches(allOnShelf)) {
+        const shelfPlaceholders = ids.map(() => "?").join(",");
+        db.prepare(`
         UPDATE user_book_states SET grimmory_shelves = CASE
           WHEN grimmory_shelves IS NULL THEN ?
-          WHEN (',' || grimmory_shelves || ',') NOT LIKE ('%,' || ? || ',%') THEN grimmory_shelves || ',' || ?
+          WHEN instr(',' || grimmory_shelves || ',', ',' || ? || ',') = 0 THEN grimmory_shelves || ',' || ?
           ELSE grimmory_shelves
         END
         WHERE profile_id = ? AND source_type = 'grimmory'
@@ -254,19 +280,22 @@ export async function syncListsToShelves(
             SELECT book_id FROM book_sources
             WHERE source_type = 'grimmory' AND source_instance_id = ? AND CAST(external_id AS INTEGER) IN (${shelfPlaceholders})
           )
-      `).run(shelfName, shelfName, shelfName, profileId, profileId, ...allOnShelf);
+        `).run(shelfName, shelfName, shelfName, profileId, profileId, ...ids);
+      }
     }
 
     if (currentIds.length === 0) continue;
 
-    const reversePlaceholders = currentIds.map(() => "?").join(",");
     // Find Hardcover book IDs for books on this Grimmory shelf via two paths:
     // 1. Books already matched through the book_sources join (canonical match)
     // 2. Books whose Grimmory record carries a grimmory_hardcover_book_id (unmatched
     //    but Grimmory knows the Hardcover ID — covers books added directly in Grimmory)
     // Both Grimmory-side lookups are scoped to this profile's own Grimmory instance,
     // since currentIds are local IDs from this profile's own shelf fetch.
-    const hardcoverBookIds = (db.prepare(`
+    const hardcoverBookIds = new Set<number>();
+    for (const ids of batches(currentIds)) {
+      const reversePlaceholders = ids.map(() => "?").join(",");
+      const matched = db.prepare(`
       SELECT DISTINCT hardcover_book_id FROM (
         SELECT CAST(hc_src.external_id AS INTEGER) AS hardcover_book_id
         FROM book_sources gr_src
@@ -282,12 +311,14 @@ export async function syncListsToShelves(
           AND grimmory_hardcover_book_id != ''
       )
       WHERE hardcover_book_id IS NOT NULL AND hardcover_book_id > 0
-    `).all(profileId, ...currentIds, profileId, ...currentIds) as { hardcover_book_id: number | null }[])
-      .map((r) => r.hardcover_book_id)
-      .filter((id): id is number => typeof id === "number" && id > 0);
+      `).all(profileId, ...ids, profileId, ...ids) as { hardcover_book_id: number | null }[];
+      for (const row of matched) {
+        if (typeof row.hardcover_book_id === "number" && row.hardcover_book_id > 0) hardcoverBookIds.add(row.hardcover_book_id);
+      }
+    }
 
     const currentHardcoverIds = new Set(hcList.bookIds);
-    const toAddToHardcover = Array.from(new Set(hardcoverBookIds)).filter((id) => !currentHardcoverIds.has(id));
+    const toAddToHardcover = Array.from(hardcoverBookIds).filter((id) => !currentHardcoverIds.has(id));
 
     if (toAddToHardcover.length === 0) {
       logger.info("Hardcover list already up to date for Grimmory shelf", { profileId, listName: hcList.name, shelfName: mapping.grimmory_shelf_name });

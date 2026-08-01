@@ -40,8 +40,8 @@ for (const hcBook of hcBooks) {
     : grimmoryAvailable
     ? matchHardcoverBook(hcBook, grimmoryIndex, {
         goodreadsId: (db.prepare(
-          "SELECT external_id FROM book_sources WHERE source_type='goodreads' AND book_id=? LIMIT 1"
-        ).get(bookId) as { external_id: string } | undefined)?.external_id ?? null,
+          "SELECT external_id FROM book_sources WHERE source_type='goodreads' AND source_instance_id = ? AND book_id=? LIMIT 1"
+        ).get(profileId, bookId) as { external_id: string } | undefined)?.external_id ?? null,
         mediaTypeHint: (hcSource.source_media_type as "physical" | "ebook" | "audiobook" | null | undefined) ?? null
       })
     : null;
@@ -447,6 +447,9 @@ for (const hcBook of hcBooks) {
       } else if (dryRun) {
         recordEvent(db, runId, profileId, title, "written", "grimmory_to_hardcover", progressDecision, { progress: grProgress, progressPages, dryRun });
         counters.written++;
+      } else if (!hcRead?.id && !hcBook.id) {
+        logger.warn("Skipping Hardcover progress write without a user-book record", { profileId, bookId });
+        counters.skipped++;
       } else {
         try {
           const readFields: HardcoverReadFields = {

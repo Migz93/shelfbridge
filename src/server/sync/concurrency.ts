@@ -15,7 +15,8 @@ export async function mapWithConcurrency<T, R>(
     }
   }
 
-  const workerCount = Math.min(Math.max(1, concurrency), values.length);
+  const normalizedConcurrency = Number.isFinite(concurrency) && concurrency > 0 ? Math.floor(concurrency) : 1;
+  const workerCount = Math.min(normalizedConcurrency, values.length);
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
   return results;
 }

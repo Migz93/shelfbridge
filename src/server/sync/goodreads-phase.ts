@@ -1,6 +1,6 @@
 import { logger } from "../logger.js";
 import { reconcileBookIdentities } from "../db/bookIdentity.js";
-import { identifierVariants, normalizeExternalId } from "../identifiers.js";
+import { identifierVariants, normalizeExternalId, normalizeIsbn } from "../identifiers.js";
 import { enqueueImageCacheTask } from "../image-cache.js";
 import { GOODREADS_TO_GRIMMORY } from "./matcher.js";
 import { normalizeTitle, normalizeSeriesNumber } from "./normalization.js";
@@ -73,8 +73,10 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
       addGoodreadsLookup(src.source_goodreads_book_id, lookup);
       addGoodreadsLookup(src.source_goodreads_work_id, lookup);
       addGoodreadsLookup(src.source_goodreads_edition_id, lookup);
-      if (src.isbn13) existingByIsbn13[src.isbn13] ??= lookup;
-      if (src.isbn10) existingByIsbn10[src.isbn10] ??= lookup;
+      const isbn13 = normalizeIsbn(src.isbn13);
+      const isbn10 = normalizeIsbn(src.isbn10);
+      if (isbn13) existingByIsbn13[isbn13] ??= lookup;
+      if (isbn10) existingByIsbn10[isbn10] ??= lookup;
       const norm = src.title ? normalizeTitle(src.title) : "";
       if (norm) {
         const candidates = existingByTitle[norm] ?? [];
@@ -96,14 +98,16 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
       let matchType: string | null = null;
 
       const normalizedGoodreadsId = normalizeExternalId(grBook.goodreadsId);
+      const normalizedIsbn13 = normalizeIsbn(grBook.isbn13);
+      const normalizedIsbn10 = normalizeIsbn(grBook.isbn10);
       if (normalizedGoodreadsId && existingByGoodreadsId[normalizedGoodreadsId]) {
         matched = existingByGoodreadsId[normalizedGoodreadsId];
         matchType = "goodreads_id";
-      } else if (grBook.isbn13 && existingByIsbn13[grBook.isbn13]) {
-        matched = existingByIsbn13[grBook.isbn13];
+      } else if (normalizedIsbn13 && existingByIsbn13[normalizedIsbn13]) {
+        matched = existingByIsbn13[normalizedIsbn13];
         matchType = "isbn13";
-      } else if (grBook.isbn10 && existingByIsbn10[grBook.isbn10]) {
-        matched = existingByIsbn10[grBook.isbn10];
+      } else if (normalizedIsbn10 && existingByIsbn10[normalizedIsbn10]) {
+        matched = existingByIsbn10[normalizedIsbn10];
         matchType = "isbn10";
       } else {
         const norm = normalizeTitle(grBook.title);
