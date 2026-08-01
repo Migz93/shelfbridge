@@ -22,7 +22,17 @@ It connects Grimmory, Hardcover, Goodreads, Chaptarr, and Audiobookshelf through
 
 ## Preview
 
-ShelfBridge is still early in development. Preview screenshots will be added once the UI settles.
+### Dashboard
+
+Books tracked, missing items, pending downloads, and items needing review, with recent sync results and newly added books.
+
+![ShelfBridge preview](./public/shelfbridge-preview.png)
+
+### Books
+
+Filter by source, profile, and reading status. Each book shows which services it was found in and whether it needs review.
+
+![Books preview](./public/books-preview.png)
 
 ## Key Features
 
@@ -85,8 +95,6 @@ services:
     volumes:
       - /opt/shelfbridge:/config
     environment:
-      - NODE_ENV=production
-      - DATA_DIR=/config
       - TZ=UTC
 ```
 
@@ -102,9 +110,11 @@ ShelfBridge is configured through its web UI after first run. The main things yo
 - **Data directory** — change the left side of `/opt/shelfbridge:/config` to store ShelfBridge's database, logs, credential key, and image cache wherever you prefer on your host
 - **Timezone** — set `TZ` to your preferred timezone if you do not want UTC
 
-ShelfBridge's own process runs as an unprivileged user (UID/GID `1000`), not root. The container briefly starts as root only to make sure the data directory is owned by that user — including fixing ownership automatically on a fresh bind mount, or one created by an older version that ran as root — then drops privileges before starting the app. You don't need to `chown` anything on the host yourself, including when upgrading an existing installation.
+ShelfBridge runs as an unprivileged user (UID/GID `1000`), not root. The container starts as root only long enough to take ownership of the data directory, including on a fresh bind mount, then drops privileges. You do not need to `chown` anything on the host.
 
-This behavior lives in the image itself, so upgrading to it requires actually replacing the running container, not just restarting it. With the `image:`-based Compose setup above, run `docker compose pull && docker compose up -d` so Compose fetches the new image before recreating the container — `docker compose up -d` alone won't pull a new image. With a plain `docker run` setup, re-run the `docker pull`/`docker stop`/`docker rm`/`docker run` sequence. If you build the image yourself instead of pulling from `ghcr.io`, rebuild it and recreate the container (`docker build` followed by `docker stop`/`docker rm`/`docker run`, or `docker compose up -d --build` if your own Compose file defines a `build:` section) rather than just restarting the existing one.
+That fix ships in the image, so upgrading means replacing the container, not restarting it: `docker compose pull && docker compose up -d`, or re-run the `docker pull`/`stop`/`rm`/`run` sequence.
+
+Stored credentials are encrypted with `SHELFBRIDGE_CREDENTIAL_KEY`, or a key generated at `/config/credential-key`. Back that key up with your database — losing it means re-entering every stored credential.
 
 If ShelfBridge is served through a reverse proxy such as Nginx, Traefik, or Caddy, enable **Settings → General → Network → Trust Proxy** and restart the container so rate limiting uses the real client IP from forwarded headers.
 
@@ -130,19 +140,11 @@ ShelfBridge is deliberately conservative about writes:
 
 ShelfBridge is still early in development. Database schema, sync behavior, UI layout, and supported integrations may change before a stable release.
 
-## Security Notes
-
-ShelfBridge requires a local password before the UI can be used. Sessions are stored server-side and sent to the browser as signed, HTTP-only cookies.
-
-Stored third-party credentials are encrypted with AES-256-GCM using `SHELFBRIDGE_CREDENTIAL_KEY` or the generated `/config/credential-key` file. Back up this key with the database; losing it means stored credentials must be re-entered.
-
-Do not expose `/config`, database backups, logs, `.env` files, `.claude/`, or the generated credential key publicly.
-
 ## AI Transparency
 
 ShelfBridge was created with heavy AI assistance.
 
-Claude, Codex, and related tools have been used throughout the project for design exploration, implementation help, refactoring, explanation, and iteration. The intent is not to hide that. ShelfBridge has been built by combining hands-on product direction with a lot of AI-assisted development work.
+Claude, Codex, Leonardo.ai, and CodeRabbit were all used throughout the project for design exploration, implementation help, refactoring, review, explanation, and iteration. The intent is not to hide that. ShelfBridge has been built by combining hands-on product direction with a lot of AI-assisted development work.
 
 ## Credits And Inspiration
 
@@ -170,12 +172,12 @@ Those projects and services were helpful references for thinking about user expe
     </td>
     <td align="center">
       <a href="https://hardcover.app">
-        <img src="https://assets.hardcover.app/static/android-chrome-512x512.png" alt="Hardcover logo" width="72" height="72" />
+        <img src="https://avatars.githubusercontent.com/u/83609541?s=200&v=4" alt="Hardcover logo" width="72" height="72" />
       </a>
     </td>
     <td align="center">
       <a href="https://www.audiobookshelf.org">
-        <img src="https://www.audiobookshelf.org/Logo.png" alt="Audiobookshelf logo" width="72" height="72" />
+        <img src="https://raw.githubusercontent.com/advplyr/audiobookshelf/master/client/static/Logo.png" alt="Audiobookshelf logo" width="72" height="72" />
       </a>
     </td>
   </tr>
