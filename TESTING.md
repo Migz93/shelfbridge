@@ -65,6 +65,9 @@ section with hubarr's Playwright section, modified to suit.
 | Conflicting Hardcover book id | Two sources with the same title but different authoritative Hardcover ids stay separate books |
 | Idempotency | Running `reconcileBookIdentities` twice doesn't duplicate books |
 | Orphan cleanup | A book left with zero `book_sources` rows is deleted on the next reconcile pass |
+| Corroborated Chaptarr bridge | A Goodreads edition joins a Chaptarr/Grimmory cluster only with matching edition-ID and same-format file-path evidence; a stale Chaptarr Hardcover ID cannot merge an unrelated book |
+| File-path media separation | Ebook and audiobook Chaptarr path matches join only their matching format canonical |
+| File-path ID precedence | An exact Grimmory/Chaptarr path keeps local records together after a Goodreads edition ID is repaired |
 
 ### `tests/server/settings.test.ts` — App settings
 

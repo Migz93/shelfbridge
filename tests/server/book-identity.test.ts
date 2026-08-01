@@ -107,3 +107,100 @@ test("reconcileBookIdentities deletes books left with no remaining book_sources 
     cleanup();
   }
 });
+
+test("reconcileBookIdentities bridges a Goodreads edition through corroborated Chaptarr and Grimmory evidence", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const sharedPath = "/books/Cheryl Fergison/Behind The Scenes.epub";
+    db.prepare(`
+      INSERT INTO book_sources (source_type, external_id, title, author, source_media_type)
+      VALUES ('goodreads', '239822717', 'Behind The Scenes: My Secret Life Beyond EastEnders', 'Cheryl Fergison', 'book')
+    `).run();
+    db.prepare(`
+      INSERT INTO book_sources (
+        source_type, external_id, title, author, source_media_type,
+        source_goodreads_edition_id, source_hardcover_book_id, chaptarr_primary_file_path
+      ) VALUES ('chaptarr', '123', 'Behind The Scenes', 'Cheryl Fergison', 'book', '239822717', '999999', ?)
+    `).run(sharedPath);
+    db.prepare(`
+      INSERT INTO book_sources (
+        source_type, external_id, title, author, source_media_type,
+        grimmory_goodreads_id, grimmory_primary_file_path
+      ) VALUES ('grimmory', '456', 'Behind The Scenes', 'Cheryl Fergison', 'book', '243192893', ?)
+    `).run(sharedPath);
+    // Chaptarr's stale Hardcover ID must not pull this unrelated book into the bridge.
+    db.prepare(`
+      INSERT INTO book_sources (source_type, external_id, title, author, source_media_type, source_hardcover_book_id)
+      VALUES ('hardcover', '999999', 'A Different Book', 'Different Author', 'book', '999999')
+    `).run();
+
+    reconcileBookIdentities(db);
+
+    const sources = db.prepare("SELECT source_type, book_id FROM book_sources ORDER BY id").all() as { source_type: string; book_id: number }[];
+    assert.equal(sources[0]!.book_id, sources[1]!.book_id, "Goodreads and Chaptarr should share a canonical book");
+    assert.equal(sources[1]!.book_id, sources[2]!.book_id, "the corroborating Grimmory file path should join the same book");
+    assert.notEqual(sources[2]!.book_id, sources[3]!.book_id, "a stale Chaptarr Hardcover ID must not merge an unrelated book");
+    assert.equal(booksByTitle(db).length, 2);
+  } finally {
+    cleanup();
+  }
+});
+
+test("reconcileBookIdentities keeps ebook and audiobook Chaptarr file-path matches in their own canonicals", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const ebookBookId = Number(db.prepare("INSERT INTO books (media_type, title) VALUES ('book', 'Dungeon Crawler Carl')").run().lastInsertRowid);
+    const audiobookBookId = Number(db.prepare("INSERT INTO books (media_type, title) VALUES ('audiobook', 'Dungeon Crawler Carl')").run().lastInsertRowid);
+    const ebookPath = "/books/Dungeon Crawler Carl.epub";
+    const audiobookPath = "/audiobooks/Dungeon Crawler Carl.m4b";
+
+    const insertAssignedSource = db.prepare(`
+      INSERT INTO book_sources (book_id, source_type, external_id, title, author, source_media_type, grimmory_primary_file_path, chaptarr_primary_file_path)
+      VALUES (?, ?, ?, 'Dungeon Crawler Carl', 'Matt Dinniman', ?, ?, ?)
+    `);
+    insertAssignedSource.run(ebookBookId, "grimmory", "gr-ebook", "ebook", ebookPath, null);
+    insertAssignedSource.run(ebookBookId, "chaptarr", "chap-ebook", "ebook", null, ebookPath);
+    insertAssignedSource.run(audiobookBookId, "grimmory", "gr-audio", "audiobook", audiobookPath, null);
+    // Simulates the stale assignment seen in production: the audio Chaptarr row is
+    // currently attached to the ebook canonical despite an exact .m4b match.
+    insertAssignedSource.run(ebookBookId, "chaptarr", "chap-audio", "audiobook", null, audiobookPath);
+
+    reconcileBookIdentities(db);
+
+    const sources = db.prepare("SELECT external_id, book_id FROM book_sources ORDER BY external_id").all() as { external_id: string; book_id: number }[];
+    const byExternalId = new Map(sources.map((row) => [row.external_id, row.book_id]));
+    assert.equal(byExternalId.get("gr-ebook"), ebookBookId);
+    assert.equal(byExternalId.get("chap-ebook"), ebookBookId);
+    assert.equal(byExternalId.get("gr-audio"), audiobookBookId);
+    assert.equal(byExternalId.get("chap-audio"), audiobookBookId);
+    assert.equal(booksByTitle(db).length, 2, "ebook and audiobook canonicals must remain separate");
+  } finally {
+    cleanup();
+  }
+});
+
+test("reconcileBookIdentities bridges a Goodreads ISBN despite a stale Grimmory Goodreads ID when the local path corroborates it", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const path = "/books/Jennifer Hillier/Freak.epub";
+    db.prepare(`
+      INSERT INTO book_sources (source_type, external_id, title, author, isbn10, source_media_type)
+      VALUES ('goodreads', 'current-edition', 'Freak', 'Jennifer Hillier', '0143107275', 'book')
+    `).run();
+    db.prepare(`
+      INSERT INTO book_sources (source_type, external_id, title, author, source_media_type, source_goodreads_edition_id, chaptarr_primary_file_path)
+      VALUES ('chaptarr', 'chaptarr-freak', 'Freak', 'Jennifer Hillier', 'book', 'old-edition', ?)
+    `).run(path);
+    db.prepare(`
+      INSERT INTO book_sources (source_type, external_id, title, author, isbn10, source_media_type, grimmory_goodreads_id, grimmory_primary_file_path)
+      VALUES ('grimmory', 'grimmory-freak', 'Freak', 'Laird Barron', '0143107275', 'book', 'old-edition', ?)
+    `).run(path);
+
+    reconcileBookIdentities(db);
+
+    const sourceBookIds = db.prepare("SELECT book_id FROM book_sources ORDER BY id").all() as { book_id: number }[];
+    assert.equal(new Set(sourceBookIds.map((row) => row.book_id)).size, 1, "the ISBN must bridge the Goodreads row despite the stale Grimmory ID when the local path corroborates it");
+  } finally {
+    cleanup();
+  }
+});

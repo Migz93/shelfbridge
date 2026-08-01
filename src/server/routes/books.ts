@@ -304,7 +304,44 @@ function probableDuplicateCandidateIds(rows: DbBookRow[], bookId: number, dismis
   return candidates;
 }
 
-function dbToDuplicateCandidate(rows: DbBookRow[]): BookDuplicateCandidate {
+function duplicateMergePlans(db: ReturnType<typeof getDb>, firstBookId: number, secondBookId: number) {
+  const rows = db.prepare(`
+    SELECT id, book_id, source_type, source_instance_id, external_id, hardcover_slug, grimmory_hardcover_id
+    FROM book_sources
+    WHERE book_id IN (?, ?)
+      AND source_type IN ('grimmory', 'hardcover', 'goodreads')
+  `).all(firstBookId, secondBookId) as {
+    id: number;
+    book_id: number;
+    source_type: "grimmory" | "hardcover" | "goodreads";
+    source_instance_id: number | null;
+    external_id: string;
+    hardcover_slug: string | null;
+    grimmory_hardcover_id: string | null;
+  }[];
+  const hasSource = (bookId: number, type: "grimmory" | "hardcover" | "goodreads") =>
+    rows.some((row) => row.book_id === bookId && row.source_type === type);
+
+  for (const [authoritativeBookId, grimmoryBookId] of [[firstBookId, secondBookId], [secondBookId, firstBookId]] as const) {
+    // Only repair the deliberate review pattern: one metadata-only record and
+    // one local Grimmory record. This avoids guessing for other duplicate types.
+    if (hasSource(authoritativeBookId, "grimmory")
+      || hasSource(grimmoryBookId, "hardcover")
+      || hasSource(grimmoryBookId, "goodreads")) continue;
+    const plans = rows
+      .filter((row) => row.book_id === grimmoryBookId && row.source_type === "grimmory" && row.source_instance_id != null)
+      .map((grimmory) => {
+        const goodreads = rows.find((row) => row.book_id === authoritativeBookId && row.source_type === "goodreads" && row.source_instance_id === grimmory.source_instance_id);
+        const hardcover = rows.find((row) => row.book_id === authoritativeBookId && row.source_type === "hardcover" && row.source_instance_id === grimmory.source_instance_id);
+        return goodreads || hardcover ? { authoritativeBookId, grimmoryBookId, profileId: grimmory.source_instance_id!, grimmory, goodreads, hardcover } : null;
+      })
+      .filter((plan): plan is NonNullable<typeof plan> => plan !== null);
+    if (plans.length > 0) return plans;
+  }
+  return [];
+}
+
+function dbToDuplicateCandidate(rows: DbBookRow[], mergeEligible: boolean): BookDuplicateCandidate {
   const summary = dbToSummary(rows);
   const row = rows[0]!;
   return {
@@ -318,7 +355,8 @@ function dbToDuplicateCandidate(rows: DbBookRow[]): BookDuplicateCandidate {
     goodreadsBookLink: summary.goodreadsBookLink,
     chaptarrBookId: summary.chaptarrBookId,
     seriesName: row.book_series_name,
-    seriesNumber: row.book_series_number
+    seriesNumber: row.book_series_number,
+    mergeEligible
   };
 }
 
@@ -369,6 +407,9 @@ function matchesAction(
   switch (action) {
     case "id-review":
       return idReviewBookIds.has(row.book_id);
+    case "possible-duplicates":
+    // Keep existing shared/bookmarked links working while the client normalises
+    // them to the clearer public name.
     case "probable-duplicates":
       return probableDuplicateIds.has(row.book_id);
     case "add-to-chaptarr":
@@ -1012,6 +1053,41 @@ router.post("/:bookId/duplicates/:duplicateId/dismiss", (req, res) => {
   res.json({ ok: true });
 });
 
+// POST /api/books/:bookId/duplicates/:duplicateId/merge
+router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
+  const db = getDb();
+  const bookId = parseInt(req.params["bookId"] ?? "0", 10);
+  const duplicateId = parseInt(req.params["duplicateId"] ?? "0", 10);
+  if (!Number.isFinite(bookId) || !Number.isFinite(duplicateId) || bookId <= 0 || duplicateId <= 0 || bookId === duplicateId) {
+    res.status(400).json({ error: "Invalid duplicate pair" }); return;
+  }
+  const plans = duplicateMergePlans(db, bookId, duplicateId);
+  if (plans.length === 0) {
+    res.status(400).json({ error: "Merge requires an authoritative Goodreads or Hardcover record and a Grimmory record" }); return;
+  }
+  try {
+    for (const plan of plans) {
+      const connection = db.prepare("SELECT base_url, username, encrypted_password FROM grimmory_connections WHERE profile_id = ?").get(plan.profileId) as { base_url: string; username: string; encrypted_password: string } | undefined;
+      const baseUrl = connection?.base_url?.trim() || getSetting("grimmory.baseUrl", "");
+      const password = decryptCredential(connection?.encrypted_password);
+      if (!baseUrl || !connection?.username || !password) { res.status(400).json({ error: "Grimmory connection is not configured" }); return; }
+      const token = await getGrimmoryToken(baseUrl, connection.username, password);
+      if (!token) { res.status(502).json({ error: "Could not authenticate with Grimmory" }); return; }
+      const hardcoverId = plan.hardcover?.hardcover_slug?.trim() || plan.grimmory.grimmory_hardcover_id?.trim() || undefined;
+      await writeGrimmoryExternalIds(baseUrl, token, Number(plan.grimmory.external_id), {
+        ...(plan.goodreads?.external_id ? { goodreadsId: plan.goodreads.external_id } : {}),
+        ...(plan.hardcover?.external_id ? { hardcoverBookId: plan.hardcover.external_id, hardcoverId } : {})
+      });
+      db.prepare(`UPDATE book_sources SET grimmory_goodreads_id = COALESCE(?, grimmory_goodreads_id), grimmory_hardcover_book_id = COALESCE(?, grimmory_hardcover_book_id), grimmory_hardcover_id = COALESCE(?, grimmory_hardcover_id), last_modified_at = datetime('now') WHERE book_id = ? AND source_type = 'grimmory' AND source_instance_id = ?`).run(plan.goodreads?.external_id ?? null, plan.hardcover?.external_id ?? null, hardcoverId ?? null, plan.grimmoryBookId, plan.profileId);
+    }
+    reconcileBookIdentities(db);
+    const reconciled = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(plans[0]!.grimmory.id) as { book_id: number } | undefined;
+    if (!reconciled) throw new Error("Reconciled Grimmory record could not be found");
+    logger.info("Merged duplicate by repairing Grimmory authoritative IDs", { bookId, duplicateId, plans: plans.map((plan) => ({ authoritativeBookId: plan.authoritativeBookId, grimmoryBookId: plan.grimmoryBookId, profileId: plan.profileId, goodreads: Boolean(plan.goodreads), hardcover: Boolean(plan.hardcover) })) });
+    res.json({ ok: true, bookId: reconciled.book_id });
+  } catch (err) { logger.warn("Failed duplicate merge", { bookId, duplicateId, error: err }); res.status(502).json({ error: err instanceof Error ? err.message : String(err) }); }
+});
+
 // POST /api/books/:bookId/chaptarr-id-mismatch/dismiss
 router.post("/:bookId/chaptarr-id-mismatch/dismiss", (req, res) => {
   const db = getDb();
@@ -1152,7 +1228,7 @@ router.get("/:id", (req, res) => {
   const duplicateIds = probableDuplicateCandidateIds(allRows, id);
   const duplicateCandidates = groupByBook(allRows)
     .filter((group) => duplicateIds.has(group[0]!.book_id))
-    .map(dbToDuplicateCandidate)
+    .map((group) => dbToDuplicateCandidate(group, duplicateMergePlans(getDb(), id, group[0]!.book_id).length > 0))
     .sort((a, b) => a.title.localeCompare(b.title));
 
   const summary = dbToSummary(rows);

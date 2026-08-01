@@ -396,6 +396,15 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
     let bookId: number | undefined;
     let rejectedIdCandidate: number | undefined;
 
+    // An exact NAS path identifies the actual local file and therefore takes
+    // precedence over Chaptarr's upstream IDs. Those IDs can point at a shared
+    // work whose ebook and audiobook canonicals are distinct.
+    const matchedFilePath = chaptarrFilePaths.find((path) => byGrimmoryFilePath.has(path));
+    bookId = matchedFilePath ? byGrimmoryFilePath.get(matchedFilePath) : undefined;
+    if (bookId !== undefined) {
+      logger.info("Chaptarr book matched via file path", { profileId, chaptarrId, title, filePath: matchedFilePath });
+    }
+
     if (!bookId && hardcoverBookId) {
       const candidate = getIdentifierLookup(byHardcoverId, hardcoverBookId);
       if (candidate !== undefined && titleMatchesBook(title, candidate)) {
@@ -424,16 +433,6 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
     for (const isbn of isbn13s) { if (!bookId) bookId = byIsbn13.get(isbn); }
     for (const isbn of isbn10s) { if (!bookId) bookId = byIsbn10.get(isbn); }
 
-    // Exact NAS path is a stronger signal than fuzzy title matching. Chaptarr can
-    // collapse multiple books in a series down to a generic title like "Diddly Squat",
-    // but if the on-disk file path matches Grimmory exactly we should trust that first.
-    if (!bookId) {
-      const matchedFilePath = chaptarrFilePaths.find((path) => byGrimmoryFilePath.has(path));
-      bookId = matchedFilePath ? byGrimmoryFilePath.get(matchedFilePath) : undefined;
-      if (bookId !== undefined) {
-        logger.info("Chaptarr book matched via file path", { profileId, chaptarrId, title, filePath: matchedFilePath });
-      }
-    }
     if (!bookId && title && authorName) bookId = byTitleAuthor.get(`${normalise(title)}|${normalise(authorName)}`);
     if (!bookId && title && authorName) bookId = byRelaxedTitle.get(`${normalise(stripSubtitle(title))}|${normalise(authorName)}`);
     // titleSlug is derived from the book's canonical title before Chaptarr overwrites the display

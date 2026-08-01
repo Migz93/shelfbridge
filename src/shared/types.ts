@@ -154,6 +154,7 @@ export type BookDuplicateCandidate = Pick<BookSummary,
 > & {
   seriesName: string | null;
   seriesNumber: string | null;
+  mergeEligible: boolean;
 };
 
 export interface BookRelationship {

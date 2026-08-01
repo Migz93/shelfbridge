@@ -456,6 +456,7 @@ export function reconcileBookIdentities(db: Database.Database): void {
     cleanupOrphanedImageCache(db);
     return;
   }
+  const rowsById = new Map(rows.map((row) => [row.id, row]));
   const validBookIds = new Set(
     (db.prepare("SELECT id FROM books").all() as { id: number }[]).map((row) => row.id)
   );
@@ -468,6 +469,15 @@ export function reconcileBookIdentities(db: Database.Database): void {
       .filter((r) => r.source_type !== "chaptarr" && r.book_id !== null && validBookIds.has(r.book_id!))
       .map((r) => r.book_id!)
   );
+  const canonicalBookIdsByFilePath = new Map<IdentityKey, number[]>();
+  for (const row of rows) {
+    if (row.source_type === "chaptarr" || row.book_id === null || !bookIdsReferencedByNonChaptarr.has(row.book_id)) continue;
+    for (const key of filePathIdentityKeys(row)) {
+      const ids = canonicalBookIdsByFilePath.get(key) ?? [];
+      if (!ids.includes(row.book_id)) ids.push(row.book_id);
+      canonicalBookIdsByFilePath.set(key, ids);
+    }
+  }
 
   const uf = new UnionFind();
   const byHighKey = new Map<IdentityKey, number>();
@@ -524,6 +534,18 @@ export function reconcileBookIdentities(db: Database.Database): void {
     }
   }
 
+  // A Goodreads/Grimmory ISBN match can otherwise be blocked by a stale
+  // Goodreads ID stored in Grimmory. When that Grimmory row also shares an exact
+  // same-format path with Chaptarr, the physical library provides independent
+  // corroboration that the IDs describe the same local book.
+  const corroboratedGrimmoryChaptarrFilePaths = new Set<IdentityKey>();
+  for (const [key, ids] of byFilePathKey) {
+    const sourceTypes = new Set(ids.map((id) => rowsById.get(id)?.source_type));
+    if (sourceTypes.has("grimmory") && sourceTypes.has("chaptarr")) {
+      corroboratedGrimmoryChaptarrFilePaths.add(key);
+    }
+  }
+
   for (const ids of byIsbnKey.values()) {
     for (const id of ids.slice(1)) {
       const rootA = uf.find(ids[0]!);
@@ -532,9 +554,26 @@ export function reconcileBookIdentities(db: Database.Database): void {
       const keysA = rootIndex.get(rootA)?.highKeys ?? new Set<IdentityKey>();
       const keysB = rootIndex.get(rootB)?.highKeys ?? new Set<IdentityKey>();
       // A shared ISBN is strong corroborating evidence, but a conflicting authoritative
-      // ID (e.g. different Hardcover/Goodreads IDs) always blocks the merge — matching
-      // titles must never override an explicit identifier conflict.
+      // ID (e.g. different Hardcover/Goodreads IDs) normally blocks the merge.
       if (highKeyConflict(keysA, keysB)) {
+        const firstRow = rowsById.get(ids[0]!);
+        const secondRow = rowsById.get(id);
+        const goodreadsRow = firstRow?.source_type === "goodreads" ? firstRow
+          : secondRow?.source_type === "goodreads" ? secondRow : undefined;
+        const grimmoryRow = firstRow?.source_type === "grimmory" ? firstRow
+          : secondRow?.source_type === "grimmory" ? secondRow : undefined;
+        const sameTitle = Boolean(goodreadsRow && grimmoryRow
+          && normalizeTitle(goodreadsRow.title) === normalizeTitle(grimmoryRow.title));
+        const corroboratedPath = Boolean(grimmoryRow && filePathIdentityKeys(grimmoryRow)
+          .some((key) => corroboratedGrimmoryChaptarrFilePaths.has(key)));
+        if (sameTitle && corroboratedPath) {
+          unionRoots(rootA, rootB);
+          logger.info("Merged ISBN match despite stale Grimmory identifier", {
+            goodreadsSourceId: goodreadsRow!.id,
+            grimmorySourceId: grimmoryRow!.id
+          });
+          continue;
+        }
         logger.debug("Skipped ISBN-based book merge: conflicting authoritative identifiers", {
           rootA, rootB
         });
@@ -544,16 +583,24 @@ export function reconcileBookIdentities(db: Database.Database): void {
     }
   }
 
-  // A shared file path is only useful to bridge Grimmory/Audiobookshelf rows to the
-  // global Chaptarr instance managing the same library — it is not proof on its own,
-  // since two independent server instances can expose the same relative path for
-  // unrelated books. Require no conflicting authoritative ID (like ISBN) AND, when
-  // both sides have title/author data, that it doesn't explicitly disagree.
+  // Chaptarr and Grimmory refer to the same managed library. An exact path in the
+  // same media bucket is therefore the strongest evidence available, including when
+  // Chaptarr still holds a stale upstream Goodreads or Hardcover identifier.
+  // Other source combinations remain conservative: they still require compatible
+  // authoritative IDs and title/author data.
   for (const ids of byFilePathKey.values()) {
     for (const id of ids.slice(1)) {
       const rootA = uf.find(ids[0]!);
       const rootB = uf.find(id);
       if (rootA === rootB) continue;
+      const rowA = rowsById.get(ids[0]!);
+      const rowB = rowsById.get(id);
+      const isChaptarrGrimmoryPair = (rowA?.source_type === "chaptarr" && rowB?.source_type === "grimmory")
+        || (rowA?.source_type === "grimmory" && rowB?.source_type === "chaptarr");
+      if (isChaptarrGrimmoryPair) {
+        unionRoots(rootA, rootB);
+        continue;
+      }
       const keysA = rootIndex.get(rootA)?.highKeys ?? new Set<IdentityKey>();
       const keysB = rootIndex.get(rootB)?.highKeys ?? new Set<IdentityKey>();
       if (highKeyConflict(keysA, keysB)) {
@@ -572,6 +619,59 @@ export function reconcileBookIdentities(db: Database.Database): void {
 
       unionRoots(rootA, rootB);
     }
+  }
+
+  // Chaptarr's upstream Hardcover and Goodreads IDs are not independently
+  // trustworthy enough to merge on: its metadata can be stale or wrong. A
+  // Goodreads edition ID becomes useful only when the same Chaptarr row is
+  // corroborated by an exact, same-format Grimmory file path. This bridges
+  // edition-specific Goodreads records without restoring Chaptarr IDs as
+  // general high-confidence identity keys.
+  const goodreadsByEditionId = new Map<string, number[]>();
+  const grimmoryByFilePath = new Map<IdentityKey, number[]>();
+  for (const row of rows) {
+    if (row.source_type === "goodreads") {
+      const editionId = normalizeExternalId(row.external_id);
+      if (editionId) {
+        const ids = goodreadsByEditionId.get(editionId) ?? [];
+        ids.push(row.id);
+        goodreadsByEditionId.set(editionId, ids);
+      }
+    }
+    if (row.source_type === "grimmory") {
+      const path = normalizePath(row.grimmory_primary_file_path);
+      const bucket = rowFormatBucket(row);
+      if (path && bucket !== "unknown") {
+        const key = `${bucket}.file_path:${path}` as IdentityKey;
+        const ids = grimmoryByFilePath.get(key) ?? [];
+        ids.push(row.id);
+        grimmoryByFilePath.set(key, ids);
+      }
+    }
+  }
+
+  let corroboratedBridgeCount = 0;
+  for (const chaptarrRow of rows) {
+    if (chaptarrRow.source_type !== "chaptarr") continue;
+    const editionId = normalizeExternalId(chaptarrRow.source_goodreads_edition_id);
+    const path = normalizePath(chaptarrRow.chaptarr_primary_file_path);
+    const bucket = rowFormatBucket(chaptarrRow);
+    if (!editionId || !path || bucket === "unknown") continue;
+
+    const goodreadsRows = goodreadsByEditionId.get(editionId);
+    const grimmoryRows = grimmoryByFilePath.get(`${bucket}.file_path:${path}` as IdentityKey);
+    if (!goodreadsRows || !grimmoryRows) continue;
+
+    for (const goodreadsRowId of goodreadsRows) {
+      for (const grimmoryRowId of grimmoryRows) {
+        unionRoots(chaptarrRow.id, goodreadsRowId);
+        unionRoots(chaptarrRow.id, grimmoryRowId);
+        corroboratedBridgeCount++;
+      }
+    }
+  }
+  if (corroboratedBridgeCount > 0) {
+    logger.info("Merged sources via corroborated Chaptarr Goodreads identity bridge", { bridges: corroboratedBridgeCount });
   }
 
   // Title/author matches alone are not authoritative enough to auto-merge distinct
@@ -756,6 +856,29 @@ export function reconcileBookIdentities(db: Database.Database): void {
 
     for (const group of groups.values()) {
       const isChaptarrOnly = group.every((r) => r.source_type === "chaptarr");
+
+      if (isChaptarrOnly) {
+        // A Chaptarr row may already point at an ebook canonical record from a
+        // previous loose match. An exact same-format file path is stronger than
+        // that historical assignment, so move only this Chaptarr group to the
+        // proven canonical record without collapsing the ebook and audiobook
+        // records into each other.
+        const filePathCanonicalId = group
+          .flatMap((row) => filePathIdentityKeys(row))
+          .flatMap((key) => canonicalBookIdsByFilePath.get(key) ?? [])
+          .find((id) => !group.some((row) => row.book_id === id));
+        if (filePathCanonicalId !== undefined) {
+          for (const row of group) {
+            if (row.book_id !== filePathCanonicalId) reassigned++;
+            updateSource.run(filePathCanonicalId, row.id);
+          }
+          logger.info("Reassigned Chaptarr source to same-format file-path canonical book", {
+            bookId: filePathCanonicalId,
+            sourceCount: group.length
+          });
+          continue;
+        }
+      }
 
       const existingIds = Array.from(new Set(
         group.map((r) => r.book_id).filter((id): id is number => id !== null && validBookIds.has(id))
