@@ -1,5 +1,6 @@
 import type { TestResult } from "../../shared/types.js";
 import { logger } from "../logger.js";
+import { fetchIntegration } from "../security/outbound.js";
 
 export interface GrimmoryBook {
   id: number;
@@ -43,14 +44,14 @@ interface GrimmoryAdminPage {
 export async function testGrimmoryServer(baseUrl: string): Promise<TestResult> {
   try {
     const url = baseUrl.replace(/\/$/, "");
-    const res = await fetch(`${url}/api/v1/actuator/health`, {
+    const res = await fetchIntegration(`${url}/api/v1/actuator/health`, {
       signal: AbortSignal.timeout(8000)
     });
     if (res.ok) {
       return { ok: true, message: "Grimmory server is reachable" };
     }
     // Some versions don't expose actuator — try the openapi endpoint
-    const res2 = await fetch(`${url}/api/openapi.json`, { signal: AbortSignal.timeout(8000) });
+    const res2 = await fetchIntegration(`${url}/api/openapi.json`, { signal: AbortSignal.timeout(8000) });
     if (res2.ok) return { ok: true, message: "Grimmory server is reachable" };
     return { ok: false, message: `Server returned ${res.status}` };
   } catch (err) {
@@ -62,7 +63,7 @@ export async function testGrimmoryServer(baseUrl: string): Promise<TestResult> {
 export async function testGrimmoryLogin(baseUrl: string, username: string, password: string): Promise<TestResult & { accessToken?: string; refreshToken?: string }> {
   try {
     const url = baseUrl.replace(/\/$/, "");
-    const res = await fetch(`${url}/api/v1/auth/login`, {
+    const res = await fetchIntegration(`${url}/api/v1/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password }),
@@ -89,7 +90,7 @@ export async function getGrimmoryToken(baseUrl: string, username: string, passwo
 
 async function grimmoryGet<T>(baseUrl: string, token: string, path: string): Promise<T> {
   const url = baseUrl.replace(/\/$/, "");
-  const res = await fetch(`${url}${path}`, {
+  const res = await fetchIntegration(`${url}${path}`, {
     headers: { "Authorization": `Bearer ${token}` },
     signal: AbortSignal.timeout(15000)
   });
@@ -99,7 +100,7 @@ async function grimmoryGet<T>(baseUrl: string, token: string, path: string): Pro
 
 async function grimmoryPut<T = unknown>(baseUrl: string, token: string, path: string, body: unknown): Promise<T | null> {
   const url = baseUrl.replace(/\/$/, "");
-  const res = await fetch(`${url}${path}`, {
+  const res = await fetchIntegration(`${url}${path}`, {
     method: "PUT",
     headers: {
       "Authorization": `Bearer ${token}`,
@@ -483,7 +484,7 @@ export interface GrimmoryShelf {
 export async function fetchGrimmoryShelfList(baseUrl: string, token: string): Promise<GrimmoryShelf[]> {
   const url = `${baseUrl.replace(/\/$/, "")}/api/v1/app/shelves`;
   try {
-    const res = await fetch(url, {
+    const res = await fetchIntegration(url, {
       headers: { Authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(15000)
     });
@@ -509,7 +510,7 @@ export async function ensureGrimmoryShelf(baseUrl: string, token: string, name: 
   if (existing) return existing.id;
 
   const url = `${baseUrl.replace(/\/$/, "")}/api/v1/shelves`;
-  const res = await fetch(url, {
+  const res = await fetchIntegration(url, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ name: name.trim() }),
@@ -528,7 +529,7 @@ export async function ensureGrimmoryShelf(baseUrl: string, token: string, name: 
 export async function fetchGrimmoryShelfBookIds(baseUrl: string, token: string, shelfId: number): Promise<number[]> {
   const url = `${baseUrl.replace(/\/$/, "")}/api/v1/shelves/${shelfId}/books`;
   try {
-    const res = await fetch(url, {
+    const res = await fetchIntegration(url, {
       headers: { Authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(15000)
     });
@@ -545,7 +546,7 @@ export async function fetchGrimmoryShelfBookIds(baseUrl: string, token: string, 
 
 export async function addBooksToGrimmoryShelf(baseUrl: string, token: string, bookIds: number[], shelfId: number): Promise<void> {
   const url = `${baseUrl.replace(/\/$/, "")}/api/v1/books/shelves`;
-  const res = await fetch(url, {
+  const res = await fetchIntegration(url, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ bookIds, shelvesToAssign: [shelfId], shelvesToUnassign: [] }),

@@ -6,9 +6,9 @@ import { testHardcoverToken, fetchHardcoverLists } from "../sync/hardcover.js";
 import { testGoodreadsUser, fetchGoodreadsCustomShelves } from "../sync/goodreads.js";
 import { testAudiobookshelfToken } from "../sync/audiobookshelf.js";
 import type { HardcoverListMapping, GoodreadsShelfMapping } from "../../shared/types.js";
-import { decryptCredential, encryptCredential } from "../security/credentials.js";
 import { reconcileBookIdentities } from "../db/bookIdentity.js";
 import { logger } from "../logger.js";
+import { UnsafeIntegrationUrlError, validateIntegrationUrl } from "../security/outbound.js";
 
 const router = Router();
 
@@ -212,6 +212,16 @@ router.patch("/:id", (req, res) => {
     syncSettings: Partial<SyncSettings>;
   }>;
 
+  try {
+    if (body.grimmory?.baseUrl !== undefined) validateIntegrationUrl(body.grimmory.baseUrl);
+  } catch (error) {
+    if (error instanceof UnsafeIntegrationUrlError) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
+    throw error;
+  }
+
   if (body.displayName !== undefined) {
     db.prepare("UPDATE profiles SET display_name = ? WHERE id = ?").run(body.displayName, id);
   }
@@ -226,16 +236,16 @@ router.patch("/:id", (req, res) => {
       const updates: string[] = [];
       const vals: unknown[] = [];
       if (g.username !== undefined) { updates.push("username = ?"); vals.push(g.username); }
-      if (g.password !== undefined) { updates.push("encrypted_password = ?"); vals.push(encryptCredential(g.password)); }
-      if (g.baseUrl !== undefined) { updates.push("base_url = ?"); vals.push(g.baseUrl); }
+      if (g.password !== undefined) { updates.push("password = ?"); vals.push(g.password); }
+      if (g.baseUrl !== undefined) { updates.push("base_url = ?"); vals.push(validateIntegrationUrl(g.baseUrl)); }
       if (updates.length) {
         updates.push("status = 'untested'");
         vals.push(id);
         db.prepare(`UPDATE grimmory_connections SET ${updates.join(", ")} WHERE profile_id = ?`).run(...vals);
       }
     } else {
-      db.prepare(`INSERT INTO grimmory_connections (profile_id, username, encrypted_password, base_url) VALUES (?, ?, ?, ?)`)
-        .run(id, g.username ?? "", encryptCredential(g.password), g.baseUrl ?? "");
+      db.prepare(`INSERT INTO grimmory_connections (profile_id, username, password, base_url) VALUES (?, ?, ?, ?)`)
+        .run(id, g.username ?? "", g.password ?? "", g.baseUrl === undefined ? "" : validateIntegrationUrl(g.baseUrl));
     }
   }
 
@@ -249,7 +259,7 @@ router.patch("/:id", (req, res) => {
     if (existing) {
       const updates: string[] = [];
       const vals: unknown[] = [];
-      if (h.apiToken !== undefined) { updates.push("encrypted_api_token = ?", "status = 'untested'"); vals.push(encryptCredential(h.apiToken)); }
+      if (h.apiToken !== undefined) { updates.push("api_token = ?", "status = 'untested'"); vals.push(h.apiToken); }
       if (h.syncListId !== undefined) { updates.push("sync_list_id = ?"); vals.push(h.syncListId ? String(h.syncListId) : null); }
       if (h.syncListName !== undefined) { updates.push("sync_list_name = ?"); vals.push(h.syncListName?.trim() || null); }
       if (h.targetShelfName !== undefined) { updates.push("target_shelf_name = ?"); vals.push(h.targetShelfName?.trim() || null); }
@@ -263,9 +273,9 @@ router.patch("/:id", (req, res) => {
         return;
       }
       db.prepare(`
-        INSERT INTO hardcover_connections (profile_id, encrypted_api_token, sync_list_id, sync_list_name, target_shelf_name)
+        INSERT INTO hardcover_connections (profile_id, api_token, sync_list_id, sync_list_name, target_shelf_name)
         VALUES (?, ?, ?, ?, ?)
-      `).run(id, encryptCredential(h.apiToken), h.syncListId ? String(h.syncListId) : null, h.syncListName?.trim() || null, h.targetShelfName?.trim() || null);
+      `).run(id, h.apiToken ?? "", h.syncListId ? String(h.syncListId) : null, h.syncListName?.trim() || null, h.targetShelfName?.trim() || null);
     }
     }
   }
@@ -308,12 +318,12 @@ router.patch("/:id", (req, res) => {
       const existing = db.prepare("SELECT id FROM audiobookshelf_connections WHERE profile_id = ?").get(id);
       if (existing) {
         db.prepare(`
-          UPDATE audiobookshelf_connections SET encrypted_api_key = ?, status = 'untested' WHERE profile_id = ?
-        `).run(encryptCredential(abs.apiKey), id);
+          UPDATE audiobookshelf_connections SET api_key = ?, status = 'untested' WHERE profile_id = ?
+        `).run(abs.apiKey, id);
       } else {
         db.prepare(`
-          INSERT INTO audiobookshelf_connections (profile_id, encrypted_api_key) VALUES (?, ?)
-        `).run(id, encryptCredential(abs.apiKey));
+          INSERT INTO audiobookshelf_connections (profile_id, api_key) VALUES (?, ?)
+        `).run(id, abs.apiKey);
       }
     }
   }
@@ -354,10 +364,10 @@ router.delete("/:id", (req, res) => {
 router.get("/:id/hardcover/lists", async (req, res) => {
   const db = getDb();
   const id = parseInt(req.params["id"] ?? "0", 10);
-  const hc = db.prepare("SELECT encrypted_api_token FROM hardcover_connections WHERE profile_id = ?").get(id) as { encrypted_api_token: string } | undefined;
-  if (!hc?.encrypted_api_token) { res.status(400).json({ error: "Hardcover not configured" }); return; }
+  const hc = db.prepare("SELECT api_token FROM hardcover_connections WHERE profile_id = ?").get(id) as { api_token: string } | undefined;
+  if (!hc?.api_token) { res.status(400).json({ error: "Hardcover not configured" }); return; }
   try {
-    const lists = await fetchHardcoverLists(decryptCredential(hc.encrypted_api_token));
+    const lists = await fetchHardcoverLists(hc.api_token);
     res.json({ lists: lists.map(({ id: lid, name, slug }) => ({ id: lid, name, slug })) });
   } catch (err) {
     res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
@@ -429,11 +439,11 @@ router.post("/:id/goodreads/shelf-mappings", (req, res) => {
 router.get("/:id/grimmory/shelves", async (req, res) => {
   const db = getDb();
   const id = parseInt(req.params["id"] ?? "0", 10);
-  const gc = db.prepare("SELECT base_url, username, encrypted_password FROM grimmory_connections WHERE profile_id = ?").get(id) as { base_url: string; username: string; encrypted_password: string } | undefined;
+  const gc = db.prepare("SELECT base_url, username, password FROM grimmory_connections WHERE profile_id = ?").get(id) as { base_url: string; username: string; password: string } | undefined;
   const baseUrl = gc?.base_url?.trim() || getSetting("grimmory.baseUrl", "");
-  if (!baseUrl || !gc?.username || !gc?.encrypted_password) { res.json({ shelves: [] }); return; }
+  if (!baseUrl || !gc?.username || !gc?.password) { res.json({ shelves: [] }); return; }
   try {
-    const token = await getGrimmoryToken(baseUrl, gc.username, decryptCredential(gc.encrypted_password));
+    const token = await getGrimmoryToken(baseUrl, gc.username, gc.password);
     if (!token) { res.json({ shelves: [] }); return; }
     const shelves = await fetchGrimmoryShelfList(baseUrl, token);
     res.json({ shelves });
@@ -502,7 +512,7 @@ router.post("/:id/test/grimmory", async (req, res) => {
 
   const baseUrl = body.baseUrl?.trim() || stored?.base_url || getSetting("grimmory.baseUrl", "");
   const username = body.username?.trim() || stored?.username || "";
-  const password = body.password || decryptCredential(stored?.encrypted_password) || "";
+  const password = body.password || stored?.password || "";
 
   if (!baseUrl || !username || !password) {
     res.json({ ok: false, message: "Grimmory URL, username and password are all required" });
@@ -528,7 +538,7 @@ router.post("/:id/test/hardcover", async (req, res) => {
   const body = req.body as { apiToken?: string };
 
   const stored = db.prepare("SELECT * FROM hardcover_connections WHERE profile_id = ?").get(id) as DbHardcover | undefined;
-  const token = body.apiToken ?? decryptCredential(stored?.encrypted_api_token) ?? "";
+  const token = body.apiToken ?? stored?.api_token ?? "";
 
   if (!token.trim()) {
     res.json({ ok: false, message: "No API token provided" });
@@ -582,7 +592,7 @@ router.post("/:id/test/audiobookshelf", async (req, res) => {
   const body = req.body as { apiKey?: string };
 
   const stored = db.prepare("SELECT * FROM audiobookshelf_connections WHERE profile_id = ?").get(id) as DbAudiobookshelf | undefined;
-  const apiKey = body.apiKey ?? decryptCredential(stored?.encrypted_api_key) ?? "";
+  const apiKey = body.apiKey ?? stored?.api_key ?? "";
   const baseUrl = (getSetting("audiobookshelf.baseUrl", "")).trim();
 
   if (!apiKey.trim()) {
@@ -623,8 +633,8 @@ interface DbGrimmory {
   profile_id: number;
   base_url: string;
   username: string;
-  encrypted_password: string;
-  encrypted_refresh_token: string | null;
+  password: string;
+  refresh_token: string | null;
   grimmory_user_id: string | null;
   status: string;
   last_tested_at: string | null;
@@ -634,7 +644,7 @@ interface DbGrimmory {
 interface DbHardcover {
   id: number;
   profile_id: number;
-  encrypted_api_token: string;
+  api_token: string;
   hardcover_user_id: string | null;
   hardcover_username: string | null;
   status: string;
@@ -661,7 +671,7 @@ interface DbGoodreads {
 interface DbAudiobookshelf {
   id: number;
   profile_id: number;
-  encrypted_api_key: string;
+  api_key: string;
   abs_user_id: string | null;
   abs_username: string | null;
   status: string;

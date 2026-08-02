@@ -1,6 +1,5 @@
 import type Database from "better-sqlite3";
 import { reconcileBookIdentities } from "./bookIdentity.js";
-import { migrateCredentialStorage } from "../security/credentials.js";
 import { logger } from "../logger.js";
 
 export const CURRENT_SCHEMA_VERSION = 14;
@@ -20,9 +19,9 @@ export function initSchema(db: Database.Database): void {
     );
 
     CREATE TABLE IF NOT EXISTS auth_sessions (
-      id         TEXT PRIMARY KEY,
+      token_hash TEXT PRIMARY KEY,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      expires_at TEXT NOT NULL
+      expires_at INTEGER NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS profiles (
@@ -37,8 +36,8 @@ export function initSchema(db: Database.Database): void {
       profile_id            INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
       base_url              TEXT NOT NULL DEFAULT '',
       username              TEXT NOT NULL DEFAULT '',
-      encrypted_password    TEXT NOT NULL DEFAULT '',
-      encrypted_refresh_token TEXT,
+      password              TEXT NOT NULL DEFAULT '',
+      refresh_token         TEXT,
       grimmory_user_id      TEXT,
       status                TEXT NOT NULL DEFAULT 'untested',
       last_tested_at        TEXT,
@@ -49,7 +48,7 @@ export function initSchema(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS hardcover_connections (
       id                  INTEGER PRIMARY KEY AUTOINCREMENT,
       profile_id          INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
-      encrypted_api_token TEXT NOT NULL DEFAULT '',
+      api_token           TEXT NOT NULL DEFAULT '',
       hardcover_user_id   TEXT,
       hardcover_username  TEXT,
       sync_list_id        TEXT,
@@ -64,7 +63,7 @@ export function initSchema(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS audiobookshelf_connections (
       id                    INTEGER PRIMARY KEY AUTOINCREMENT,
       profile_id            INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
-      encrypted_api_key     TEXT NOT NULL DEFAULT '',
+      api_key               TEXT NOT NULL DEFAULT '',
       abs_user_id           TEXT,
       abs_username          TEXT,
       status                TEXT NOT NULL DEFAULT 'untested',
@@ -318,7 +317,7 @@ export function initSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
   `);
 
-  db.prepare("DELETE FROM auth_sessions WHERE expires_at <= datetime('now')").run();
+  db.prepare("DELETE FROM auth_sessions WHERE expires_at <= unixepoch()").run();
 
   const row = db.prepare("SELECT version FROM schema_version").get() as { version: number } | undefined;
   if (!row) {
@@ -446,7 +445,7 @@ export function initSchema(db: Database.Database): void {
       CREATE TABLE IF NOT EXISTS audiobookshelf_connections (
         id                    INTEGER PRIMARY KEY AUTOINCREMENT,
         profile_id            INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
-        encrypted_api_key     TEXT NOT NULL DEFAULT '',
+        api_key               TEXT NOT NULL DEFAULT '',
         abs_user_id           TEXT,
         abs_username          TEXT,
         status                TEXT NOT NULL DEFAULT 'untested',
@@ -782,6 +781,5 @@ export function initSchema(db: Database.Database): void {
     logger.info("Schema migrated to version 14: scoped book_sources uniqueness to (source_type, source_instance_id, external_id)");
   }
 
-  migrateCredentialStorage(db);
   reconcileBookIdentities(db);
 }

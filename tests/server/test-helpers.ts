@@ -48,19 +48,19 @@ export function seedSyncSettings(
   `).run({ profileId, ...fields });
 }
 
-/** Inserts a Hardcover connection (plain-text token — decryptCredential passes non-"sbenc:v1:" values through unchanged). */
+/** Inserts a Hardcover connection. */
 export function seedHardcoverConnection(db: Database.Database, profileId: number, token = "hc-test-token"): void {
-  db.prepare("INSERT INTO hardcover_connections (profile_id, encrypted_api_token) VALUES (?, ?)").run(profileId, token);
+  db.prepare("INSERT INTO hardcover_connections (profile_id, api_token) VALUES (?, ?)").run(profileId, token);
 }
 
-/** Inserts a Grimmory connection (plain-text password — see seedHardcoverConnection). */
+/** Inserts a Grimmory connection. */
 export function seedGrimmoryConnection(
   db: Database.Database,
   profileId: number,
   fields: { baseUrl?: string; username?: string; password?: string } = {}
 ): void {
   db.prepare(`
-    INSERT INTO grimmory_connections (profile_id, base_url, username, encrypted_password)
+    INSERT INTO grimmory_connections (profile_id, base_url, username, password)
     VALUES (?, ?, ?, ?)
   `).run(profileId, fields.baseUrl ?? "https://grimmory.example.com", fields.username ?? "testuser", fields.password ?? "test-password");
 }

@@ -3,7 +3,6 @@ import { reconcileBookIdentities } from "../db/bookIdentity.js";
 import { logger } from "../logger.js";
 import { buildGrimmoryIndex } from "./matcher.js";
 import { enqueueImageCacheTask } from "../image-cache.js";
-import { decryptCredential } from "../security/credentials.js";
 import type { SyncStatus } from "../../shared/types.js";
 import { defaultAdapters, type SyncAdapters } from "./adapters.js";
 import { computeSyncDecision, type ConflictStrategy } from "./conflict-policy.js";
@@ -99,8 +98,8 @@ export async function runSyncImpl(
     logger.info("Sync started", { profileId, runId, dryRun });
 
     const profile = db.prepare(`
-      SELECT p.*, g.username, g.encrypted_password, g.base_url as grimmory_base_url,
-             h.encrypted_api_token as hardcover_token,
+      SELECT p.*, g.username, g.password, g.base_url as grimmory_base_url,
+             h.api_token as hardcover_token,
              h.sync_list_id as hardcover_sync_list_id,
              h.sync_list_name as hardcover_sync_list_name,
              h.target_shelf_name as hardcover_target_shelf_name,
@@ -112,7 +111,7 @@ export async function runSyncImpl(
              ss.sync_goodreads_status_enabled, ss.sync_goodreads_shelves_enabled,
              ss.sync_write_tag_enabled,
              ss.conflict_strategy,
-             abs_conn.encrypted_api_key as abs_encrypted_api_key
+             abs_conn.api_key as abs_api_key
       FROM profiles p
       LEFT JOIN grimmory_connections g ON g.profile_id = p.id
       LEFT JOIN hardcover_connections h ON h.profile_id = p.id
@@ -126,8 +125,8 @@ export async function runSyncImpl(
 
     const baseUrl = (profile["grimmory_base_url"] as string | null) || getSetting("grimmory.baseUrl", "");
     const username = profile["username"] as string | null;
-    const password = decryptCredential(profile["encrypted_password"] as string | null);
-    const hardcoverToken = decryptCredential(profile["hardcover_token"] as string | null);
+    const password = (profile["password"] as string | null) ?? "";
+    const hardcoverToken = (profile["hardcover_token"] as string | null) ?? "";
     const conflictStrategy = (profile["conflict_strategy"] as ConflictStrategy | null)
       ?? (getSetting("sync.conflictStrategy", "latest_wins") as ConflictStrategy);
     const writeTagEnabled = !!(profile["sync_write_tag_enabled"] as number | null);
@@ -137,7 +136,7 @@ export async function runSyncImpl(
     const hasHardcover = !!hardcoverToken;
 
     const absBaseUrl = getSetting("audiobookshelf.baseUrl", "");
-    const absApiKey = decryptCredential(profile["abs_encrypted_api_key"] as string | null);
+    const absApiKey = (profile["abs_api_key"] as string | null) ?? "";
     const hasAbs = !!(absBaseUrl && absApiKey);
 
     const counters: SyncCounters = { written: 0, skipped: 0, superseded: 0, sourceFailures: 0 };

@@ -1,10 +1,12 @@
 import crypto from "node:crypto";
 import type { NextFunction, Request, Response, Router } from "express";
+import rateLimit from "express-rate-limit";
 import { getDb, getSetting, setSetting } from "./db/index.js";
 import { logger } from "./logger.js";
 
 const SESSION_COOKIE_NAME = "shelfbridge_session";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 14;
+const SESSION_TTL_SECONDS = SESSION_TTL_MS / 1000;
 const MIN_PASSWORD_LENGTH = 8;
 
 declare module "express-serve-static-core" {
@@ -14,7 +16,7 @@ declare module "express-serve-static-core" {
   }
 }
 
-function parseCookies(rawCookie = ""): Map<string, string> {
+export function parseCookies(rawCookie = ""): Map<string, string> {
   return rawCookie
     .split(";")
     .map((part) => part.trim())
@@ -22,7 +24,11 @@ function parseCookies(rawCookie = ""): Map<string, string> {
     .reduce<Map<string, string>>((acc, pair) => {
       const index = pair.indexOf("=");
       if (index === -1) return acc;
-      acc.set(pair.slice(0, index), decodeURIComponent(pair.slice(index + 1)));
+      try {
+        acc.set(pair.slice(0, index), decodeURIComponent(pair.slice(index + 1)));
+      } catch {
+        // Invalid cookie encoding is unauthenticated input, not a server error.
+      }
       return acc;
     }, new Map());
 }
@@ -42,6 +48,14 @@ function signedValue(secret: string, value: string): string {
 
 function createSessionId(): string {
   return crypto.randomBytes(32).toString("hex");
+}
+
+export function hashSessionToken(sessionId: string): string {
+  return crypto.createHash("sha256").update(sessionId).digest("hex");
+}
+
+export function isSessionExpiryValid(expiresAt: number, nowSeconds = Math.floor(Date.now() / 1000)): boolean {
+  return Number.isSafeInteger(expiresAt) && expiresAt > nowSeconds;
 }
 
 async function hashPassword(password: string, salt?: string): Promise<{ passwordSalt: string; passwordHash: string }> {
@@ -70,30 +84,38 @@ function authConfigured(): boolean {
   return Boolean(getSetting("auth.passwordHash", "") && getSetting("auth.passwordSalt", ""));
 }
 
-function createSession(): string {
+export function createSession(): string {
   const db = getDb();
   const sessionId = createSessionId();
-  const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
-  db.prepare("INSERT INTO auth_sessions (id, expires_at) VALUES (?, ?)").run(sessionId, expiresAt);
+  const expiresAt = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
+  db.prepare("INSERT INTO auth_sessions (token_hash, expires_at) VALUES (?, ?)").run(hashSessionToken(sessionId), expiresAt);
   return sessionId;
 }
 
-function deleteSession(sessionId: string): void {
-  getDb().prepare("DELETE FROM auth_sessions WHERE id = ?").run(sessionId);
+export function deleteSession(sessionId: string): void {
+  getDb().prepare("DELETE FROM auth_sessions WHERE token_hash = ?").run(hashSessionToken(sessionId));
 }
 
-function getValidSession(sessionId: string): boolean {
+export function getValidSession(sessionId: string): boolean {
   const row = getDb()
-    .prepare("SELECT id FROM auth_sessions WHERE id = ? AND expires_at > datetime('now')")
-    .get(sessionId);
+    .prepare("SELECT token_hash, expires_at FROM auth_sessions WHERE token_hash = ? AND expires_at > ?")
+    .get(hashSessionToken(sessionId), Math.floor(Date.now() / 1000)) as { token_hash: string; expires_at: number } | undefined;
   return Boolean(row);
 }
 
-function setSessionCookie(res: Response, sessionId: string): void {
+function hasValidSignature(sessionId: string, signature: string): boolean {
+  const expected = signedValue(getSessionSecret(), sessionId);
+  const actual = Buffer.from(signature, "hex");
+  const expectedBuffer = Buffer.from(expected, "hex");
+  return actual.length === expectedBuffer.length && crypto.timingSafeEqual(actual, expectedBuffer);
+}
+
+export function setSessionCookie(req: Request, res: Response, sessionId: string): void {
   const signed = `${sessionId}.${signedValue(getSessionSecret(), sessionId)}`;
+  const secure = req.secure ? "; Secure" : "";
   res.setHeader(
     "Set-Cookie",
-    `${SESSION_COOKIE_NAME}=${encodeURIComponent(signed)}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(signed)}; HttpOnly; Path=/; SameSite=Strict${secure}; Max-Age=${SESSION_TTL_SECONDS}`
   );
 }
 
@@ -112,7 +134,7 @@ export function sessionMiddleware(req: Request, _res: Response, next: NextFuncti
   }
 
   const [sessionId, signature] = raw.split(".");
-  if (!sessionId || !signature || signedValue(getSessionSecret(), sessionId) !== signature) {
+  if (!sessionId || !signature || !hasValidSignature(sessionId, signature)) {
     next();
     return;
   }
@@ -124,6 +146,28 @@ export function sessionMiddleware(req: Request, _res: Response, next: NextFuncti
 
   next();
 }
+
+const loginIpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many login attempts. Try again later." }
+});
+
+const loginUsernameLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const username = typeof req.body?.username === "string" ? req.body.username.trim().toLowerCase() : "";
+    return crypto.createHash("sha256").update(username).digest("hex");
+  },
+  message: { error: "Too many login attempts. Try again later." }
+});
 
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
   if (!authConfigured()) {
@@ -162,12 +206,12 @@ export function registerAuthRoutes(router: Router): void {
     setSetting("auth.passwordHash", passwordHash);
     setSetting("auth.passwordSalt", passwordSalt);
     const sessionId = createSession();
-    setSessionCookie(res, sessionId);
+    setSessionCookie(req, res, sessionId);
     logger.info("ShelfBridge authentication configured");
     res.json({ authenticated: true });
   });
 
-  router.post("/auth/login", async (req, res) => {
+  router.post("/auth/login", loginIpLimiter, loginUsernameLimiter, async (req, res) => {
     const passwordHash = getSetting("auth.passwordHash", "");
     const passwordSalt = getSetting("auth.passwordSalt", "");
     const password = typeof req.body?.password === "string" ? req.body.password : "";
@@ -184,7 +228,7 @@ export function registerAuthRoutes(router: Router): void {
     }
 
     const sessionId = createSession();
-    setSessionCookie(res, sessionId);
+    setSessionCookie(req, res, sessionId);
     logger.info("ShelfBridge login succeeded");
     res.json({ authenticated: true });
   });

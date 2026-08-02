@@ -7,9 +7,9 @@ import { testChaptarrConnection } from "../sync/chaptarr.js";
 import { testAudiobookshelfServer } from "../sync/audiobookshelf.js";
 import { scheduler } from "../scheduler.js";
 import { getRecentLogs, readRecentMachineLogs } from "../logger.js";
-import { decryptCredential, encryptCredential } from "../security/credentials.js";
 import { APP_VERSION, BUILD_CHANNEL, BUILD_COMMIT } from "../version.js";
 import { logger } from "../logger.js";
+import { UnsafeIntegrationUrlError, validateIntegrationUrl } from "../security/outbound.js";
 
 const router = Router();
 
@@ -33,7 +33,7 @@ function readSettings(): AppSettings {
     },
     chaptarr: {
       baseUrl: getSetting("chaptarr.baseUrl", ""),
-      apiKeyConfigured: Boolean(decryptCredential(getSetting("chaptarr.apiKey", "")).trim()),
+      apiKeyConfigured: Boolean(getSetting("chaptarr.apiKey", "").trim()),
     },
     audiobookshelf: {
       baseUrl: getSetting("audiobookshelf.baseUrl", ""),
@@ -59,16 +59,29 @@ router.patch("/", (req, res) => {
     };
   };
 
+  try {
+    if (body.grimmory?.baseUrl !== undefined) validateIntegrationUrl(body.grimmory.baseUrl);
+    if (body.download?.baseUrl !== undefined) validateIntegrationUrl(body.download.baseUrl);
+    if (body.chaptarr?.baseUrl !== undefined) validateIntegrationUrl(body.chaptarr.baseUrl);
+    if (body.audiobookshelf?.baseUrl !== undefined) validateIntegrationUrl(body.audiobookshelf.baseUrl);
+  } catch (error) {
+    if (error instanceof UnsafeIntegrationUrlError) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
+    throw error;
+  }
+
   if (body.general) {
     if (body.general.trustProxy !== undefined) setSetting("app.trustProxy", String(body.general.trustProxy));
   }
   if (body.grimmory) {
-    if (body.grimmory.baseUrl !== undefined) setSetting("grimmory.baseUrl", body.grimmory.baseUrl);
+    if (body.grimmory.baseUrl !== undefined) setSetting("grimmory.baseUrl", validateIntegrationUrl(body.grimmory.baseUrl));
     if (body.grimmory.addMenuLink !== undefined)
       setSetting("grimmory.addMenuLink", String(body.grimmory.addMenuLink));
   }
   if (body.download) {
-    if (body.download.baseUrl !== undefined) setSetting("download.baseUrl", body.download.baseUrl);
+    if (body.download.baseUrl !== undefined) setSetting("download.baseUrl", validateIntegrationUrl(body.download.baseUrl));
     if (body.download.addMenuLink !== undefined)
       setSetting("download.addMenuLink", String(body.download.addMenuLink));
   }
@@ -80,11 +93,11 @@ router.patch("/", (req, res) => {
     if (body.sync.conflictStrategy !== undefined) setSetting("sync.conflictStrategy", body.sync.conflictStrategy);
   }
   if (body.chaptarr) {
-    if (body.chaptarr.baseUrl !== undefined) setSetting("chaptarr.baseUrl", body.chaptarr.baseUrl);
-    if (body.chaptarr.apiKey !== undefined) setSetting("chaptarr.apiKey", encryptCredential(body.chaptarr.apiKey));
+    if (body.chaptarr.baseUrl !== undefined) setSetting("chaptarr.baseUrl", validateIntegrationUrl(body.chaptarr.baseUrl));
+    if (body.chaptarr.apiKey !== undefined) setSetting("chaptarr.apiKey", body.chaptarr.apiKey);
   }
   if (body.audiobookshelf) {
-    if (body.audiobookshelf.baseUrl !== undefined) setSetting("audiobookshelf.baseUrl", body.audiobookshelf.baseUrl);
+    if (body.audiobookshelf.baseUrl !== undefined) setSetting("audiobookshelf.baseUrl", validateIntegrationUrl(body.audiobookshelf.baseUrl));
   }
   res.json(readSettings());
 });
@@ -103,7 +116,7 @@ router.post("/grimmory/test", async (req, res) => {
 router.post("/chaptarr/test", async (req, res) => {
   const { baseUrl, apiKey } = req.body as { baseUrl?: string; apiKey?: string };
   const url = baseUrl ?? getSetting("chaptarr.baseUrl", "");
-  const key = apiKey?.trim() ? apiKey : decryptCredential(getSetting("chaptarr.apiKey", ""));
+  const key = apiKey?.trim() ? apiKey : getSetting("chaptarr.apiKey", "");
   if (!url || !key) {
     res.json({ ok: false, message: "Base URL and API key are required" });
     return;

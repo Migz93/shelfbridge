@@ -126,7 +126,7 @@ creates every table, then applies a sequential run of version-guarded
 | `grimmory_connections` | Per-profile Grimmory credentials and connection status |
 | `hardcover_connections` | Per-profile Hardcover API token, resolved username, and connection status |
 | `goodreads_connections` | Per-profile Goodreads user ID, parsed RSS display name, enabled flag, and connection status |
-| `audiobookshelf_connections` | Per-profile Audiobookshelf enabled flag, encrypted API key, and connection status |
+| `audiobookshelf_connections` | Per-profile Audiobookshelf enabled flag, API key, and connection status |
 | `sync_settings` | Per-profile sync toggles, source-tag setting, and schedule configuration |
 | `shelf_mappings` | Maps Hardcover lists or Goodreads custom shelves to Grimmory shelves; `source` field distinguishes `'hardcover'` from `'goodreads'`; includes `source_list_id`, `source_list_name`, and cached `grimmory_shelf_id` |
 | `books` | One row per canonical book variant; includes `media_type`, title, author, cover cache path, and last modified/sync timestamps |
@@ -150,14 +150,13 @@ SameSite cookie.
 
 Third-party credentials — Grimmory passwords and refresh tokens, Hardcover API
 tokens, Audiobookshelf per-user API keys, and Chaptarr's global API key — are
-stored in `encrypted_*` columns using an AES-256-GCM envelope. Runtime code
-decrypts them only at the service-call boundary and does not store third-party
-access tokens long term.
+stored as plaintext in the local application database. They are never returned
+by the API and the logging formatter redacts credential-shaped metadata.
 
-> Key management is under review in
-> [#55](https://github.com/Migz93/shelfbridge/issues/55) — the goal is for
-> encryption to stay while the key stops being something the user has to know
-> about. Don't document the current key lifecycle here until that lands.
+Configured integration URLs must use HTTP or HTTPS and cannot contain embedded
+credentials. Outbound integration and cover requests disable automatic redirects,
+so an authenticated request cannot be redirected to another host. LAN-hosted
+services remain supported over HTTP or HTTPS.
 
 Logs pass through a redaction formatter that masks metadata keys containing
 password, token, secret, credential, authorization, or API key. Do not expose
