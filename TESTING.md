@@ -138,6 +138,12 @@ Adapters not relevant to a given test are left unimplemented via `createFakeAdap
 | Large ABS ownership snapshot | Runtime ownership lookup batches a 500-book ABS library below SQLite's parameter limit. |
 | ABS without Hardcover | An ABS audiobook linked to Grimmory remains runtime-validated when the optional Hardcover integration is absent. |
 
+### `tests/server/goodreads-phase.test.ts` — Goodreads status sync
+
+| Test | What it checks |
+|---|---|
+| Changed Goodreads shelf | A changed Goodreads shelf writes its mapped status to the matched Grimmory book and persists local state. |
+
 ### Known gaps
 
 - No coverage yet for Goodreads/Chaptarr/Audiobookshelf sync paths or shelf/list syncing.
