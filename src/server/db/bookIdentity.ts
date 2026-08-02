@@ -997,7 +997,10 @@ export function reconcileBookIdentities(db: Database.Database): void {
       }
 
       for (const row of group) {
-        if (row.book_id !== bookId) reassigned++;
+        if (row.book_id !== bookId) {
+          reassigned++;
+          if (isChaptarrOnly) trackChaptarrOrphanReassignment(row.book_id, bookId);
+        }
         updateSource.run(bookId, row.id);
       }
 

@@ -117,7 +117,7 @@ for (const hcBook of hcBooks) {
   const readSelectionEditionId = Number.isFinite(persistedEditionId) ? persistedEditionId : null;
   const hcRead = latestHardcoverRead(hcBook, readSelectionEditionId);
   const hcProgress = hardcoverProgressPercent(hcBook, audiobookRuntimeSeconds, readSelectionEditionId);
-  const hcPages = hardcoverPages(hcBook);
+  const hcPages = hardcoverPages(hcBook, hcRead);
 
   if (!prevHcState && hasGrimmory && !grimmoryAvailable) {
     recordEvent(db, runId, profileId, title, "skipped_no_change", null, "grimmory_unavailable_no_local_insert", {
