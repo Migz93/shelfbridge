@@ -135,6 +135,7 @@ Adapters not relevant to a given test are left unimplemented via `createFakeAdap
 | ABS ownership scope | Runtime-validated Audiobookshelf ownership and its Grimmory Hardcover IDs never leak between profiles. |
 | Hardcover list editions | Partial edition-detail fetches preserve metadata already obtained for list-only books. |
 | Large ABS ownership snapshot | Runtime ownership lookup batches a 500-book ABS library below SQLite's parameter limit. |
+| ABS without Hardcover | An ABS audiobook linked to Grimmory remains runtime-validated when the optional Hardcover integration is absent. |
 
 ### Known gaps
 

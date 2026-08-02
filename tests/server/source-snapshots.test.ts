@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { fetchSourceSnapshots } from "../../src/server/sync/source-snapshots.js";
+import { syncAudiobookshelfLibrary } from "../../src/server/sync/audiobookshelf-phase.js";
 import { createTestDatabase } from "./test-db.js";
 import { seedProfile } from "./test-helpers.js";
 
@@ -54,5 +55,25 @@ test("ABS ownership snapshot batches a large audiobook library", async () => {
 
     const result = await fetchSourceSnapshots(context(db, profileId) as any);
     assert.equal(result.absOwnedHardcoverBookIds.size, 500);
+  } finally { cleanup(); }
+});
+
+test("an ABS item linked to Grimmory is runtime-validated without Hardcover", async () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const bookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Audio')").run().lastInsertRowid);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, source_media_type, grimmory_primary_file_path) VALUES (?, 'grimmory', ?, 'grim-1', 'audiobook', '/library/audio.m4b')").run(bookId, profileId);
+    const adapters = {
+      fetchAudiobookshelfLibraries: async () => [{ id: "library", name: "Books", mediaType: "book" }],
+      fetchAudiobookshelfLibraryItems: async () => [{
+        id: "abs-1", ino: "1", libraryId: "library", mediaType: "book", path: "/library/audio.m4b",
+        media: { metadata: { title: "Audio", authorName: null, seriesName: null, asin: null, isbn: null, duration: 3600 }, duration: 3600 }
+      }]
+    };
+    await syncAudiobookshelfLibrary({ db, profileId, runId: 1, hasAbs: true, absBaseUrl: "https://abs.example", absApiKey: "key", adapters: adapters as any, counters: { sourceFailures: 0 }, recordEvent: () => {} });
+    const row = db.prepare("SELECT book_id, audiobookshelf_runtime_validated FROM book_sources WHERE source_type = 'audiobookshelf' AND source_instance_id = ?").get(profileId) as { book_id: number; audiobookshelf_runtime_validated: number };
+    assert.equal(row.book_id, bookId);
+    assert.equal(row.audiobookshelf_runtime_validated, 1);
   } finally { cleanup(); }
 });

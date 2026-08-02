@@ -122,8 +122,9 @@ if (hasAbs) {
           }
         }
 
-        // A linked item is not necessarily runtime-validated: editions of the
-        // same work can have materially different audiobook durations.
+        // Linking is the baseline identity validation. A Hardcover duration is
+        // useful corroboration when available, but Hardcover is optional and
+        // must not disable ABS → Grimmory progress for ABS-only profiles.
         const hardcoverAudioSeconds = linkedBookId === null ? null : (db.prepare(`
           SELECT hardcover_audio_seconds FROM book_sources
           WHERE book_id = ? AND source_type = 'hardcover' AND source_instance_id = ?
@@ -133,7 +134,7 @@ if (hasAbs) {
         const runtimeDelta = absDuration && hardcoverAudioSeconds && hardcoverAudioSeconds > 0
           ? Math.abs(absDuration - hardcoverAudioSeconds) / hardcoverAudioSeconds
           : null;
-        const runtimeValidated = runtimeDelta !== null && runtimeDelta <= 0.05 ? 1 : null;
+        const runtimeValidated = linkedBookId !== null ? 1 : null;
 
         const absFields: Record<string, unknown> = {
           title: meta.title ?? null,
