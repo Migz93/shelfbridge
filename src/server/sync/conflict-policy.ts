@@ -1,6 +1,7 @@
 import type { HardcoverUserBook } from "./hardcover.js";
 import type { GrimmoryBook } from "./grimmory.js";
 import { HARDCOVER_TO_GRIMMORY, GRIMMORY_TO_HARDCOVER } from "./matcher.js";
+import { newerSource } from "./time-order.js";
 
 export type ConflictStrategy = "latest_wins" | "grimmory_wins" | "hardcover_wins";
 
@@ -9,16 +10,6 @@ export interface SyncDecision {
   syncHealth: string;
   writeGrimmory: boolean;
   writeHardcover: boolean;
-}
-
-function newerSource(hardcoverTime: string | null, grimmoryTime: string | null): "hardcover" | "grimmory" | null {
-  if (!hardcoverTime || !grimmoryTime) return null;
-  const hardcoverMs = Date.parse(hardcoverTime);
-  const grimmoryMs = Date.parse(grimmoryTime);
-  if (!Number.isNaN(hardcoverMs) && !Number.isNaN(grimmoryMs)) {
-    return hardcoverMs >= grimmoryMs ? "hardcover" : "grimmory";
-  }
-  return hardcoverTime >= grimmoryTime ? "hardcover" : "grimmory";
 }
 
 /** Pure status-conflict policy; it deliberately has no database or network dependency. */

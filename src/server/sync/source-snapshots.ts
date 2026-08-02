@@ -3,7 +3,41 @@ import type { HardcoverEdition, HardcoverUserBook } from "./hardcover.js";
 import type { SyncAdapters } from "./adapters.js";
 import type { GrimmoryBook } from "./grimmory.js";
 import { normalizeExternalId } from "../identifiers.js";
-export async function fetchSourceSnapshots(context: any): Promise<any> {
+import type { getDb } from "../db/index.js";
+import type { SourceSnapshotStatus } from "./pruning.js";
+
+type Db = ReturnType<typeof getDb>;
+export type SnapshotContext = {
+  db: Db;
+  profileId: number;
+  runId: number;
+  profile: Record<string, unknown>;
+  adapters: SyncAdapters;
+  counters: { sourceFailures: number };
+  recordEvent: (db: Db, runId: number, profileId: number, bookTitle: string, eventType: string, direction: string | null, decision: string, details: Record<string, unknown>) => void;
+  hasHardcover: boolean;
+  hardcoverToken: string;
+  baseUrl: string;
+  username: string | null;
+  password: string | null;
+  hasGrimmory: boolean;
+};
+
+export interface SourceSnapshots {
+  hcBooks: HardcoverUserBook[];
+  hcEditions: Map<number, HardcoverEdition>;
+  hcLists: Awaited<ReturnType<SyncAdapters["fetchHardcoverLists"]>>;
+  hardcoverSnapshotStatus: SourceSnapshotStatus;
+  grimmoryBooks: GrimmoryBook[];
+  grimmoryAvailable: boolean;
+  grimmorySnapshotStatus: SourceSnapshotStatus;
+  grimmoryToken: string | null;
+  absOwnedBookIds: Set<number>;
+  absOwnedHardcoverBookIds: Set<string>;
+  grimmoryProgressById: Map<number, { readProgress: number | null; lastReadTime: string | null; readStatus: string | null }>;
+}
+
+export async function fetchSourceSnapshots(context: SnapshotContext): Promise<SourceSnapshots> {
   const { db, profileId, runId, profile, adapters, counters, recordEvent,
     hasHardcover, hardcoverToken, baseUrl, username, password, hasGrimmory } = context;
 // ── Phase A: Fetch all libraries ────────────────────────────────────────
@@ -11,7 +45,7 @@ export async function fetchSourceSnapshots(context: any): Promise<any> {
 let hcBooks: HardcoverUserBook[] = [];
 let hcEditions = new Map<number, HardcoverEdition>();
 let hcLists: Awaited<ReturnType<SyncAdapters["fetchHardcoverLists"]>> = [];
-let hardcoverSnapshotStatus: "complete" | "failed" = "failed";
+let hardcoverSnapshotStatus: SourceSnapshotStatus = "failed";
 
 if (hasHardcover) {
   try {
@@ -96,7 +130,7 @@ if (hasHardcover) {
       logger.warn("Hardcover edition detail fetch failed; falling back to default edition metadata", { profileId, error: err });
     }
   }
-  hardcoverSnapshotStatus = "complete";
+  hardcoverSnapshotStatus = hardcoverSyncListId?.trim() ? "partial" : "complete";
 } else {
   logger.info("Skipping Hardcover sync source because no API token is configured", { profileId });
 }
@@ -104,7 +138,7 @@ if (hasHardcover) {
 let grimmoryToken: string | null = null;
 let grimmoryBooks: GrimmoryBook[] = [];
 let grimmoryAvailable = false;
-let grimmorySnapshotStatus: "complete" | "failed" = "failed";
+let grimmorySnapshotStatus: SourceSnapshotStatus = "failed";
 
 if (hasGrimmory) {
   logger.info("Authenticating with Grimmory", { profileId, username });

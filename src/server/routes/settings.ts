@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { getSetting, setSetting } from "../db/index.js";
-import type { AboutInfo, AppSettings, JobInfo, LogsPageResponse } from "../../shared/types.js";
+import { LOG_LEVELS, type AboutInfo, type AppSettings, type JobInfo, type LogsPageResponse } from "../../shared/types.js";
 import { CURRENT_SCHEMA_VERSION } from "../db/schema.js";
 import { testGrimmoryServer } from "../sync/grimmory.js";
 import { testChaptarrConnection } from "../sync/chaptarr.js";
@@ -9,6 +9,7 @@ import { scheduler } from "../scheduler.js";
 import { getRecentLogs, readRecentMachineLogs } from "../logger.js";
 import { decryptCredential, encryptCredential } from "../security/credentials.js";
 import { APP_VERSION, BUILD_CHANNEL, BUILD_COMMIT } from "../version.js";
+import { logger } from "../logger.js";
 
 const router = Router();
 
@@ -210,7 +211,7 @@ router.patch("/jobs/:id", (req, res) => {
 
 // ─── Log viewer ───────────────────────────────────────────────────────────────
 
-const LEVEL_ORDER = ["debug", "info", "warn", "error"] as const;
+const LEVEL_ORDER = LOG_LEVELS;
 type LogLevel = (typeof LEVEL_ORDER)[number];
 const isLogLevel = (v: unknown): v is LogLevel =>
   typeof v === "string" && (LEVEL_ORDER as readonly string[]).includes(v);
@@ -232,8 +233,10 @@ router.get("/logs", async (req, res) => {
 
   try {
     entries = await readRecentMachineLogs();
-  } catch {
-    // File not yet available — fall back to in-memory ring buffer
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      logger.warn("Failed to read machine log file, falling back to in-memory ring buffer", { error: err });
+    }
     entries = getRecentLogs(500);
   }
 

@@ -3,7 +3,7 @@ import TransportStream from "winston-transport";
 import path from "node:path";
 import fs from "node:fs";
 import DailyRotateFile from "winston-daily-rotate-file";
-import type { LogEntry } from "../shared/types.js";
+import { LOG_LEVELS, type LogEntry } from "../shared/types.js";
 
 const DATA_DIR = process.env["DATA_DIR"] ?? "./data";
 const SECRET_KEY_PATTERN = /(password|token|secret|credential|authorization|api[_-]?key)/i;
@@ -104,7 +104,7 @@ export async function readRecentMachineLogs(filePath = MACHINE_LOG_PATH, limit =
       try {
         const parsed = JSON.parse(line) as Record<string, unknown>;
         if (typeof parsed["timestamp"] !== "string" || typeof parsed["message"] !== "string") continue;
-        if (!["debug", "info", "warn", "error"].includes(String(parsed["level"]))) continue;
+        if (!LOG_LEVELS.includes(String(parsed["level"]) as LogEntry["level"])) continue;
         const { timestamp, level, message, ...meta } = parsed;
         entries.push({
           timestamp,

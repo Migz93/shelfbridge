@@ -406,9 +406,11 @@ export interface HardcoverListMapping {
 
 // ─── Logs ─────────────────────────────────────────────────────────────────────
 
+export const LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
+
 export interface LogEntry {
   timestamp: string;
-  level: "debug" | "info" | "warn" | "error";
+  level: (typeof LOG_LEVELS)[number];
   message: string;
   meta?: unknown;
 }

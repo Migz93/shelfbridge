@@ -7,6 +7,7 @@ import {
   shouldGoodreadsOverwriteGrimmory
 } from "../../src/server/sync/engine.js";
 import { normalizeIsbn } from "../../src/server/identifiers.js";
+import { hardcoverProgressPercent } from "../../src/server/sync/sync-utils.js";
 
 test("normalizeTitle strips parenthetical series info, case, and punctuation", () => {
   assert.equal(normalizeTitle("Dune (Dune, #1)"), "dune");
@@ -29,6 +30,9 @@ test("normalizeIsbn ignores conventional separators", () => {
   assert.equal(normalizeIsbn("12345"), null);
   assert.equal(normalizeIsbn("  "), null);
   assert.equal(normalizeIsbn("0-8044-2957-x"), "080442957X");
+  assert.equal(normalizeIsbn("978–1–4028–9462–6"), "9781402894626");
+  assert.equal(normalizeIsbn("978140289462"), null);
+  assert.equal(normalizeIsbn("97814028AB626"), null);
 });
 
 test("newerSource returns whichever timestamp is later, or null when either side is missing", () => {
@@ -37,6 +41,17 @@ test("newerSource returns whichever timestamp is later, or null when either side
   assert.equal(newerSource(null, "2026-01-01T00:00:00Z"), null);
   assert.equal(newerSource("2026-01-01T00:00:00Z", null), null);
   assert.equal(newerSource(null, null), null);
+});
+
+test("hardcoverProgressPercent uses the selected read's page count", () => {
+  const book = {
+    user_book_reads: [
+      { id: 1, edition_id: 1, progress_pages: 25, progress: null, progress_seconds: null, edition: { pages: 100 } },
+      { id: 2, edition_id: 2, progress_pages: 100, progress: null, progress_seconds: null, edition: { pages: 200 } }
+    ],
+    book: { default_physical_edition: null, pages: null }
+  };
+  assert.equal(hardcoverProgressPercent(book as any, null, 2), 50);
 });
 
 test("shouldGoodreadsOverwriteGrimmory overwrites when Grimmory has no timestamp to conflict with", () => {

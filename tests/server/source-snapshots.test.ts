@@ -40,6 +40,26 @@ test("Hardcover detail fetch preserves list-only edition metadata", async () => 
   } finally { cleanup(); }
 });
 
+test("a selected Hardcover list produces a partial snapshot", async () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const book = { id: 1, title: "Selected", slug: null, image: null, contributions: null, default_physical_edition: null, default_ebook_edition: null, default_audio_edition: null, book_series: null };
+    const libraryBook = { id: 1, edition_id: null, status_id: null, rating: null, updated_at: null, first_started_reading_date: null, last_read_date: null, book, user_book_reads: null };
+    const adapters = {
+      fetchHardcoverUserId: async () => 1,
+      fetchHardcoverLibrary: async () => [libraryBook],
+      fetchHardcoverLists: async () => [{ id: 7, name: "Selected", slug: null, bookIds: [1], books: [book], entries: [] }],
+      fetchHardcoverEditions: async () => new Map()
+    };
+    const result = await fetchSourceSnapshots(context(db, profileId, {
+      profile: { hardcover_sync_list_id: "7", hardcover_sync_list_name: "Selected" },
+      hasHardcover: true, hardcoverToken: "token", adapters
+    }) as any);
+    assert.equal(result.hardcoverSnapshotStatus, "partial");
+  } finally { cleanup(); }
+});
+
 test("ABS ownership snapshot batches a large audiobook library", async () => {
   const { db, cleanup } = createTestDatabase();
   try {

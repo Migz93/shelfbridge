@@ -2,7 +2,7 @@ import { logger } from "../logger.js";
 import { grimmoryRating } from "./grimmory.js";
 import { HARDCOVER_TO_GRIMMORY, matchHardcoverBook } from "./matcher.js";
 import type { HardcoverReadFields } from "./hardcover.js";
-import { getBookSource } from "./repository.js";
+import { getBookSource, getGoodreadsExternalId } from "./repository.js";
 
 export async function syncHardcoverState(context: any): Promise<void> {
   const { db, profileId, runId, dryRun, adapters, counters, hcBooks,
@@ -39,9 +39,7 @@ for (const hcBook of hcBooks) {
     ? { grimmoryBook: preferredSiblings.book, confidence: "high" as const, matchType: "hardcover_book_id" as const }
     : grimmoryAvailable
     ? matchHardcoverBook(hcBook, grimmoryIndex, {
-        goodreadsId: (db.prepare(
-          "SELECT external_id FROM book_sources WHERE source_type='goodreads' AND source_instance_id = ? AND book_id=? LIMIT 1"
-        ).get(profileId, bookId) as { external_id: string } | undefined)?.external_id ?? null,
+        goodreadsId: getGoodreadsExternalId(db, profileId, bookId),
         mediaTypeHint: (hcSource.source_media_type as "physical" | "ebook" | "audiobook" | null | undefined) ?? null
       })
     : null;
@@ -318,8 +316,8 @@ for (const hcBook of hcBooks) {
       } else {
         try {
           await adapters.updateGrimmoryRating(baseUrl, grimmoryToken, grBook.id, hcAsGrimmory);
-          db.prepare("UPDATE user_book_states SET last_sync_at = datetime('now'), last_sync_decision = ?, last_modified_at = datetime('now') WHERE book_id = ? AND profile_id = ? AND source_type = 'grimmory'")
-            .run(ratingDecision, bookId, profileId);
+          db.prepare("UPDATE user_book_states SET rating = ?, last_sync_at = datetime('now'), last_sync_decision = ?, last_modified_at = datetime('now') WHERE book_id = ? AND profile_id = ? AND source_type = 'grimmory'")
+            .run(hcAsGrimmory, ratingDecision, bookId, profileId);
           recordEvent(db, runId, profileId, title, "written", "hardcover_to_grimmory", ratingDecision, { hardcoverRating: hcRating, targetRating: hcAsGrimmory });
           counters.written++;
           logger.info("Wrote rating to Grimmory", { profileId, grimmoryBookId: grBook.id, hardcoverRating: hcRating, grimmoryRating: hcAsGrimmory });
@@ -409,7 +407,7 @@ for (const hcBook of hcBooks) {
     const storedEditionPages = prevHcState?.hardcover_edition_pages ?? null;
     const needsEditionResolution = hcProgress !== null
       && hcPages !== null
-      && (resolvedEditionId === null || storedEditionPages !== hcPages);
+      && storedEditionPages !== hcPages;
 
     if (needsEditionResolution && hardcoverToken) {
       try {
@@ -425,12 +423,12 @@ for (const hcBook of hcBooks) {
             profileId, bookId, editionId: resolvedEditionId, pages: hcPages
           });
         } else {
-          // No exact page-count match — clear any stale cached edition
+          // Keep the page count as a negative cache; resolve again only when it changes.
           resolvedEditionId = null;
           db.prepare(`
-            UPDATE user_book_states SET hardcover_edition_id = NULL, hardcover_edition_pages = NULL
+            UPDATE user_book_states SET hardcover_edition_id = NULL, hardcover_edition_pages = ?
             WHERE book_id = ? AND profile_id = ? AND source_type = 'hardcover'
-          `).run(bookId, profileId);
+          `).run(hcPages, bookId, profileId);
           logger.warn("No Hardcover edition matched page count; edition will not be set on progress writes", {
             profileId, bookId, hcPages, available: editions.map((e: any) => e.pages)
           });
@@ -507,7 +505,8 @@ for (const hcBook of hcBooks) {
     } else if (progressDirection === "hardcover_to_grimmory" && hcProgressNow === null) {
       const primaryFileId = grBook.primaryFileId;
       if (!primaryFileId) {
-        // no-op
+        logger.warn("Skipping Grimmory progress clear without primary file ID", { profileId, bookId, grimmoryBookId: grBook.id });
+        counters.skipped++;
       } else if (dryRun) {
         recordEvent(db, runId, profileId, title, "written", "hardcover_to_grimmory", progressDecision, { clearedProgress: true, grimmoryProgress: grProgress, dryRun });
         counters.written++;

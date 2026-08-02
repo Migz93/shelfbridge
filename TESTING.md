@@ -87,7 +87,7 @@ Each `prune*UserStatesMissingFromFetch` / `prune*SourcesMissingFromFetch` helper
 
 ### `tests/server/normalization.test.ts` — Title/date helpers
 
-`normalizeTitle`, `normalizeSeriesNumber`, ISBN-10 check-digit normalization, `newerSource`, `shouldGoodreadsOverwriteGrimmory`.
+`normalizeTitle`, `normalizeSeriesNumber`, strict ISBN-10/ISBN-13 normalization, `newerSource`, selected-read Hardcover progress calculation, `shouldGoodreadsOverwriteGrimmory`.
 
 ### `tests/server/concurrency.test.ts` — Bounded work queues
 
@@ -134,6 +134,7 @@ Adapters not relevant to a given test are left unimplemented via `createFakeAdap
 |---|---|
 | ABS ownership scope | Runtime-validated Audiobookshelf ownership and its Grimmory Hardcover IDs never leak between profiles. |
 | Hardcover list editions | Partial edition-detail fetches preserve metadata already obtained for list-only books. |
+| Selected Hardcover list snapshot | A list-filtered Hardcover fetch is marked partial, so it cannot prune records outside the list. |
 | Large ABS ownership snapshot | Runtime ownership lookup batches a 500-book ABS library below SQLite's parameter limit. |
 | ABS without Hardcover | An ABS audiobook linked to Grimmory remains runtime-validated when the optional Hardcover integration is absent. |
 

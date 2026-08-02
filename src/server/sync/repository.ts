@@ -24,6 +24,13 @@ export function getUserState(db: Db, bookId: number, profileId: number, sourceTy
   ).get(bookId, profileId, sourceType) as UserStateSnapshot | undefined;
 }
 
+export function getGoodreadsExternalId(db: Db, profileId: number, bookId: number): string | null {
+  const row = db.prepare(
+    "SELECT external_id FROM book_sources WHERE source_type = 'goodreads' AND source_instance_id = ? AND book_id = ? LIMIT 1"
+  ).get(profileId, bookId) as { external_id: string } | undefined;
+  return row?.external_id ?? null;
+}
+
 export function localGrimmoryBookForBookId(db: Db, profileId: number, bookId: number, grimmoryBooks: GrimmoryBook[]): GrimmoryBook | null {
   const rows = db.prepare(`
     SELECT CAST(external_id AS INTEGER) AS grimmory_book_id

@@ -138,17 +138,22 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
       // Load previous GR state for this book if it exists
       const prevGoState = matched ? getUserState(db, matched.book_id, profileId, "goodreads") : undefined;
       const previousShelf = prevGoState?.goodreads_shelf ?? null;
-      const previousGoodreadsRating = prevGoState?.goodreads_rating ?? null;
       const targetGoodreadsRating = hardcoverToGrimmoryRating(grBook.rating);
 
       if (matched) {
         const bookId = matched.book_id;
+        const grSource = db.prepare(
+          "SELECT CAST(external_id AS INTEGER) as grimmory_book_id FROM book_sources WHERE source_type='grimmory' AND source_instance_id = ? AND book_id=? LIMIT 1"
+        ).get(profileId, bookId) as { grimmory_book_id: number } | undefined;
+        const grimmoryBookId = grSource?.grimmory_book_id ?? null;
+        const grimmoryState = syncGoodreadsStatus && hasGrimmory && grimmoryToken && grimmoryBookId
+          ? db.prepare(
+              "SELECT status, rating, grimmory_last_read_time FROM user_book_states WHERE book_id = ? AND profile_id = ? AND source_type = 'grimmory'"
+            ).get(bookId, profileId) as { status: string | null; rating: number | null; grimmory_last_read_time: string | null } | undefined
+          : undefined;
 
         if (writeTagEnabled) {
           // Tag the Grimmory book for this profile
-          const grSource = db.prepare(
-            "SELECT CAST(external_id AS INTEGER) as grimmory_book_id FROM book_sources WHERE source_type='grimmory' AND source_instance_id = ? AND book_id=? LIMIT 1"
-          ).get(profileId, bookId) as { grimmory_book_id: number } | undefined;
           if (grSource?.grimmory_book_id) {
             taggedSourceGrimmoryIds.add(grSource.grimmory_book_id);
             taggedSourceTitles.set(grSource.grimmory_book_id, grBook.title);
@@ -209,21 +214,10 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
         );
 
         // Sync Goodreads status → Grimmory when enabled and shelf changed
-        const grSource = db.prepare(
-          "SELECT CAST(external_id AS INTEGER) as grimmory_book_id FROM book_sources WHERE source_type='grimmory' AND source_instance_id = ? AND book_id=? LIMIT 1"
-        ).get(profileId, bookId) as { grimmory_book_id: number } | undefined;
-        const grimmoryBookId = grSource?.grimmory_book_id ?? null;
-
         if (syncGoodreadsStatus && hasGrimmory && grimmoryToken && grimmoryBookId && grBook.shelf !== previousShelf && previousShelf !== null) {
-          const grimmoryStatus = await db.prepare(
-            "SELECT status FROM user_book_states WHERE book_id = ? AND profile_id = ? AND source_type = 'grimmory'"
-          ).get(bookId, profileId) as { status: string | null } | undefined;
           const mappedStatus = GOODREADS_TO_GRIMMORY[grBook.shelf];
-          if (mappedStatus && mappedStatus !== grimmoryStatus?.status) {
-            const grLastReadTime = (db.prepare(
-              "SELECT grimmory_last_read_time FROM user_book_states WHERE book_id = ? AND profile_id = ? AND source_type = 'grimmory'"
-            ).get(bookId, profileId) as { grimmory_last_read_time: string | null } | undefined)?.grimmory_last_read_time ?? null;
-            const goodreadsIsLatest = shouldGoodreadsOverwriteGrimmory(grBook.updatedAt, grLastReadTime);
+          if (mappedStatus && mappedStatus !== grimmoryState?.status) {
+            const goodreadsIsLatest = shouldGoodreadsOverwriteGrimmory(grBook.updatedAt, grimmoryState?.grimmory_last_read_time ?? null);
             if (!goodreadsIsLatest) {
               logger.info("Skipped Goodreads status write because Grimmory is newer", { profileId, bookId, previousShelf, newShelf: grBook.shelf, mappedStatus });
               recordEvent(db, runId, profileId, grBook.title, "skipped_no_change", "goodreads_to_grimmory", "grimmory_newer_than_goodreads", { mappedStatus });
@@ -249,15 +243,9 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
 
         // Sync Goodreads rating → Grimmory when enabled and rating changed
         if (syncGoodreadsStatus && hasGrimmory && grimmoryToken && grimmoryBookId && targetGoodreadsRating !== null) {
-          const grimmoryRat = (db.prepare(
-            "SELECT rating FROM user_book_states WHERE book_id = ? AND profile_id = ? AND source_type = 'grimmory'"
-          ).get(bookId, profileId) as { rating: number | null } | undefined)?.rating ?? null;
-          const grLastReadTime2 = (db.prepare(
-            "SELECT grimmory_last_read_time FROM user_book_states WHERE book_id = ? AND profile_id = ? AND source_type = 'grimmory'"
-          ).get(bookId, profileId) as { grimmory_last_read_time: string | null } | undefined)?.grimmory_last_read_time ?? null;
-
-          if ((grBook.rating !== previousGoodreadsRating || !sameNumber(targetGoodreadsRating, grimmoryRat)) && !sameNumber(targetGoodreadsRating, grimmoryRat)) {
-            const goodreadsIsLatest = shouldGoodreadsOverwriteGrimmory(grBook.updatedAt, grLastReadTime2);
+          const grimmoryRating = grimmoryState?.rating ?? null;
+          if (!sameNumber(targetGoodreadsRating, grimmoryRating)) {
+            const goodreadsIsLatest = shouldGoodreadsOverwriteGrimmory(grBook.updatedAt, grimmoryState?.grimmory_last_read_time ?? null);
             if (!goodreadsIsLatest) {
               recordEvent(db, runId, profileId, grBook.title, "skipped_no_change", "goodreads_to_grimmory", "grimmory_newer_than_goodreads_rating", { goodreadsRating: grBook.rating, targetRating: targetGoodreadsRating });
               counters.skipped++;

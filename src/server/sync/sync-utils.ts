@@ -8,22 +8,11 @@ import type { HardcoverEdition, HardcoverUserBook } from "./hardcover.js";
 import type { GrimmoryBook } from "./grimmory.js";
 import { GRIMMORY_TO_HARDCOVER } from "./matcher.js";
 import { normalizeExternalId } from "../identifiers.js";
+import type { UserStateSnapshot } from "./repository.js";
+import { newerSource } from "./time-order.js";
 export interface SyncCounters { written: number; skipped: number; superseded: number; sourceFailures: number; }
 
-export interface UserStateSnapshot {
-  id?: number; status?: string | null; rating?: number | null; progress?: number | null;
-  hardcover_status_id?: number | null; hardcover_rating?: number | null; hardcover_progress?: number | null;
-  hardcover_edition_id?: number | null;
-  hardcover_edition_pages?: number | null;
-  grimmory_book_id?: number | null;
-  grimmory_primary_file_id?: number | null;
-  goodreads_shelf?: string | null;
-  goodreads_rating?: number | null;
-  goodreads_read_at?: string | null;
-  sync_health?: string | null;
-  match_confidence?: string | null;
-  last_modified_at?: string | null;
-}
+export type { UserStateSnapshot } from "./repository.js";
 
 export function sameValue(a: unknown, b: unknown): boolean {
   return (a ?? null) === (b ?? null);
@@ -94,9 +83,9 @@ export function hardcoverDate(value: string | null | undefined): string | null {
   return value ? value.slice(0, 10) : null;
 }
 
-export function hardcoverPages(hcBook: HardcoverUserBook): number | null {
+export function hardcoverPages(hcBook: HardcoverUserBook, read: HardcoverRead | null = hcBook.user_book_reads?.[0] ?? null): number | null {
   // 1. Prefer the explicit edition page count if Hardcover returned it.
-  const readEditionPages = hcBook.user_book_reads?.[0]?.edition?.pages;
+  const readEditionPages = read?.edition?.pages;
   if (readEditionPages != null && readEditionPages > 0) return readEditionPages;
 
   // 2. Reverse-derive the page count Hardcover is actually using from the read's own
@@ -104,7 +93,6 @@ export function hardcoverPages(hcBook: HardcoverUserBook): number | null {
   // so edition_pages = round(progress_pages / (progress / 100)). This works even when
   // the read has no explicit edition_id, and guarantees our page→% conversion matches
   // what Hardcover will return.
-  const read = hcBook.user_book_reads?.[0];
   if (read?.progress != null && read.progress > 0 && read.progress_pages != null && read.progress_pages > 0) {
     const derived = Math.round(read.progress_pages / (read.progress / 100));
     if (derived > 0) return derived;
@@ -279,7 +267,7 @@ export function hardcoverProgressPercent(hcBook: HardcoverUserBook, audiobookRun
     if (directProgress !== null || progressFromSeconds === null) return directProgress;
     return progressFromSeconds;
   }
-  const pages = hardcoverPages(hcBook);
+  const pages = hardcoverPages(hcBook, read);
   if (typeof read?.progress_pages === "number" && pages && pages > 0) {
     return meaningfulProgress((read.progress_pages / pages) * 100);
   }
@@ -350,15 +338,7 @@ export function sourceTagName(username: string | null, displayName: string | nul
   return `shelfbridge-${safeName}`;
 }
 
-export function newerSource(hardcoverTime: string | null, grimmoryTime: string | null): "hardcover" | "grimmory" | null {
-  if (!hardcoverTime || !grimmoryTime) return null;
-  const hardcoverMs = Date.parse(hardcoverTime);
-  const grimmoryMs = Date.parse(grimmoryTime);
-  if (Number.isNaN(hardcoverMs) || Number.isNaN(grimmoryMs)) {
-    return hardcoverTime >= grimmoryTime ? "hardcover" : "grimmory";
-  }
-  return hardcoverMs >= grimmoryMs ? "hardcover" : "grimmory";
-}
+export { newerSource };
 
 export function shouldGoodreadsOverwriteGrimmory(goodreadsTime: string | null, grimmoryTime: string | null): boolean {
   if (!grimmoryTime) return true;
@@ -442,5 +422,3 @@ export function hasGrimmoryUserActivity(book: GrimmoryBook): boolean {
 }
 
 // ── DB helpers ────────────────────────────────────────────────────────────────
-
-

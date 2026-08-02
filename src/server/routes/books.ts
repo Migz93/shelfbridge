@@ -1099,12 +1099,11 @@ router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
         ...(plan.goodreads?.external_id ? { goodreadsId: plan.goodreads.external_id } : {}),
         ...(plan.hardcover?.external_id ? { hardcoverBookId: plan.hardcover.external_id, hardcoverId } : {})
       });
+      db.transaction(() => {
+        db.prepare(`UPDATE book_sources SET grimmory_goodreads_id = COALESCE(?, grimmory_goodreads_id), grimmory_hardcover_book_id = COALESCE(?, grimmory_hardcover_book_id), grimmory_hardcover_id = COALESCE(?, grimmory_hardcover_id), last_modified_at = datetime('now') WHERE book_id = ? AND source_type = 'grimmory' AND source_instance_id = ?`).run(plan.goodreads?.external_id ?? null, plan.hardcover?.external_id ?? null, hardcoverId ?? null, plan.grimmoryBookId, plan.profileId);
+      })();
     }
     db.transaction(() => {
-      for (const { plan } of resolvedPlans) {
-        const hardcoverId = plan.hardcover?.hardcover_slug?.trim() || plan.grimmory.grimmory_hardcover_id?.trim() || undefined;
-        db.prepare(`UPDATE book_sources SET grimmory_goodreads_id = COALESCE(?, grimmory_goodreads_id), grimmory_hardcover_book_id = COALESCE(?, grimmory_hardcover_book_id), grimmory_hardcover_id = COALESCE(?, grimmory_hardcover_id), last_modified_at = datetime('now') WHERE book_id = ? AND source_type = 'grimmory' AND source_instance_id = ?`).run(plan.goodreads?.external_id ?? null, plan.hardcover?.external_id ?? null, hardcoverId ?? null, plan.grimmoryBookId, plan.profileId);
-      }
       reconcileBookIdentities(db);
     })();
     const reconciled = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(plans[0]!.grimmory.id) as { book_id: number } | undefined;

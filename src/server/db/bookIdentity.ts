@@ -752,6 +752,7 @@ export function reconcileBookIdentities(db: Database.Database): void {
     WHERE id = ?
   `);
   const updateSource = db.prepare("UPDATE book_sources SET book_id = ? WHERE id = ?");
+  const selectRemainingSources = db.prepare("SELECT 1 FROM book_sources WHERE book_id = ? LIMIT 1");
   const updateSourcesByBookId = db.prepare("UPDATE book_sources SET book_id = ? WHERE book_id = ?");
   const deleteBook = db.prepare("DELETE FROM books WHERE id = ?");
   const deleteUserState = db.prepare("DELETE FROM user_book_states WHERE id = ?");
@@ -871,6 +872,12 @@ export function reconcileBookIdentities(db: Database.Database): void {
   let reassigned = 0;
   let merged = 0;
   const chaptarrOrphanReassignments = new Map<number, Set<number>>();
+  const trackChaptarrOrphanReassignment = (oldBookId: number | null, targetBookId: number): void => {
+    if (oldBookId === null || oldBookId === targetBookId) return;
+    const targets = chaptarrOrphanReassignments.get(oldBookId) ?? new Set<number>();
+    targets.add(targetBookId);
+    chaptarrOrphanReassignments.set(oldBookId, targets);
+  };
 
   const transaction = db.transaction(() => {
     clearKeys.run();
@@ -902,11 +909,7 @@ export function reconcileBookIdentities(db: Database.Database): void {
           for (const row of group) {
             if (row.book_id !== filePathCanonicalId) {
               reassigned++;
-              if (row.book_id !== null) {
-                const targets = chaptarrOrphanReassignments.get(row.book_id) ?? new Set<number>();
-                targets.add(filePathCanonicalId);
-                chaptarrOrphanReassignments.set(row.book_id, targets);
-              }
+              trackChaptarrOrphanReassignment(row.book_id, filePathCanonicalId);
             }
             updateSource.run(filePathCanonicalId, row.id);
           }
@@ -933,7 +936,10 @@ export function reconcileBookIdentities(db: Database.Database): void {
           const canonicalId = existingIds.find((id) => bookIdsReferencedByNonChaptarr.has(id));
           if (canonicalId !== undefined) {
             for (const row of group) {
-              if (row.book_id !== canonicalId) reassigned++;
+              if (row.book_id !== canonicalId) {
+                reassigned++;
+                trackChaptarrOrphanReassignment(row.book_id, canonicalId);
+              }
               updateSource.run(canonicalId, row.id);
             }
             continue;
@@ -952,7 +958,10 @@ export function reconcileBookIdentities(db: Database.Database): void {
         // non-Chaptarr source. Don't claim or overwrite it — just redirect the source
         // rows so the non-Chaptarr group can still take ownership on its own pass.
         for (const row of group) {
-          if (row.book_id !== bookId) reassigned++;
+          if (row.book_id !== bookId) {
+            reassigned++;
+            trackChaptarrOrphanReassignment(row.book_id, bookId);
+          }
           updateSource.run(bookId, row.id);
         }
         continue;
@@ -1001,7 +1010,7 @@ export function reconcileBookIdentities(db: Database.Database): void {
     // A Chaptarr-only reassignment can leave its former book with no sources.
     // Move its state first, otherwise the stale-book cleanup below cascades it.
     for (const [oldBookId, targetBookIds] of chaptarrOrphanReassignments) {
-      const remaining = db.prepare("SELECT 1 FROM book_sources WHERE book_id = ? LIMIT 1").get(oldBookId);
+      const remaining = selectRemainingSources.get(oldBookId);
       if (!remaining && targetBookIds.size === 1) moveUserStates([...targetBookIds][0]!, oldBookId);
       else if (!remaining && targetBookIds.size > 1) {
         logger.warn("Preserved user state for an ambiguously split Chaptarr canonical", { oldBookId, targetBookIds: [...targetBookIds] });

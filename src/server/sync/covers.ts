@@ -35,7 +35,11 @@ async function fetchGrimmoryCoverFromPath(baseUrl: string, token: string, grimmo
         const { done, value } = await reader.read();
         if (done) break;
         total += value.length;
-        if (total > MAX_COVER_BYTES) { await reader.cancel(); return null; }
+        if (total > MAX_COVER_BYTES) {
+          await reader.cancel();
+          logger.warn("Grimmory cover exceeds the size limit", { grimmoryBookId, url, totalBytes: total, limitBytes: MAX_COVER_BYTES });
+          return null;
+        }
         chunks.push(Buffer.from(value));
       }
       const data = Buffer.concat(chunks);

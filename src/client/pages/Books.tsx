@@ -1129,7 +1129,8 @@ function DuplicateReviewSection({
               {candidate.mergeEligible && (
                 <button
                   onClick={() => onMerge(candidate.id)}
-                  disabled={mergingId === candidate.id}
+                  type="button"
+                  disabled={mergingId === candidate.id || dismissingId === candidate.id}
                   className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-primary px-2.5 py-1.5 text-xs font-semibold text-on-primary disabled:opacity-50"
                 >
                   <CheckCircle size={13} />
@@ -1138,7 +1139,8 @@ function DuplicateReviewSection({
               )}
               <button
                 onClick={() => onDismiss(candidate.id)}
-                disabled={dismissingId === candidate.id}
+                type="button"
+                disabled={dismissingId === candidate.id || mergingId === candidate.id}
                 className="mt-3 ml-2 inline-flex items-center gap-1.5 rounded-md border border-outline-variant/25 bg-background-container-high px-2.5 py-1.5 text-xs font-semibold text-on-surface hover:bg-background-container-highest disabled:opacity-50 transition-colors"
               >
                 <X size={13} />

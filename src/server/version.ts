@@ -15,7 +15,8 @@ function readPackageVersion(): string {
 }
 
 function normalizeBuildChannel(value: string | undefined): BuildChannel {
-  return VALID_BUILD_CHANNELS.includes(value as BuildChannel) ? value as BuildChannel : "custom";
+  const normalized = value?.trim();
+  return VALID_BUILD_CHANNELS.includes(normalized as BuildChannel) ? normalized as BuildChannel : "custom";
 }
 
 export const APP_VERSION = readPackageVersion();
