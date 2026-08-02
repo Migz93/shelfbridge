@@ -100,6 +100,7 @@ Each `prune*UserStatesMissingFromFetch` / `prune*SourcesMissingFromFetch` helper
 | Test | What it checks |
 |---|---|
 | Live probable-duplicate guard | Only an undismissed title-and-author probable-duplicate pair is eligible for the destructive merge route; unrelated or dismissed pairs are rejected. |
+| Partial duplicate-merge failure | A remote failure in a later merge plan retains each earlier plan already persisted locally. |
 
 ### `tests/server/logger.test.ts` — Recent log tail
 
@@ -125,6 +126,7 @@ Runs `runSyncImpl` end-to-end against a real (isolated) SQLite database with fak
 | Dry run | Computes and caches the resolved decision locally but never calls the Grimmory write adapter |
 | Real run | Calls the Grimmory write adapter with the resolved status once conflict resolution picks a winner |
 | Two profiles | Each profile's `book_sources` stay scoped to its own `source_instance_id` — no cross-profile leakage |
+| Negative edition cache | An unchanged Hardcover page count with no matching edition only fetches editions once across syncs. |
 
 Adapters not relevant to a given test are left unimplemented via `createFakeAdapters` (`test-helpers.ts`), which makes any unexpected call throw immediately instead of failing confusingly deep inside `runSyncImpl`.
 

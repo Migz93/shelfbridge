@@ -20,6 +20,18 @@ import { normalizeExternalId, identifiersEqual } from "../identifiers.js";
 
 const router = Router();
 
+export async function writeAndPersistDuplicateMergePlan(
+  db: ReturnType<typeof getDb>,
+  plan: { bookId: number; profileId: number; goodreadsId: string | null; hardcoverBookId: string | null; hardcoverId: string | null },
+  writeRemote: () => Promise<void>
+): Promise<void> {
+  await writeRemote();
+  db.transaction(() => {
+    db.prepare(`UPDATE book_sources SET grimmory_goodreads_id = COALESCE(?, grimmory_goodreads_id), grimmory_hardcover_book_id = COALESCE(?, grimmory_hardcover_book_id), grimmory_hardcover_id = COALESCE(?, grimmory_hardcover_id), last_modified_at = datetime('now') WHERE book_id = ? AND source_type = 'grimmory' AND source_instance_id = ?`)
+      .run(plan.goodreadsId, plan.hardcoverBookId, plan.hardcoverId, plan.bookId, plan.profileId);
+  })();
+}
+
 type StatusFilter = "UNREAD" | "READING" | "READ" | "ABANDONED";
 type SourceFilter = "all" | "hardcover" | "goodreads" | "on-disk";
 
@@ -1095,13 +1107,16 @@ router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
 
     for (const { plan, baseUrl, token, grimmoryLocalId } of resolvedPlans) {
       const hardcoverId = plan.hardcover?.hardcover_slug?.trim() || plan.grimmory.grimmory_hardcover_id?.trim() || undefined;
-      await writeGrimmoryExternalIds(baseUrl, token, grimmoryLocalId, {
-        ...(plan.goodreads?.external_id ? { goodreadsId: plan.goodreads.external_id } : {}),
-        ...(plan.hardcover?.external_id ? { hardcoverBookId: plan.hardcover.external_id, hardcoverId } : {})
+      await writeAndPersistDuplicateMergePlan(db, {
+        bookId: plan.grimmoryBookId, profileId: plan.profileId,
+        goodreadsId: plan.goodreads?.external_id ?? null, hardcoverBookId: plan.hardcover?.external_id ?? null,
+        hardcoverId: hardcoverId ?? null
+      }, async () => {
+        await writeGrimmoryExternalIds(baseUrl, token, grimmoryLocalId, {
+          ...(plan.goodreads?.external_id ? { goodreadsId: plan.goodreads.external_id } : {}),
+          ...(plan.hardcover?.external_id ? { hardcoverBookId: plan.hardcover.external_id, hardcoverId } : {})
+        });
       });
-      db.transaction(() => {
-        db.prepare(`UPDATE book_sources SET grimmory_goodreads_id = COALESCE(?, grimmory_goodreads_id), grimmory_hardcover_book_id = COALESCE(?, grimmory_hardcover_book_id), grimmory_hardcover_id = COALESCE(?, grimmory_hardcover_id), last_modified_at = datetime('now') WHERE book_id = ? AND source_type = 'grimmory' AND source_instance_id = ?`).run(plan.goodreads?.external_id ?? null, plan.hardcover?.external_id ?? null, hardcoverId ?? null, plan.grimmoryBookId, plan.profileId);
-      })();
     }
     db.transaction(() => {
       reconcileBookIdentities(db);
