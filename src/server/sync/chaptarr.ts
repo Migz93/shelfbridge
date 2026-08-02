@@ -418,6 +418,7 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
 
     let bookId: number | undefined;
     let rejectedIdCandidate: number | undefined;
+    const titleValidatedIdCandidates = new Set<number>();
 
     // Preserve the mismatch signal even when the local path wins matching. The
     // path is authoritative for canonical assignment, but a stale Chaptarr
@@ -425,7 +426,9 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
     for (const [label, candidateId] of [["hardcoverBookId", hardcoverBookId], ["foreignBookId", foreignBookId]] as const) {
       if (!candidateId) continue;
       const candidate = getIdentifierLookup(byHardcoverId, candidateId);
-      if (candidate !== undefined && !titleMatchesBook(title, candidate)) {
+      if (candidate !== undefined && titleMatchesBook(title, candidate)) {
+        titleValidatedIdCandidates.add(candidate);
+      } else if (candidate !== undefined) {
         rejectedIdCandidate ??= candidate;
         logger.info(`Chaptarr ${label} match rejected: title mismatch`, {
           profileId, chaptarrId, chaptarrTitle: title, candidateId,
@@ -451,6 +454,16 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
     }
     if (bookId !== undefined) {
       logger.info("Chaptarr book matched via file path", { profileId, chaptarrId, title, filePath: matchedFilePath });
+      const conflictingIdCandidate = [...titleValidatedIdCandidates].find((candidate) => candidate !== bookId);
+      if (conflictingIdCandidate !== undefined) {
+        // Path remains the assignment authority: it distinguishes local ebook
+        // and audiobook siblings. Mark any independently title-validated ID
+        // disagreement so a stale path or stale upstream metadata is reviewable.
+        rejectedIdCandidate ??= conflictingIdCandidate;
+        logger.warn("Chaptarr file-path match conflicts with a title-validated upstream ID", {
+          profileId, chaptarrId, bookId, idCandidateBookId: conflictingIdCandidate, filePath: matchedFilePath
+        });
+      }
     }
 
     if (!bookId && hardcoverBookId) {
