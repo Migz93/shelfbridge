@@ -1,14 +1,15 @@
-import fs from "node:fs";
 import { Router } from "express";
 import { getSetting, setSetting } from "../db/index.js";
-import type { AboutInfo, AppSettings, JobInfo, LogsPageResponse } from "../../shared/types.js";
+import { LOG_LEVELS, type AboutInfo, type AppSettings, type JobInfo, type LogsPageResponse } from "../../shared/types.js";
 import { CURRENT_SCHEMA_VERSION } from "../db/schema.js";
 import { testGrimmoryServer } from "../sync/grimmory.js";
 import { testChaptarrConnection } from "../sync/chaptarr.js";
 import { testAudiobookshelfServer } from "../sync/audiobookshelf.js";
 import { scheduler } from "../scheduler.js";
-import { getRecentLogs, MACHINE_LOG_PATH } from "../logger.js";
+import { getRecentLogs, readRecentMachineLogs } from "../logger.js";
 import { decryptCredential, encryptCredential } from "../security/credentials.js";
+import { APP_VERSION, BUILD_CHANNEL, BUILD_COMMIT } from "../version.js";
+import { logger } from "../logger.js";
 
 const router = Router();
 
@@ -210,12 +211,12 @@ router.patch("/jobs/:id", (req, res) => {
 
 // ─── Log viewer ───────────────────────────────────────────────────────────────
 
-const LEVEL_ORDER = ["debug", "info", "warn", "error"] as const;
+const LEVEL_ORDER = LOG_LEVELS;
 type LogLevel = (typeof LEVEL_ORDER)[number];
 const isLogLevel = (v: unknown): v is LogLevel =>
   typeof v === "string" && (LEVEL_ORDER as readonly string[]).includes(v);
 
-router.get("/logs", (req, res) => {
+router.get("/logs", async (req, res) => {
   const rawPage = typeof req.query["page"] === "string" ? Number(req.query["page"]) : 1;
   const page = Math.max(1, Number.isFinite(rawPage) ? rawPage : 1);
   const rawPageSize = typeof req.query["pageSize"] === "string" ? Number(req.query["pageSize"]) : 25;
@@ -228,52 +229,24 @@ router.get("/logs", (req, res) => {
   const rawSearch = req.query["search"];
   const search: string = typeof rawSearch === "string" ? rawSearch.slice(0, 200) : "";
 
-  const LOG_FIELDS = new Set(["timestamp", "level", "message"]);
   let entries: LogsPageResponse["results"] = [];
 
   try {
-    const raw = fs.readFileSync(MACHINE_LOG_PATH, "utf-8");
-    for (const line of raw.split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        const parsed = JSON.parse(line) as Record<string, unknown>;
-        if (!allowed.has(parsed["level"] as string)) continue;
-
-        const meta: Record<string, unknown> = {};
-        for (const [k, v] of Object.entries(parsed)) {
-          if (!LOG_FIELDS.has(k)) meta[k] = v;
-        }
-
-        const entry = {
-          timestamp: parsed["timestamp"] as string,
-          level: parsed["level"] as LogLevel,
-          message: parsed["message"] as string,
-          ...(Object.keys(meta).length > 0 ? { meta } : {})
-        };
-
-        if (search) {
-          const needle = search.toLowerCase();
-          const inMessage = entry.message.toLowerCase().includes(needle);
-          const inMeta = entry.meta !== undefined && JSON.stringify(entry.meta).toLowerCase().includes(needle);
-          if (!inMessage && !inMeta) continue;
-        }
-
-        entries.push(entry);
-      } catch {
-        // skip malformed lines
-      }
+    entries = await readRecentMachineLogs();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      logger.warn("Failed to read machine log file, falling back to in-memory ring buffer", { error: err });
     }
-  } catch {
-    // File not yet available — fall back to in-memory ring buffer
-    entries = getRecentLogs(500).filter((e) => allowed.has(e.level));
-    if (search) {
-      const needle = search.toLowerCase();
-      entries = entries.filter(
-        (e) => e.message.toLowerCase().includes(needle) ||
-               (e.meta !== undefined && JSON.stringify(e.meta).toLowerCase().includes(needle))
-      );
-    }
+    entries = getRecentLogs(500);
   }
+
+  entries = entries.filter((entry) => {
+    if (!allowed.has(entry.level)) return false;
+    if (!search) return true;
+    const needle = search.toLowerCase();
+    return entry.message.toLowerCase().includes(needle)
+      || (entry.meta !== undefined && JSON.stringify(entry.meta).toLowerCase().includes(needle));
+  });
 
   // Newest first, then paginate
   entries.reverse();
@@ -284,6 +257,7 @@ router.get("/logs", (req, res) => {
 
   const response: LogsPageResponse = {
     results,
+    windowed: true,
     pageInfo: { page, pageSize, pages, total }
   };
   res.json(response);
@@ -291,9 +265,9 @@ router.get("/logs", (req, res) => {
 
 router.get("/about", (_req, res) => {
   const info: AboutInfo = {
-    version: "0.1.0",
-    buildChannel: process.env["BUILD_CHANNEL"] ?? "custom",
-    commitSha: process.env["COMMIT_SHA"] ?? "local",
+    version: APP_VERSION,
+    buildChannel: BUILD_CHANNEL,
+    commitSha: BUILD_COMMIT,
     dataDir: process.env["DATA_DIR"] ?? "./data",
     tz: process.env["TZ"] ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
     dbVersion: CURRENT_SCHEMA_VERSION

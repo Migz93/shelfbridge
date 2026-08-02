@@ -28,9 +28,9 @@ removed whenever book identity is reconciled rather than on a timer.
 
 ShelfBridge does not currently prune `books`, `book_sources`, or
 `user_book_states` on a schedule. Those are pruned reactively instead — see the
-`prune*MissingFromFetch` helpers, which remove rows a source stopped reporting,
-and treat an empty fetch result as a no-op so a failed fetch is never mistaken
-for an emptied library.
+`prune*MissingFromFetch` helpers, which remove rows a source stopped reporting
+only after a complete snapshot. A complete empty library is authoritative;
+partial and failed snapshots never trigger pruning.
 
 ## Adding New Maintenance Work
 
@@ -50,8 +50,8 @@ When adding a new cleanup or consistency task:
 
 ## Safety Rules
 
-- Never treat an empty fetch result as authority to delete. A source returning
-  nothing usually means a failed call, not an emptied library.
+- Treat an empty fetch result as authority to delete only when its source
+  snapshot is explicitly complete. A partial or failed fetch must never prune.
 - Never prune a source row that still has live user state attached.
 - Only ever prune the calling profile's own rows — cross-profile deletion is a
   bug, and `pruning.test.ts` exists to catch it.

@@ -2,6 +2,17 @@ import { getDb, getSetting } from "../db/index.js";
 import { logger } from "../logger.js";
 import { identifierVariants, normalizeExternalId } from "../identifiers.js";
 import { decryptCredential } from "../security/credentials.js";
+import { mapWithConcurrency } from "./concurrency.js";
+
+const DEFAULT_BOOKFILE_CONCURRENCY = 5;
+const MAX_BOOKFILE_CONCURRENCY = 10;
+
+function bookfileConcurrency(): number {
+  const configured = Number(process.env["CHAPTARR_BOOKFILE_CONCURRENCY"] ?? DEFAULT_BOOKFILE_CONCURRENCY);
+  return Number.isInteger(configured) && configured > 0
+    ? Math.min(configured, MAX_BOOKFILE_CONCURRENCY)
+    : DEFAULT_BOOKFILE_CONCURRENCY;
+}
 
 async function chaptarrGet<T>(baseUrl: string, apiKey: string, path: string): Promise<T> {
   const url = `${baseUrl.replace(/\/$/, "")}${path}`;
@@ -162,25 +173,33 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
   const uncertainFileInventoryAuthorIds = new Set<number>();
   try {
     const authors = await chaptarrGet<Record<string, unknown>[]>(baseUrl, apiKey, "/api/v1/author");
+    const returnedAuthorIds = new Set<number>();
     for (const a of authors) {
       const id = typeof a["id"] === "number" ? a["id"] : Number(a["id"]);
       const name = String(a["authorName"] ?? a["name"] ?? "");
-      if (id && name) authorNameById.set(id, name);
+      if (!Number.isInteger(id) || id <= 0) continue;
+      returnedAuthorIds.add(id);
+      if (name) authorNameById.set(id, name);
     }
 
-    // Fetch all book file paths in parallel (one request per author).
+    // Fetch book file paths with a bounded pool (one request per author).
     // Both Chaptarr and Grimmory point at the same NAS share, so matching paths
     // are an unambiguous identity signal for books that failed ID/ISBN/title matching.
-    const authorIds = [...authorNameById.keys()];
-    const bookfileResults = await Promise.all(
-      authorIds.map((authorId) =>
+    const authorIds = [...returnedAuthorIds];
+    for (const book of allBooks) {
+      const authorId = typeof book["authorId"] === "number" ? book["authorId"] : Number(book["authorId"] ?? 0);
+      if (authorId && !returnedAuthorIds.has(authorId)) uncertainFileInventoryAuthorIds.add(authorId);
+    }
+    const bookfileResults = await mapWithConcurrency(
+      authorIds,
+      bookfileConcurrency(),
+      async (authorId) =>
         chaptarrGet<Record<string, unknown>[]>(baseUrl, apiKey, `/api/v1/bookfile?authorId=${authorId}`)
           .catch((error) => {
             uncertainFileInventoryAuthorIds.add(authorId);
             logger.warn("Chaptarr bookfile fetch failed; preserving prior file state", { profileId, authorId, error });
             return [] as Record<string, unknown>[];
           })
-      )
     );
     for (const files of bookfileResults) {
       for (const f of files) {
@@ -289,7 +308,7 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
   const byIsbn10 = new Map<string, number>();
   const byTitleAuthor = new Map<string, number>();
   const byRelaxedTitle = new Map<string, number>();
-  const byGrimmoryFilePath = new Map<string, number>();
+  const byGrimmoryFilePath = new Map<string, number | null>();
   const titleByBookId = new Map<number, string>();
 
   for (const row of rows) {
@@ -306,7 +325,11 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
     setIdentifierLookup(byGoodreadsId, row.source_goodreads_edition_id, row.book_id);
     if (row.isbn13) byIsbn13.set(row.isbn13.replace(/[^0-9X]/g, ""), row.book_id);
     if (row.isbn10) byIsbn10.set(row.isbn10.replace(/[^0-9X]/g, ""), row.book_id);
-    if (row.grimmory_primary_file_path) byGrimmoryFilePath.set(row.grimmory_primary_file_path.trim(), row.book_id);
+    if (row.grimmory_primary_file_path) {
+      const filePath = row.grimmory_primary_file_path.trim();
+      const existing = byGrimmoryFilePath.get(filePath);
+      byGrimmoryFilePath.set(filePath, existing === undefined || existing === row.book_id ? row.book_id : null);
+    }
     if (row.title && row.author) {
       byTitleAuthor.set(`${normalise(row.title)}|${normalise(row.author)}`, row.book_id);
       byRelaxedTitle.set(`${normalise(stripSubtitle(row.title))}|${normalise(row.author)}`, row.book_id);
@@ -395,13 +418,60 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
 
     let bookId: number | undefined;
     let rejectedIdCandidate: number | undefined;
+    const titleValidatedIdCandidates = new Set<number>();
+
+    // Preserve the mismatch signal even when the local path wins matching. The
+    // path is authoritative for canonical assignment, but a stale Chaptarr
+    // Hardcover ID still needs to be surfaced for review.
+    for (const [label, candidateId] of [["hardcoverBookId", hardcoverBookId], ["foreignBookId", foreignBookId]] as const) {
+      if (!candidateId) continue;
+      const candidate = getIdentifierLookup(byHardcoverId, candidateId);
+      if (candidate !== undefined && titleMatchesBook(title, candidate)) {
+        titleValidatedIdCandidates.add(candidate);
+      } else if (candidate !== undefined) {
+        rejectedIdCandidate ??= candidate;
+        logger.info("Chaptarr upstream ID match rejected: title mismatch", {
+          profileId, chaptarrId, label, chaptarrTitle: title, candidateId,
+          matchedTitle: titleByBookId.get(candidate) ?? null,
+        });
+      }
+    }
+
+    // An exact NAS path identifies the actual local file and therefore takes
+    // precedence over Chaptarr's upstream IDs. Those IDs can point at a shared
+    // work whose ebook and audiobook canonicals are distinct.
+    const filePathCandidates = new Set(
+      chaptarrFilePaths.map((path) => byGrimmoryFilePath.get(path)).filter((id): id is number => id !== undefined && id !== null)
+    );
+    const matchedFilePath = filePathCandidates.size === 1
+      ? chaptarrFilePaths.find((path) => byGrimmoryFilePath.get(path) === [...filePathCandidates][0])
+      : undefined;
+    bookId = filePathCandidates.size === 1 ? [...filePathCandidates][0] : undefined;
+    if (filePathCandidates.size > 1) {
+      logger.warn("Chaptarr book has file paths mapped to conflicting canonicals; falling back to identifiers", {
+        profileId, chaptarrId, title, candidateBookIds: [...filePathCandidates]
+      });
+    }
+    if (bookId !== undefined) {
+      logger.info("Chaptarr book matched via file path", { profileId, chaptarrId, title, filePath: matchedFilePath });
+      const conflictingIdCandidate = [...titleValidatedIdCandidates].find((candidate) => candidate !== bookId);
+      if (conflictingIdCandidate !== undefined) {
+        // Path remains the assignment authority: it distinguishes local ebook
+        // and audiobook siblings. Mark any independently title-validated ID
+        // disagreement so a stale path or stale upstream metadata is reviewable.
+        rejectedIdCandidate ??= conflictingIdCandidate;
+        logger.warn("Chaptarr file-path match conflicts with a title-validated upstream ID", {
+          profileId, chaptarrId, bookId, idCandidateBookId: conflictingIdCandidate, filePath: matchedFilePath
+        });
+      }
+    }
 
     if (!bookId && hardcoverBookId) {
       const candidate = getIdentifierLookup(byHardcoverId, hardcoverBookId);
       if (candidate !== undefined && titleMatchesBook(title, candidate)) {
         bookId = candidate;
       } else if (candidate !== undefined) {
-        rejectedIdCandidate = candidate;
+        rejectedIdCandidate ??= candidate;
         logger.info("Chaptarr hardcoverBookId match rejected: title mismatch", {
           profileId, chaptarrId, chaptarrTitle: title, hardcoverBookId,
           matchedTitle: titleByBookId.get(candidate) ?? null,
@@ -424,16 +494,6 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
     for (const isbn of isbn13s) { if (!bookId) bookId = byIsbn13.get(isbn); }
     for (const isbn of isbn10s) { if (!bookId) bookId = byIsbn10.get(isbn); }
 
-    // Exact NAS path is a stronger signal than fuzzy title matching. Chaptarr can
-    // collapse multiple books in a series down to a generic title like "Diddly Squat",
-    // but if the on-disk file path matches Grimmory exactly we should trust that first.
-    if (!bookId) {
-      const matchedFilePath = chaptarrFilePaths.find((path) => byGrimmoryFilePath.has(path));
-      bookId = matchedFilePath ? byGrimmoryFilePath.get(matchedFilePath) : undefined;
-      if (bookId !== undefined) {
-        logger.info("Chaptarr book matched via file path", { profileId, chaptarrId, title, filePath: matchedFilePath });
-      }
-    }
     if (!bookId && title && authorName) bookId = byTitleAuthor.get(`${normalise(title)}|${normalise(authorName)}`);
     if (!bookId && title && authorName) bookId = byRelaxedTitle.get(`${normalise(stripSubtitle(title))}|${normalise(authorName)}`);
     // titleSlug is derived from the book's canonical title before Chaptarr overwrites the display

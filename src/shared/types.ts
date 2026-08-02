@@ -154,6 +154,7 @@ export type BookDuplicateCandidate = Pick<BookSummary,
 > & {
   seriesName: string | null;
   seriesNumber: string | null;
+  mergeEligible: boolean;
 };
 
 export interface BookRelationship {
@@ -405,15 +406,18 @@ export interface HardcoverListMapping {
 
 // ─── Logs ─────────────────────────────────────────────────────────────────────
 
+export const LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
+
 export interface LogEntry {
   timestamp: string;
-  level: "debug" | "info" | "warn" | "error";
+  level: (typeof LOG_LEVELS)[number];
   message: string;
   meta?: unknown;
 }
 
 export interface LogsPageResponse {
   results: LogEntry[];
+  windowed: boolean;
   pageInfo: {
     page: number;
     pageSize: number;

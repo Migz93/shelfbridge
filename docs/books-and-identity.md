@@ -52,7 +52,12 @@ Book identity reconciliation (`src/server/db/bookIdentity.ts`) clusters
 - high-confidence identity keys (Hardcover book ID, Hardcover slug, Goodreads book
   ID, Grimmory-stored HC/GR IDs, Grimmory internal book ID) group rows immediately
 - ISBN-13 and ISBN-10 group rows unless the clusters already have conflicting
-  high-confidence IDs and no overlapping title+author evidence
+  high-confidence IDs. A Goodreads/Grimmory ISBN match can still bridge that
+  conflict when title matches and Grimmory shares an exact same-format path with
+  Chaptarr; this handles stale Grimmory Goodreads IDs without writing externally
+- a Goodreads edition can join a Chaptarr/Grimmory cluster only when the same
+  Chaptarr row has that exact Goodreads edition ID and an exact, same-format
+  file-path match to Grimmory; Chaptarr IDs alone never merge records
 - exact normalised title + author groups remaining rows even when source identifiers
   differ; differing IDs remain visible as ID review work rather than creating
   separate book entries

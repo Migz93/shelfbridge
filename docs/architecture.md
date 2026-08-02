@@ -169,6 +169,25 @@ password, token, secret, credential, authorization, or API key. Do not expose
 
 ## Major Subsystems
 
+### Sync composition
+
+The sync engine is the workflow coordinator: it loads the profile, fetches
+source snapshots, persists them, reconciles canonical identities, applies sync
+decisions, and records the run outcome. Focused modules keep the decisions at
+its boundaries independently testable:
+
+- `sync/adapters.ts` is the typed boundary to Hardcover, Grimmory, Goodreads,
+  Chaptarr, and Audiobookshelf. Tests can provide fixture-backed adapters rather
+  than making network requests.
+- `sync/conflict-policy.ts` contains the pure Hardcover ↔ Grimmory status
+  decision policy. It has no database or network dependency.
+- `sync/pruning.ts` owns removal of rows absent from a complete source snapshot.
+  A complete empty snapshot is authoritative; partial and failed snapshots
+  cannot trigger destructive pruning.
+
+The engine re-exports these APIs temporarily for compatibility; new callers and
+tests should import the focused module directly.
+
 ### Settings
 
 Global configuration stored in the `app_settings` key-value table and served

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { computeSyncDecision, type ConflictStrategy } from "../../src/server/sync/engine.js";
+import { computeSyncDecision, type ConflictStrategy } from "../../src/server/sync/conflict-policy.js";
 import type { HardcoverUserBook } from "../../src/server/sync/hardcover.js";
 import type { GrimmoryBook } from "../../src/server/sync/grimmory.js";
 

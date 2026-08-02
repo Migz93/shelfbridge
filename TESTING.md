@@ -65,6 +65,14 @@ section with hubarr's Playwright section, modified to suit.
 | Conflicting Hardcover book id | Two sources with the same title but different authoritative Hardcover ids stay separate books |
 | Idempotency | Running `reconcileBookIdentities` twice doesn't duplicate books |
 | Orphan cleanup | A book left with zero `book_sources` rows is deleted on the next reconcile pass |
+| Corroborated Chaptarr bridge | A Goodreads edition joins a Chaptarr/Grimmory cluster only with matching edition-ID and same-format file-path evidence; a stale Chaptarr Hardcover ID cannot merge an unrelated book |
+| File-path media separation | Ebook and audiobook Chaptarr path matches join only their matching format canonical |
+| File-path ID precedence | An exact Grimmory/Chaptarr path keeps local records together after a Goodreads edition ID is repaired |
+| Cross-profile path isolation | A shared global Chaptarr path cannot merge unrelated Grimmory instances from different profiles |
+| Cross-profile Goodreads bridge isolation | Corroborated Chaptarr/Goodreads bridging is skipped when the same path belongs to multiple Grimmory instances |
+| Cross-profile Chaptarr reassignment isolation | A global Chaptarr path cannot reassign to a canonical record when multiple Grimmory instances share that path |
+| Cross-profile ABS reassignment isolation | A global Chaptarr path cannot reassign to a canonical record when multiple Audiobookshelf profiles share that path |
+| Chaptarr reassignment state preservation | User state is retained when a cross-profile Chaptarr path makes reassignment unsafe |
 
 ### `tests/server/settings.test.ts` — App settings
 
@@ -76,11 +84,36 @@ Table-driven coverage of `computeSyncDecision` for every `conflict_strategy` (`l
 
 ### `tests/server/pruning.test.ts` — Pruning
 
-Each `prune*UserStatesMissingFromFetch` / `prune*SourcesMissingFromFetch` helper, checked for: only pruning the calling profile's own rows (never another profile's), never pruning a source with live user state, and treating an empty fetched-id set as a no-op (a failed fetch must never be mistaken for "the library is now empty").
+Each `prune*UserStatesMissingFromFetch` / `prune*SourcesMissingFromFetch` helper, checked for: only pruning the calling profile's own rows (never another profile's), preserving state while a book still has another live source row, never pruning a source with live user state, pruning a complete empty snapshot, and preserving all rows for partial or failed snapshots.
 
 ### `tests/server/normalization.test.ts` — Title/date helpers
 
-`normalizeTitle`, `normalizeSeriesNumber`, `newerSource`, `shouldGoodreadsOverwriteGrimmory`.
+`normalizeTitle`, `normalizeSeriesNumber`, strict ISBN-10/ISBN-13 normalization, `newerSource`, selected-read Hardcover progress calculation, `shouldGoodreadsOverwriteGrimmory`.
+
+### `tests/server/concurrency.test.ts` — Bounded work queues
+
+| Test | What it checks |
+|---|---|
+| Large author list | The Chaptarr book-file request queue preserves all results while never exceeding its configured concurrency cap. |
+
+### `tests/server/duplicate-review.test.ts` — Duplicate merge eligibility
+
+| Test | What it checks |
+|---|---|
+| Live probable-duplicate guard | Only an undismissed title-and-author probable-duplicate pair is eligible for the destructive merge route; unrelated or dismissed pairs are rejected. |
+| Partial duplicate-merge failure | A remote failure in a later merge plan retains each earlier plan already persisted locally. |
+
+### `tests/server/logger.test.ts` — Recent log tail
+
+| Test | What it checks |
+|---|---|
+| Oversized machine log | Only the recent bounded tail is parsed, malformed lines are skipped, and the requested newest entries are returned. |
+
+### `tests/server/shelves.test.ts` — Shelf synchronization
+
+| Test | What it checks |
+|---|---|
+| Large reverse shelf lookup | A 500-book Grimmory shelf is processed in SQLite-safe batches while preserving all membership and Hardcover-list updates. |
 
 ### `tests/server/sync-engine.test.ts` — Sync engine integration
 
@@ -94,8 +127,25 @@ Runs `runSyncImpl` end-to-end against a real (isolated) SQLite database with fak
 | Dry run | Computes and caches the resolved decision locally but never calls the Grimmory write adapter |
 | Real run | Calls the Grimmory write adapter with the resolved status once conflict resolution picks a winner |
 | Two profiles | Each profile's `book_sources` stay scoped to its own `source_instance_id` — no cross-profile leakage |
+| Negative edition cache | An unchanged Hardcover page count with no matching edition only fetches editions once across syncs. |
 
 Adapters not relevant to a given test are left unimplemented via `createFakeAdapters` (`test-helpers.ts`), which makes any unexpected call throw immediately instead of failing confusingly deep inside `runSyncImpl`.
+
+### `tests/server/source-snapshots.test.ts` — Source snapshot isolation
+
+| Test | What it checks |
+|---|---|
+| ABS ownership scope | Runtime-validated Audiobookshelf ownership and its Grimmory Hardcover IDs never leak between profiles. |
+| Hardcover list editions | Partial edition-detail fetches preserve metadata already obtained for list-only books. |
+| Selected Hardcover list snapshot | A list-filtered Hardcover fetch is marked partial, so it cannot prune records outside the list. |
+| Large ABS ownership snapshot | Runtime ownership lookup batches a 500-book ABS library below SQLite's parameter limit. |
+| ABS without Hardcover | An ABS audiobook linked to Grimmory remains runtime-validated when the optional Hardcover integration is absent. |
+
+### `tests/server/goodreads-phase.test.ts` — Goodreads status sync
+
+| Test | What it checks |
+|---|---|
+| Changed Goodreads shelf | A changed Goodreads shelf writes its mapped status to the matched Grimmory book and persists local state. |
 
 ### Known gaps
 

@@ -11,7 +11,8 @@ import {
   ExternalLink,
   Layers,
   Minus,
-  Search
+  Search,
+  X
 } from "lucide-react";
 import { apiDelete, apiGet, apiPost } from "../lib/api";
 import { useLiveRefresh } from "../lib/useLiveRefresh";
@@ -26,7 +27,7 @@ const BOOKS_REFRESH_MS = 30_000;
 type StatusFilter = "all" | "UNREAD" | "READING" | "READ" | "ABANDONED";
 type SourceFilter = "all" | "hardcover" | "goodreads" | "on-disk";
 type ChaptarrFilter = "in" | "out" | null;
-type ActionFilter = "add-to-chaptarr" | "grab-in-chaptarr" | "review-in-grimmory" | "fix-chaptarr-id" | "id-review" | "probable-duplicates" | "abs-runtime-mismatch" | null;
+type ActionFilter = "add-to-chaptarr" | "grab-in-chaptarr" | "review-in-grimmory" | "fix-chaptarr-id" | "id-review" | "possible-duplicates" | "abs-runtime-mismatch" | null;
 type SourceKey = "GR" | "HA" | "GO" | "CH" | "AB";
 type BookDetailLocationState = {
   returnTo?: string;
@@ -70,7 +71,7 @@ const ACTION_OPTIONS: { value: NonNullable<ActionFilter>; label: string }[] = [
   { value: "review-in-grimmory", label: "Review in Grimmory" },
   { value: "fix-chaptarr-id", label: "Bad Chaptarr ID" },
   { value: "id-review", label: "ID Review" },
-  { value: "probable-duplicates", label: "Possible Duplicates" },
+  { value: "possible-duplicates", label: "Possible Duplicates" },
   { value: "abs-runtime-mismatch", label: "ABS Runtime Mismatch" },
 ];
 
@@ -80,7 +81,7 @@ const ACTION_EXPLANATIONS: Record<NonNullable<ActionFilter>, string> = {
   "review-in-grimmory":   "File in Chaptarr but not matched in Grimmory",
   "fix-chaptarr-id":      "Chaptarr ID does not match Chaptarr's own record",
   "id-review":            "Conflicting external identifiers detected across sources",
-  "probable-duplicates":  "Loose title and author match; review source IDs before merging",
+  "possible-duplicates":  "Loose title and author match; review source IDs before merging",
   "abs-runtime-mismatch": "Audiobookshelf item matched but runtime validation failed — progress sync disabled",
 };
 
@@ -100,7 +101,9 @@ function CatalogPage({ mediaType, title }: { mediaType: "book" | "audiobook"; ti
   const rawChaptarr = searchParams.get("chaptarr");
   const chaptarr: ChaptarrFilter = rawChaptarr === "in" || rawChaptarr === "out" ? rawChaptarr : null;
   const rawAction = searchParams.get("action");
-  const action: ActionFilter = ACTION_OPTIONS.some((o) => o.value === rawAction) ? rawAction as ActionFilter : null;
+  const action: ActionFilter = rawAction === "probable-duplicates"
+    ? "possible-duplicates"
+    : ACTION_OPTIONS.some((o) => o.value === rawAction) ? rawAction as ActionFilter : null;
 
   // Multi-select filter state stored as comma-separated URL params.
   const VALID_SOURCES = new Set<SourceFilter>(["hardcover", "goodreads", "on-disk"]);
@@ -134,6 +137,10 @@ function CatalogPage({ mediaType, title }: { mediaType: "book" | "audiobook"; ti
       return next;
     }, { replace: true });
   }
+
+  useEffect(() => {
+    if (rawAction === "probable-duplicates") setParam({ action: "possible-duplicates" });
+  }, [rawAction]);
 
   const [searchInput, setSearchInput] = useState(q);
 
@@ -380,9 +387,9 @@ function CatalogPage({ mediaType, title }: { mediaType: "book" | "audiobook"; ti
               />
               <FilterChip
                 label="Possible Duplicates"
-                active={action === "probable-duplicates"}
+                active={action === "possible-duplicates"}
                 count={facets?.probableDuplicateCount}
-                onClick={() => toggleAction("probable-duplicates")}
+                onClick={() => toggleAction("possible-duplicates")}
               />
             </div>
             <span className="text-[11px] font-medium text-on-surface-variant/50 uppercase tracking-wide sm:w-16 sm:shrink-0">Review</span>
@@ -560,6 +567,8 @@ export function BookDetailPage() {
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [dismissingDuplicateId, setDismissingDuplicateId] = useState<number | null>(null);
+  const [mergingDuplicateId, setMergingDuplicateId] = useState<number | null>(null);
+  const [confirmingDuplicateAction, setConfirmingDuplicateAction] = useState<{ id: number; action: "dismiss" | "merge" } | null>(null);
   const [duplicateError, setDuplicateError] = useState<string | null>(null);
   const [dismissingChaptarrId, setDismissingChaptarrId] = useState(false);
   const [chaptarrDismissError, setChaptarrDismissError] = useState<string | null>(null);
@@ -629,6 +638,7 @@ export function BookDetailPage() {
   }
 
   async function dismissDuplicate(duplicateId: number) {
+    if (dismissingDuplicateId !== null || mergingDuplicateId !== null) return;
     setDismissingDuplicateId(duplicateId);
     setDuplicateError(null);
     try {
@@ -640,6 +650,29 @@ export function BookDetailPage() {
     } finally {
       setDismissingDuplicateId(null);
     }
+  }
+
+  function requestDuplicateAction(duplicateId: number, action: "dismiss" | "merge") {
+    if (dismissingDuplicateId !== null || mergingDuplicateId !== null) return;
+    if (confirmingDuplicateAction?.id !== duplicateId || confirmingDuplicateAction.action !== action) {
+      setConfirmingDuplicateAction({ id: duplicateId, action });
+      return;
+    }
+    setConfirmingDuplicateAction(null);
+    if (action === "dismiss") void dismissDuplicate(duplicateId);
+    else void mergeDuplicate(duplicateId);
+  }
+
+  async function mergeDuplicate(duplicateId: number) {
+    if (dismissingDuplicateId !== null || mergingDuplicateId !== null) return;
+    setMergingDuplicateId(duplicateId);
+    setDuplicateError(null);
+    try {
+      await apiPost<{ ok: true; bookId: number }>(`/api/books/${bookId}/duplicates/${duplicateId}/merge`, {});
+      void navigate(returnTo, { replace: true });
+    } catch (err) {
+      setDuplicateError(err instanceof Error ? err.message : String(err));
+    } finally { setMergingDuplicateId(null); }
   }
 
   async function dismissChaptarrIdMismatch() {
@@ -833,8 +866,11 @@ export function BookDetailPage() {
                   bookId={detail.id}
                   candidates={detail.duplicateCandidates}
                   dismissingId={dismissingDuplicateId}
+                  mergingId={mergingDuplicateId}
+                  confirmingAction={confirmingDuplicateAction}
                   error={duplicateError}
-                  onDismiss={(candidateId) => void dismissDuplicate(candidateId)}
+                  onDismiss={(candidateId) => requestDuplicateAction(candidateId, "dismiss")}
+                  onMerge={(candidateId) => requestDuplicateAction(candidateId, "merge")}
                 />
               )}
 
@@ -1030,14 +1066,20 @@ function DuplicateReviewSection({
   bookId,
   candidates,
   dismissingId,
+  mergingId,
+  confirmingAction,
   error,
-  onDismiss
+  onDismiss,
+  onMerge
 }: {
   bookId: number;
   candidates: BookDuplicateCandidate[];
   dismissingId: number | null;
+  mergingId: number | null;
+  confirmingAction: { id: number; action: "dismiss" | "merge" } | null;
   error: string | null;
   onDismiss: (candidateId: number) => void;
+  onMerge: (candidateId: number) => void;
 }) {
   return (
     <section className="rounded-lg border border-warning/25 bg-warning/8 p-4">
@@ -1084,13 +1126,25 @@ function DuplicateReviewSection({
                   {candidate.seriesName}{candidate.seriesNumber ? ` #${candidate.seriesNumber}` : ""}
                 </div>
               )}
+              {candidate.mergeEligible && (
+                <button
+                  onClick={() => onMerge(candidate.id)}
+                  type="button"
+                  disabled={mergingId === candidate.id || dismissingId === candidate.id}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-primary px-2.5 py-1.5 text-xs font-semibold text-on-primary disabled:opacity-50"
+                >
+                  <CheckCircle size={13} />
+                  {mergingId === candidate.id ? "Merging..." : confirmingAction?.id === candidate.id && confirmingAction.action === "merge" ? "Are you sure?" : "Merge"}
+                </button>
+              )}
               <button
                 onClick={() => onDismiss(candidate.id)}
-                disabled={dismissingId === candidate.id}
-                className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-outline-variant/25 bg-background-container-high px-2.5 py-1.5 text-xs font-semibold text-on-surface hover:bg-background-container-highest disabled:opacity-50 transition-colors"
+                type="button"
+                disabled={dismissingId === candidate.id || mergingId === candidate.id}
+                className="mt-3 ml-2 inline-flex items-center gap-1.5 rounded-md border border-outline-variant/25 bg-background-container-high px-2.5 py-1.5 text-xs font-semibold text-on-surface hover:bg-background-container-highest disabled:opacity-50 transition-colors"
               >
-                <Minus size={13} />
-                {dismissingId === candidate.id ? "Dismissing..." : "Not duplicate"}
+                <X size={13} />
+                {dismissingId === candidate.id ? "Dismissing..." : confirmingAction?.id === candidate.id && confirmingAction.action === "dismiss" ? "Are you sure?" : "Not Duplicate"}
               </button>
             </div>
           </div>

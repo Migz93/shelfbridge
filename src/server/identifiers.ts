@@ -13,6 +13,15 @@ export function normalizeExternalId(value: string | number | null | undefined): 
   return numericPrefix?.[1] ?? text;
 }
 
+export function normalizeIsbn(value: string | number | null | undefined): string | null {
+  const text = cleanIdentifier(value);
+  if (!text) return null;
+  const normalized = text.replace(/[\s\-\u2010-\u2015]/g, "").toUpperCase();
+  if (/^\d{9}[\dX]$/.test(normalized)) return normalized;
+  if (/^\d{13}$/.test(normalized)) return normalized;
+  return null;
+}
+
 export function identifierVariants(value: string | number | null | undefined): string[] {
   const raw = cleanIdentifier(value);
   const normalized = normalizeExternalId(raw);

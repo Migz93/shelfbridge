@@ -123,7 +123,7 @@ function VersionFooter({ onMobileClose, onLogout }: { onMobileClose: () => void;
       ? `v${info.version}`
       : info.commitSha === "local"
         ? "local"
-        : info.commitSha
+        : info.commitSha.slice(0, 7)
     : "...";
 
   return (

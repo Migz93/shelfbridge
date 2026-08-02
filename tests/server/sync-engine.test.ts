@@ -202,6 +202,29 @@ test("a real (non-dry) run writes the resolved status to Grimmory via the adapte
   assert.deepEqual(grimmoryWrites, [{ bookId: 1, status: "READING" }]);
 });
 
+test("an unchanged no-match Hardcover page count is negatively cached across syncs", async () => {
+  const profileId = seedProfile(db);
+  seedHardcoverConnection(db, profileId);
+  seedGrimmoryConnection(db, profileId);
+  seedSyncSettings(db, profileId, { sync_progress_enabled: 1 });
+  let editionFetches = 0;
+  const read = { id: 3, edition_id: 9, progress: null, progress_pages: 50, progress_seconds: null, started_at: null, finished_at: null, edition: { id: 9, pages: 100 } };
+  const adapters = createFakeAdapters({
+    fetchHardcoverUserId: async () => 42,
+    fetchHardcoverLibrary: async () => [hcBook({ user_book_reads: [read] })],
+    fetchHardcoverLists: async () => [],
+    testGrimmoryLogin: async () => ({ ok: true, message: "ok", accessToken: "grim-token" }),
+    fetchGrimmoryBooks: async () => [grBook({ hardcoverBookId: "555", readStatus: "READING", readProgress: null, primaryFileId: null })],
+    fetchGrimmoryProgress: async () => ({ readProgress: null, lastReadTime: null, readStatus: "READING" }),
+    fetchEditionsForBook: async () => { editionFetches++; return []; }
+  });
+
+  await runSyncImpl(profileId, insertSyncRun(db, profileId), false, adapters);
+  await runSyncImpl(profileId, insertSyncRun(db, profileId), false, adapters);
+
+  assert.equal(editionFetches, 1, "an unchanged page count with no matching edition must use the negative cache");
+});
+
 test("two profiles syncing different Hardcover books do not cross-contaminate each other's book_sources", async () => {
   const profileA = seedProfile(db, "Profile A");
   const profileB = seedProfile(db, "Profile B");

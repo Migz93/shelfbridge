@@ -6,7 +6,7 @@ import {
   pruneGrimmoryUserStatesMissingFromFetch,
   pruneHardcoverSourcesMissingFromFetch,
   pruneHardcoverUserStatesMissingFromFetch
-} from "../../src/server/sync/engine.js";
+} from "../../src/server/sync/pruning.js";
 import { seedProfile } from "./test-helpers.js";
 import { createTestDatabase } from "./test-db.js";
 
@@ -55,7 +55,7 @@ test("pruneHardcoverSourcesMissingFromFetch removes only this profile's stale HC
     // Different instance (another profile's connection) — must never be touched.
     insertBookSource(db, otherProfilesBook, "hardcover", otherProfileId, "222");
 
-    pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set([111]));
+    pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set([111]), "complete");
 
     const remaining = db.prepare("SELECT book_id FROM book_sources WHERE source_type = 'hardcover'").all() as { book_id: number }[];
     const remainingBookIds = remaining.map((r) => r.book_id).sort();
@@ -73,7 +73,7 @@ test("pruneHardcoverSourcesMissingFromFetch does not delete a source still refer
     insertBookSource(db, bookId, "hardcover", profileId, "222");
     insertUserState(db, bookId, profileId, "hardcover");
 
-    pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set([111]));
+    pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set([111]), "complete");
 
     const remaining = db.prepare("SELECT COUNT(*) AS count FROM book_sources WHERE source_type = 'hardcover'").get() as { count: number };
     assert.equal(remaining.count, 1, "a source with live user state must survive even if missing from the fetch");
@@ -93,10 +93,28 @@ test("pruneHardcoverUserStatesMissingFromFetch removes this profile's stale HC u
     insertUserState(db, kept, profileId, "hardcover");
     insertUserState(db, stale, profileId, "hardcover");
 
-    pruneHardcoverUserStatesMissingFromFetch(db, profileId, new Set([111]));
+    pruneHardcoverUserStatesMissingFromFetch(db, profileId, new Set([111]), "complete");
 
     const remaining = db.prepare("SELECT book_id FROM user_book_states WHERE source_type = 'hardcover'").all() as { book_id: number }[];
     assert.deepEqual(remaining.map((r) => r.book_id), [kept]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("pruneHardcoverUserStatesMissingFromFetch preserves state when the same book has another live HC source", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const bookId = insertBook(db, "Multi-source book");
+    insertBookSource(db, bookId, "hardcover", profileId, "111");
+    insertBookSource(db, bookId, "hardcover", profileId, "222");
+    insertUserState(db, bookId, profileId, "hardcover");
+
+    pruneHardcoverUserStatesMissingFromFetch(db, profileId, new Set([111]), "complete");
+
+    const remaining = db.prepare("SELECT COUNT(*) AS count FROM user_book_states WHERE book_id = ? AND source_type = 'hardcover'").get(bookId) as { count: number };
+    assert.equal(remaining.count, 1);
   } finally {
     cleanup();
   }
@@ -113,8 +131,8 @@ test("pruneGrimmorySourcesMissingFromFetch and pruneGrimmoryUserStatesMissingFro
     insertUserState(db, kept, profileId, "grimmory");
     insertUserState(db, stale, profileId, "grimmory");
 
-    pruneGrimmoryUserStatesMissingFromFetch(db, profileId, new Set([111]));
-    pruneGrimmorySourcesMissingFromFetch(db, profileId, new Set([111]));
+    pruneGrimmoryUserStatesMissingFromFetch(db, profileId, new Set([111]), "complete");
+    pruneGrimmorySourcesMissingFromFetch(db, profileId, new Set([111]), "complete");
 
     const remainingStates = db.prepare("SELECT book_id FROM user_book_states WHERE source_type = 'grimmory'").all() as { book_id: number }[];
     assert.deepEqual(remainingStates.map((r) => r.book_id), [kept]);
@@ -137,7 +155,7 @@ test("pruneGoodreadsUserStatesMissingFromFetch matches by raw external_id (not n
     insertUserState(db, kept, profileId, "goodreads");
     insertUserState(db, stale, profileId, "goodreads");
 
-    pruneGoodreadsUserStatesMissingFromFetch(db, profileId, new Set(["gr-abc"]));
+    pruneGoodreadsUserStatesMissingFromFetch(db, profileId, new Set(["gr-abc"]), "complete");
 
     const remaining = db.prepare("SELECT book_id FROM user_book_states WHERE source_type = 'goodreads'").all() as { book_id: number }[];
     assert.deepEqual(remaining.map((r) => r.book_id), [kept]);
@@ -146,7 +164,7 @@ test("pruneGoodreadsUserStatesMissingFromFetch matches by raw external_id (not n
   }
 });
 
-test("an empty fetched-id set is a no-op (never wipes everything on a failed fetch)", () => {
+test("a complete empty snapshot removes stale source rows and user states", () => {
   const { db, cleanup } = createTestDatabase();
   try {
     const profileId = seedProfile(db);
@@ -154,8 +172,30 @@ test("an empty fetched-id set is a no-op (never wipes everything on a failed fet
     insertBookSource(db, bookId, "hardcover", profileId, "111");
     insertUserState(db, bookId, profileId, "hardcover");
 
-    pruneHardcoverUserStatesMissingFromFetch(db, profileId, new Set());
-    pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set());
+    pruneHardcoverUserStatesMissingFromFetch(db, profileId, new Set(), "complete");
+    pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set(), "complete");
+
+    const sources = db.prepare("SELECT COUNT(*) AS count FROM book_sources WHERE source_type = 'hardcover'").get() as { count: number };
+    const states = db.prepare("SELECT COUNT(*) AS count FROM user_book_states WHERE source_type = 'hardcover'").get() as { count: number };
+    assert.equal(sources.count, 0);
+    assert.equal(states.count, 0);
+  } finally {
+    cleanup();
+  }
+});
+
+test("partial and failed snapshots never prune, including when they are empty", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const bookId = insertBook(db, "Untouched");
+    insertBookSource(db, bookId, "hardcover", profileId, "111");
+    insertUserState(db, bookId, profileId, "hardcover");
+
+    for (const snapshotStatus of ["partial", "failed"] as const) {
+      pruneHardcoverUserStatesMissingFromFetch(db, profileId, new Set(), snapshotStatus);
+      pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set(), snapshotStatus);
+    }
 
     const sources = db.prepare("SELECT COUNT(*) AS count FROM book_sources WHERE source_type = 'hardcover'").get() as { count: number };
     const states = db.prepare("SELECT COUNT(*) AS count FROM user_book_states WHERE source_type = 'hardcover'").get() as { count: number };

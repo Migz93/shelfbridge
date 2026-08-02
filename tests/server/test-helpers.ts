@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import type { SyncAdapters } from "../../src/server/sync/engine.js";
+import type { SyncAdapters } from "../../src/server/sync/adapters.js";
 
 export type LogEntry = { level: "debug" | "info" | "warn" | "error"; message: string; meta?: unknown };
 

@@ -457,7 +457,7 @@ matching the selected criteria.
 | `source` | comma-separated strings | — | Include sources: `hardcover`, `goodreads`, `on-disk` |
 | `excludeSource` | comma-separated strings | — | Exclude sources: `hardcover`, `goodreads`, `on-disk` |
 | `chaptarr` | string | — | Chaptarr presence filter: `in` or `out` |
-| `action` | string | — | Shortcut filter: `add-to-chaptarr`, `grab-in-chaptarr`, `review-in-grimmory`, `fix-chaptarr-id`, `id-review`, `probable-duplicates`, `abs-runtime-mismatch` |
+| `action` | string | — | Shortcut filter: `add-to-chaptarr`, `grab-in-chaptarr`, `review-in-grimmory`, `fix-chaptarr-id`, `id-review`, `possible-duplicates`, `abs-runtime-mismatch` |
 | `mediaType` | string | `book` | Canonical media bucket: `book`, `audiobook`, or `all` |
 | `q` | string | — | Free-text search: case-insensitive substring match against `title` and `author` |
 | `sortBy` | string | `updated-desc` | Sort order: `updated-desc`, `updated-asc`, `title-asc`, `title-desc` |
@@ -608,6 +608,15 @@ shape with an explicit empty `clearFlags` object for these targeted ID writes;
 without `clearFlags`, Grimmory returns a 500. Sync never calls this endpoint
 automatically; it is intended for explicit user review actions from the book
 detail page.
+
+### `POST /api/books/:bookId/duplicates/:duplicateId/merge`
+
+Repairs an eligible probable-duplicate pair after user confirmation. The endpoint
+only accepts a split where one canonical record is Goodreads and/or Hardcover
+metadata and the other is a Grimmory-only local record for the same profile. It
+also requires the pair to remain a live, undismissed probable-duplicate suggestion.
+It writes just the Goodreads and Hardcover identifiers to Grimmory, then reconciles
+the local identities. ISBN, ASIN, and Chaptarr identifiers are never written.
 
 ## Dashboard
 

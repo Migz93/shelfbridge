@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { cleanupOrphanedImageCache } from "./imageCacheMaintenance.js";
 import { logger } from "../logger.js";
-import { normalizeExternalId } from "../identifiers.js";
+import { normalizeExternalId, normalizeIsbn } from "../identifiers.js";
 
 interface BookSourceRow {
   id: number;
@@ -83,11 +83,6 @@ function clean(value: string | number | null | undefined): string | null {
   if (value === null || value === undefined) return null;
   const text = String(value).trim();
   return text.length > 0 ? text : null;
-}
-
-function normalizeIsbn(value: string | null | undefined): string | null {
-  const text = clean(value)?.replace(/[^0-9Xx]/g, "").toUpperCase() ?? null;
-  return text && text.length >= 10 ? text : null;
 }
 
 function normalizeTitle(value: string | null | undefined): string | null {
@@ -456,6 +451,7 @@ export function reconcileBookIdentities(db: Database.Database): void {
     cleanupOrphanedImageCache(db);
     return;
   }
+  const rowsById = new Map(rows.map((row) => [row.id, row]));
   const validBookIds = new Set(
     (db.prepare("SELECT id FROM books").all() as { id: number }[]).map((row) => row.id)
   );
@@ -468,6 +464,21 @@ export function reconcileBookIdentities(db: Database.Database): void {
       .filter((r) => r.source_type !== "chaptarr" && r.book_id !== null && validBookIds.has(r.book_id!))
       .map((r) => r.book_id!)
   );
+  const canonicalBookIdsByFilePath = new Map<IdentityKey, number[]>();
+  const scopedInstancesByCanonicalFilePath = new Map<IdentityKey, Set<number | null>>();
+  for (const row of rows) {
+    if (row.source_type === "chaptarr" || row.book_id === null || !bookIdsReferencedByNonChaptarr.has(row.book_id)) continue;
+    for (const key of filePathIdentityKeys(row)) {
+      const ids = canonicalBookIdsByFilePath.get(key) ?? [];
+      if (!ids.includes(row.book_id)) ids.push(row.book_id);
+      canonicalBookIdsByFilePath.set(key, ids);
+      if (row.source_type === "grimmory" || row.source_type === "audiobookshelf") {
+        const instances = scopedInstancesByCanonicalFilePath.get(key) ?? new Set<number | null>();
+        instances.add(row.source_instance_id);
+        scopedInstancesByCanonicalFilePath.set(key, instances);
+      }
+    }
+  }
 
   const uf = new UnionFind();
   const byHighKey = new Map<IdentityKey, number>();
@@ -524,6 +535,22 @@ export function reconcileBookIdentities(db: Database.Database): void {
     }
   }
 
+  // A Goodreads/Grimmory ISBN match can otherwise be blocked by a stale
+  // Goodreads ID stored in Grimmory. When that Grimmory row also shares an exact
+  // same-format path with Chaptarr, the physical library provides independent
+  // corroboration that the IDs describe the same local book.
+  const corroboratedGrimmoryChaptarrFilePaths = new Set<IdentityKey>();
+  for (const [key, ids] of byFilePathKey) {
+    const sourceTypes = new Set(ids.map((id) => rowsById.get(id)?.source_type));
+    const grimmoryInstances = new Set(ids
+      .map((id) => rowsById.get(id))
+      .filter((row): row is BookSourceRow => row?.source_type === "grimmory")
+      .map((row) => row.source_instance_id));
+    if (sourceTypes.has("grimmory") && sourceTypes.has("chaptarr") && grimmoryInstances.size <= 1) {
+      corroboratedGrimmoryChaptarrFilePaths.add(key);
+    }
+  }
+
   for (const ids of byIsbnKey.values()) {
     for (const id of ids.slice(1)) {
       const rootA = uf.find(ids[0]!);
@@ -532,9 +559,26 @@ export function reconcileBookIdentities(db: Database.Database): void {
       const keysA = rootIndex.get(rootA)?.highKeys ?? new Set<IdentityKey>();
       const keysB = rootIndex.get(rootB)?.highKeys ?? new Set<IdentityKey>();
       // A shared ISBN is strong corroborating evidence, but a conflicting authoritative
-      // ID (e.g. different Hardcover/Goodreads IDs) always blocks the merge — matching
-      // titles must never override an explicit identifier conflict.
+      // ID (e.g. different Hardcover/Goodreads IDs) normally blocks the merge.
       if (highKeyConflict(keysA, keysB)) {
+        const firstRow = rowsById.get(ids[0]!);
+        const secondRow = rowsById.get(id);
+        const goodreadsRow = firstRow?.source_type === "goodreads" ? firstRow
+          : secondRow?.source_type === "goodreads" ? secondRow : undefined;
+        const grimmoryRow = firstRow?.source_type === "grimmory" ? firstRow
+          : secondRow?.source_type === "grimmory" ? secondRow : undefined;
+        const sameTitle = Boolean(goodreadsRow && grimmoryRow
+          && normalizeTitle(goodreadsRow.title) === normalizeTitle(grimmoryRow.title));
+        const corroboratedPath = Boolean(grimmoryRow && filePathIdentityKeys(grimmoryRow)
+          .some((key) => corroboratedGrimmoryChaptarrFilePaths.has(key)));
+        if (sameTitle && corroboratedPath) {
+          unionRoots(rootA, rootB);
+          logger.info("Merged ISBN match despite stale Grimmory identifier", {
+            goodreadsSourceId: goodreadsRow!.id,
+            grimmorySourceId: grimmoryRow!.id
+          });
+          continue;
+        }
         logger.debug("Skipped ISBN-based book merge: conflicting authoritative identifiers", {
           rootA, rootB
         });
@@ -544,16 +588,34 @@ export function reconcileBookIdentities(db: Database.Database): void {
     }
   }
 
-  // A shared file path is only useful to bridge Grimmory/Audiobookshelf rows to the
-  // global Chaptarr instance managing the same library — it is not proof on its own,
-  // since two independent server instances can expose the same relative path for
-  // unrelated books. Require no conflicting authoritative ID (like ISBN) AND, when
-  // both sides have title/author data, that it doesn't explicitly disagree.
+  // Chaptarr and Grimmory refer to the same managed library. An exact path in the
+  // same media bucket is therefore the strongest evidence available, including when
+  // Chaptarr still holds a stale upstream Goodreads or Hardcover identifier.
+  // Other source combinations remain conservative: they still require compatible
+  // authoritative IDs and title/author data.
   for (const ids of byFilePathKey.values()) {
+    const chaptarrIds = ids.filter((id) => rowsById.get(id)?.source_type === "chaptarr");
+    const grimmoryIds = ids.filter((id) => rowsById.get(id)?.source_type === "grimmory");
+    const grimmoryInstances = new Set(grimmoryIds.map((id) => rowsById.get(id)?.source_instance_id));
+    const canBridgeChaptarrToGrimmory = grimmoryInstances.size <= 1;
+    if (canBridgeChaptarrToGrimmory) {
+      for (const chaptarrId of chaptarrIds) {
+        for (const grimmoryId of grimmoryIds) unionRoots(uf.find(chaptarrId), uf.find(grimmoryId));
+      }
+    }
     for (const id of ids.slice(1)) {
       const rootA = uf.find(ids[0]!);
       const rootB = uf.find(id);
       if (rootA === rootB) continue;
+      const rowA = rowsById.get(ids[0]!);
+      const rowB = rowsById.get(id);
+      const isChaptarrGrimmoryPair = (rowA?.source_type === "chaptarr" && rowB?.source_type === "grimmory")
+        || (rowA?.source_type === "grimmory" && rowB?.source_type === "chaptarr");
+      if (isChaptarrGrimmoryPair && canBridgeChaptarrToGrimmory) {
+        unionRoots(rootA, rootB);
+        continue;
+      }
+      if (isChaptarrGrimmoryPair) continue;
       const keysA = rootIndex.get(rootA)?.highKeys ?? new Set<IdentityKey>();
       const keysB = rootIndex.get(rootB)?.highKeys ?? new Set<IdentityKey>();
       if (highKeyConflict(keysA, keysB)) {
@@ -572,6 +634,64 @@ export function reconcileBookIdentities(db: Database.Database): void {
 
       unionRoots(rootA, rootB);
     }
+  }
+
+  // Chaptarr's upstream Hardcover and Goodreads IDs are not independently
+  // trustworthy enough to merge on: its metadata can be stale or wrong. A
+  // Goodreads edition ID becomes useful only when the same Chaptarr row is
+  // corroborated by an exact, same-format Grimmory file path. This bridges
+  // edition-specific Goodreads records without restoring Chaptarr IDs as
+  // general high-confidence identity keys.
+  const goodreadsByEditionId = new Map<string, number[]>();
+  const grimmoryByFilePath = new Map<IdentityKey, number[]>();
+  for (const row of rows) {
+    if (row.source_type === "goodreads") {
+      const editionId = normalizeExternalId(row.external_id);
+      if (editionId) {
+        const ids = goodreadsByEditionId.get(editionId) ?? [];
+        ids.push(row.id);
+        goodreadsByEditionId.set(editionId, ids);
+      }
+    }
+    if (row.source_type === "grimmory") {
+      const path = normalizePath(row.grimmory_primary_file_path);
+      const bucket = rowFormatBucket(row);
+      if (path && bucket !== "unknown") {
+        const key = `${bucket}.file_path:${path}` as IdentityKey;
+        const ids = grimmoryByFilePath.get(key) ?? [];
+        ids.push(row.id);
+        grimmoryByFilePath.set(key, ids);
+      }
+    }
+  }
+
+  let corroboratedBridgeCount = 0;
+  for (const chaptarrRow of rows) {
+    if (chaptarrRow.source_type !== "chaptarr") continue;
+    const editionId = normalizeExternalId(chaptarrRow.source_goodreads_edition_id);
+    const path = normalizePath(chaptarrRow.chaptarr_primary_file_path);
+    const bucket = rowFormatBucket(chaptarrRow);
+    if (!editionId || !path || bucket === "unknown") continue;
+
+    const goodreadsRows = goodreadsByEditionId.get(editionId);
+    const grimmoryRows = grimmoryByFilePath.get(`${bucket}.file_path:${path}` as IdentityKey);
+    if (!goodreadsRows || !grimmoryRows) continue;
+    const grimmoryInstances = new Set(grimmoryRows.map((id) => rowsById.get(id)?.source_instance_id));
+    if (grimmoryInstances.size > 1) {
+      logger.warn("Skipped corroborated Chaptarr Goodreads bridge across Grimmory profiles", { path, profiles: grimmoryInstances.size });
+      continue;
+    }
+
+    for (const goodreadsRowId of goodreadsRows) {
+      for (const grimmoryRowId of grimmoryRows) {
+        unionRoots(chaptarrRow.id, goodreadsRowId);
+        unionRoots(chaptarrRow.id, grimmoryRowId);
+        corroboratedBridgeCount++;
+      }
+    }
+  }
+  if (corroboratedBridgeCount > 0) {
+    logger.info("Merged sources via corroborated Chaptarr Goodreads identity bridge", { bridges: corroboratedBridgeCount });
   }
 
   // Title/author matches alone are not authoritative enough to auto-merge distinct
@@ -632,6 +752,7 @@ export function reconcileBookIdentities(db: Database.Database): void {
     WHERE id = ?
   `);
   const updateSource = db.prepare("UPDATE book_sources SET book_id = ? WHERE id = ?");
+  const selectRemainingSources = db.prepare("SELECT 1 FROM book_sources WHERE book_id = ? LIMIT 1");
   const updateSourcesByBookId = db.prepare("UPDATE book_sources SET book_id = ? WHERE book_id = ?");
   const deleteBook = db.prepare("DELETE FROM books WHERE id = ?");
   const deleteUserState = db.prepare("DELETE FROM user_book_states WHERE id = ?");
@@ -750,12 +871,55 @@ export function reconcileBookIdentities(db: Database.Database): void {
   let created = 0;
   let reassigned = 0;
   let merged = 0;
+  const chaptarrOrphanReassignments = new Map<number, Set<number>>();
+  const trackChaptarrOrphanReassignment = (oldBookId: number | null, targetBookId: number): void => {
+    if (oldBookId === null || oldBookId === targetBookId) return;
+    const targets = chaptarrOrphanReassignments.get(oldBookId) ?? new Set<number>();
+    targets.add(targetBookId);
+    chaptarrOrphanReassignments.set(oldBookId, targets);
+  };
 
   const transaction = db.transaction(() => {
     clearKeys.run();
 
     for (const group of groups.values()) {
       const isChaptarrOnly = group.every((r) => r.source_type === "chaptarr");
+
+      if (isChaptarrOnly) {
+        // A Chaptarr row may already point at an ebook canonical record from a
+        // previous loose match. An exact same-format file path is stronger than
+        // that historical assignment, so move only this Chaptarr group to the
+        // proven canonical record without collapsing the ebook and audiobook
+        // records into each other.
+        const groupFilePathKeys = group.flatMap((row) => filePathIdentityKeys(row));
+        const crossesScopedProfiles = groupFilePathKeys.some(
+          (key) => (scopedInstancesByCanonicalFilePath.get(key)?.size ?? 0) > 1
+        );
+        const filePathCanonicalId = crossesScopedProfiles ? undefined : groupFilePathKeys
+          .flatMap((key) => canonicalBookIdsByFilePath.get(key) ?? [])
+          .find((id) => group.some((row) => row.book_id === id))
+          ?? group
+            .flatMap((row) => filePathIdentityKeys(row))
+            .flatMap((key) => canonicalBookIdsByFilePath.get(key) ?? [])
+            .find((id) => !group.some((row) => row.book_id === id));
+        if (crossesScopedProfiles) {
+          logger.warn("Skipped Chaptarr file-path reassignment across scoped source profiles", { sourceCount: group.length });
+        }
+        if (filePathCanonicalId !== undefined) {
+          for (const row of group) {
+            if (row.book_id !== filePathCanonicalId) {
+              reassigned++;
+              trackChaptarrOrphanReassignment(row.book_id, filePathCanonicalId);
+            }
+            updateSource.run(filePathCanonicalId, row.id);
+          }
+          logger.info("Reassigned Chaptarr source to same-format file-path canonical book", {
+            bookId: filePathCanonicalId,
+            sourceCount: group.length
+          });
+          continue;
+        }
+      }
 
       const existingIds = Array.from(new Set(
         group.map((r) => r.book_id).filter((id): id is number => id !== null && validBookIds.has(id))
@@ -772,7 +936,10 @@ export function reconcileBookIdentities(db: Database.Database): void {
           const canonicalId = existingIds.find((id) => bookIdsReferencedByNonChaptarr.has(id));
           if (canonicalId !== undefined) {
             for (const row of group) {
-              if (row.book_id !== canonicalId) reassigned++;
+              if (row.book_id !== canonicalId) {
+                reassigned++;
+                trackChaptarrOrphanReassignment(row.book_id, canonicalId);
+              }
               updateSource.run(canonicalId, row.id);
             }
             continue;
@@ -791,7 +958,10 @@ export function reconcileBookIdentities(db: Database.Database): void {
         // non-Chaptarr source. Don't claim or overwrite it — just redirect the source
         // rows so the non-Chaptarr group can still take ownership on its own pass.
         for (const row of group) {
-          if (row.book_id !== bookId) reassigned++;
+          if (row.book_id !== bookId) {
+            reassigned++;
+            trackChaptarrOrphanReassignment(row.book_id, bookId);
+          }
           updateSource.run(bookId, row.id);
         }
         continue;
@@ -827,7 +997,10 @@ export function reconcileBookIdentities(db: Database.Database): void {
       }
 
       for (const row of group) {
-        if (row.book_id !== bookId) reassigned++;
+        if (row.book_id !== bookId) {
+          reassigned++;
+          if (isChaptarrOnly) trackChaptarrOrphanReassignment(row.book_id, bookId);
+        }
         updateSource.run(bookId, row.id);
       }
 
@@ -837,11 +1010,22 @@ export function reconcileBookIdentities(db: Database.Database): void {
       }
     }
 
+    // A Chaptarr-only reassignment can leave its former book with no sources.
+    // Move its state first, otherwise the stale-book cleanup below cascades it.
+    for (const [oldBookId, targetBookIds] of chaptarrOrphanReassignments) {
+      const remaining = selectRemainingSources.get(oldBookId);
+      if (!remaining && targetBookIds.size === 1) moveUserStates([...targetBookIds][0]!, oldBookId);
+      else if (!remaining && targetBookIds.size > 1) {
+        logger.warn("Preserved user state for an ambiguously split Chaptarr canonical", { oldBookId, targetBookIds: [...targetBookIds] });
+      }
+    }
+
     // Clean up books that have no source rows
     const staleBooks = db.prepare(`
       SELECT b.id FROM books b
       LEFT JOIN book_sources bs ON bs.book_id = b.id
       WHERE bs.id IS NULL
+        AND NOT EXISTS (SELECT 1 FROM user_book_states ubs WHERE ubs.book_id = b.id)
     `).all() as { id: number }[];
     for (const stale of staleBooks) deleteBook.run(stale.id);
 
