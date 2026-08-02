@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { cleanupOrphanedImageCache } from "./imageCacheMaintenance.js";
 import { logger } from "../logger.js";
-import { normalizeExternalId } from "../identifiers.js";
+import { normalizeExternalId, normalizeIsbn } from "../identifiers.js";
 
 interface BookSourceRow {
   id: number;
@@ -83,11 +83,6 @@ function clean(value: string | number | null | undefined): string | null {
   if (value === null || value === undefined) return null;
   const text = String(value).trim();
   return text.length > 0 ? text : null;
-}
-
-function normalizeIsbn(value: string | null | undefined): string | null {
-  const text = clean(value)?.replace(/[^0-9Xx]/g, "").toUpperCase() ?? null;
-  return text && text.length >= 10 ? text : null;
 }
 
 function normalizeTitle(value: string | null | undefined): string | null {
@@ -470,12 +465,18 @@ export function reconcileBookIdentities(db: Database.Database): void {
       .map((r) => r.book_id!)
   );
   const canonicalBookIdsByFilePath = new Map<IdentityKey, number[]>();
+  const grimmoryInstancesByCanonicalFilePath = new Map<IdentityKey, Set<number | null>>();
   for (const row of rows) {
     if (row.source_type === "chaptarr" || row.book_id === null || !bookIdsReferencedByNonChaptarr.has(row.book_id)) continue;
     for (const key of filePathIdentityKeys(row)) {
       const ids = canonicalBookIdsByFilePath.get(key) ?? [];
       if (!ids.includes(row.book_id)) ids.push(row.book_id);
       canonicalBookIdsByFilePath.set(key, ids);
+      if (row.source_type === "grimmory") {
+        const instances = grimmoryInstancesByCanonicalFilePath.get(key) ?? new Set<number | null>();
+        instances.add(row.source_instance_id);
+        grimmoryInstancesByCanonicalFilePath.set(key, instances);
+      }
     }
   }
 
@@ -883,14 +884,20 @@ export function reconcileBookIdentities(db: Database.Database): void {
         // that historical assignment, so move only this Chaptarr group to the
         // proven canonical record without collapsing the ebook and audiobook
         // records into each other.
-        const filePathCanonicalId = group
-          .flatMap((row) => filePathIdentityKeys(row))
+        const groupFilePathKeys = group.flatMap((row) => filePathIdentityKeys(row));
+        const crossesGrimmoryProfiles = groupFilePathKeys.some(
+          (key) => (grimmoryInstancesByCanonicalFilePath.get(key)?.size ?? 0) > 1
+        );
+        const filePathCanonicalId = crossesGrimmoryProfiles ? undefined : groupFilePathKeys
           .flatMap((key) => canonicalBookIdsByFilePath.get(key) ?? [])
           .find((id) => group.some((row) => row.book_id === id))
           ?? group
             .flatMap((row) => filePathIdentityKeys(row))
             .flatMap((key) => canonicalBookIdsByFilePath.get(key) ?? [])
             .find((id) => !group.some((row) => row.book_id === id));
+        if (crossesGrimmoryProfiles) {
+          logger.warn("Skipped Chaptarr file-path reassignment across Grimmory profiles", { sourceCount: group.length });
+        }
         if (filePathCanonicalId !== undefined) {
           for (const row of group) {
             if (row.book_id !== filePathCanonicalId) {

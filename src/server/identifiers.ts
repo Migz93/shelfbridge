@@ -17,7 +17,7 @@ export function normalizeIsbn(value: string | number | null | undefined): string
   const text = cleanIdentifier(value);
   if (!text) return null;
   const normalized = text.replace(/[\s-]/g, "").replace(/x$/i, "X");
-  return normalized || null;
+  return normalized.length >= 10 ? normalized : null;
 }
 
 export function identifierVariants(value: string | number | null | undefined): string[] {

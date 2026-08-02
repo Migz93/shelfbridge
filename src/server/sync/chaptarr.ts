@@ -419,6 +419,21 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
     let bookId: number | undefined;
     let rejectedIdCandidate: number | undefined;
 
+    // Preserve the mismatch signal even when the local path wins matching. The
+    // path is authoritative for canonical assignment, but a stale Chaptarr
+    // Hardcover ID still needs to be surfaced for review.
+    for (const [label, candidateId] of [["hardcoverBookId", hardcoverBookId], ["foreignBookId", foreignBookId]] as const) {
+      if (!candidateId) continue;
+      const candidate = getIdentifierLookup(byHardcoverId, candidateId);
+      if (candidate !== undefined && !titleMatchesBook(title, candidate)) {
+        rejectedIdCandidate ??= candidate;
+        logger.info(`Chaptarr ${label} match rejected: title mismatch`, {
+          profileId, chaptarrId, chaptarrTitle: title, candidateId,
+          matchedTitle: titleByBookId.get(candidate) ?? null,
+        });
+      }
+    }
+
     // An exact NAS path identifies the actual local file and therefore takes
     // precedence over Chaptarr's upstream IDs. Those IDs can point at a shared
     // work whose ebook and audiobook canonicals are distinct.
@@ -443,7 +458,7 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
       if (candidate !== undefined && titleMatchesBook(title, candidate)) {
         bookId = candidate;
       } else if (candidate !== undefined) {
-        rejectedIdCandidate = candidate;
+        rejectedIdCandidate ??= candidate;
         logger.info("Chaptarr hardcoverBookId match rejected: title mismatch", {
           profileId, chaptarrId, chaptarrTitle: title, hardcoverBookId,
           matchedTitle: titleByBookId.get(candidate) ?? null,
