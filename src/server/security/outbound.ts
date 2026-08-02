@@ -25,10 +25,6 @@ export function validateIntegrationUrl(value: unknown): string {
   if (url.username || url.password) {
     throw new UnsafeIntegrationUrlError("Integration URL must not include credentials");
   }
-  if (url.search || url.hash) {
-    throw new UnsafeIntegrationUrlError("Integration URL must not include a query or fragment");
-  }
-
   return url.toString().replace(/\/$/, "");
 }
 

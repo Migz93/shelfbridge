@@ -7,8 +7,8 @@ test("integration URLs allow normal LAN HTTP endpoints", () => {
   assert.equal(validateIntegrationUrl("https://books.example.test"), "https://books.example.test");
 });
 
-test("integration URLs reject invalid schemes, credentials, query strings, fragments, and non-strings", () => {
-  for (const value of ["ftp://example.test", "https://user:pass@example.test", "/api/v1", "https://example.test?token=value", "https://example.test#section", null, 42]) {
+test("integration URLs reject invalid schemes, credentials, and non-strings", () => {
+  for (const value of ["ftp://example.test", "https://user:pass@example.test", "/api/v1", null, 42]) {
     assert.throws(() => validateIntegrationUrl(value), UnsafeIntegrationUrlError);
   }
 });
