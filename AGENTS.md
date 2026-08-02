@@ -398,6 +398,10 @@ coderabbit review --agent --base develop
 For the `develop` → `main` release PR, use `--base main`. Pass `-c AGENTS.md` to
 give the reviewer this file as context.
 
+**Runs are slow and silent.** A review can take 10–15 minutes with no output —
+it looks stuck, but it's working. Check in every 5 minutes; if nothing has
+happened after 30 minutes, tell the user.
+
 **Budget: two CLI reviews per changeset.** After the second one on the same
 branch, the agent must stop and ask before running another:
 
