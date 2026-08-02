@@ -270,6 +270,26 @@ test("reconcileBookIdentities does not reassign Chaptarr by a path shared across
   }
 });
 
+test("reconcileBookIdentities does not reassign Chaptarr by a path shared across Audiobookshelf profiles", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const firstProfile = seedProfile(db, "First");
+    const secondProfile = seedProfile(db, "Second");
+    const oldBookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Chaptarr record')").run().lastInsertRowid);
+    const firstBookId = Number(db.prepare("INSERT INTO books (title) VALUES ('First profile record')").run().lastInsertRowid);
+    const secondBookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Second profile record')").run().lastInsertRowid);
+    const path = "/library/shared-audio-path.m4b";
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type, audiobookshelf_file_path) VALUES (?, 'audiobookshelf', ?, '1', 'First profile record', 'audiobook', ?)").run(firstBookId, firstProfile, path);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type, audiobookshelf_file_path) VALUES (?, 'audiobookshelf', ?, '1', 'Second profile record', 'audiobook', ?)").run(secondBookId, secondProfile, path);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type, chaptarr_primary_file_path) VALUES (?, 'chaptarr', 0, 'chap', 'Chaptarr record', 'audiobook', ?)").run(oldBookId, path);
+
+    reconcileBookIdentities(db);
+
+    const chaptarr = db.prepare("SELECT book_id FROM book_sources WHERE source_type = 'chaptarr'").get() as { book_id: number };
+    assert.equal(chaptarr.book_id, oldBookId);
+  } finally { cleanup(); }
+});
+
 test("reconcileBookIdentities bridges a Goodreads ISBN despite a stale Grimmory Goodreads ID when the local path corroborates it", () => {
   const { db, cleanup } = createTestDatabase();
   try {

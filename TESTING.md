@@ -71,6 +71,7 @@ section with hubarr's Playwright section, modified to suit.
 | Cross-profile path isolation | A shared global Chaptarr path cannot merge unrelated Grimmory instances from different profiles |
 | Cross-profile Goodreads bridge isolation | Corroborated Chaptarr/Goodreads bridging is skipped when the same path belongs to multiple Grimmory instances |
 | Cross-profile Chaptarr reassignment isolation | A global Chaptarr path cannot reassign to a canonical record when multiple Grimmory instances share that path |
+| Cross-profile ABS reassignment isolation | A global Chaptarr path cannot reassign to a canonical record when multiple Audiobookshelf profiles share that path |
 | Chaptarr reassignment state preservation | User state is retained when a cross-profile Chaptarr path makes reassignment unsafe |
 
 ### `tests/server/settings.test.ts` — App settings

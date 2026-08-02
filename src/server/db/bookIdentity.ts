@@ -465,17 +465,17 @@ export function reconcileBookIdentities(db: Database.Database): void {
       .map((r) => r.book_id!)
   );
   const canonicalBookIdsByFilePath = new Map<IdentityKey, number[]>();
-  const grimmoryInstancesByCanonicalFilePath = new Map<IdentityKey, Set<number | null>>();
+  const scopedInstancesByCanonicalFilePath = new Map<IdentityKey, Set<number | null>>();
   for (const row of rows) {
     if (row.source_type === "chaptarr" || row.book_id === null || !bookIdsReferencedByNonChaptarr.has(row.book_id)) continue;
     for (const key of filePathIdentityKeys(row)) {
       const ids = canonicalBookIdsByFilePath.get(key) ?? [];
       if (!ids.includes(row.book_id)) ids.push(row.book_id);
       canonicalBookIdsByFilePath.set(key, ids);
-      if (row.source_type === "grimmory") {
-        const instances = grimmoryInstancesByCanonicalFilePath.get(key) ?? new Set<number | null>();
+      if (row.source_type === "grimmory" || row.source_type === "audiobookshelf") {
+        const instances = scopedInstancesByCanonicalFilePath.get(key) ?? new Set<number | null>();
         instances.add(row.source_instance_id);
-        grimmoryInstancesByCanonicalFilePath.set(key, instances);
+        scopedInstancesByCanonicalFilePath.set(key, instances);
       }
     }
   }
@@ -892,18 +892,18 @@ export function reconcileBookIdentities(db: Database.Database): void {
         // proven canonical record without collapsing the ebook and audiobook
         // records into each other.
         const groupFilePathKeys = group.flatMap((row) => filePathIdentityKeys(row));
-        const crossesGrimmoryProfiles = groupFilePathKeys.some(
-          (key) => (grimmoryInstancesByCanonicalFilePath.get(key)?.size ?? 0) > 1
+        const crossesScopedProfiles = groupFilePathKeys.some(
+          (key) => (scopedInstancesByCanonicalFilePath.get(key)?.size ?? 0) > 1
         );
-        const filePathCanonicalId = crossesGrimmoryProfiles ? undefined : groupFilePathKeys
+        const filePathCanonicalId = crossesScopedProfiles ? undefined : groupFilePathKeys
           .flatMap((key) => canonicalBookIdsByFilePath.get(key) ?? [])
           .find((id) => group.some((row) => row.book_id === id))
           ?? group
             .flatMap((row) => filePathIdentityKeys(row))
             .flatMap((key) => canonicalBookIdsByFilePath.get(key) ?? [])
             .find((id) => !group.some((row) => row.book_id === id));
-        if (crossesGrimmoryProfiles) {
-          logger.warn("Skipped Chaptarr file-path reassignment across Grimmory profiles", { sourceCount: group.length });
+        if (crossesScopedProfiles) {
+          logger.warn("Skipped Chaptarr file-path reassignment across scoped source profiles", { sourceCount: group.length });
         }
         if (filePathCanonicalId !== undefined) {
           for (const row of group) {

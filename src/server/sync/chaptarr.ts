@@ -430,8 +430,8 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
         titleValidatedIdCandidates.add(candidate);
       } else if (candidate !== undefined) {
         rejectedIdCandidate ??= candidate;
-        logger.info(`Chaptarr ${label} match rejected: title mismatch`, {
-          profileId, chaptarrId, chaptarrTitle: title, candidateId,
+        logger.info("Chaptarr upstream ID match rejected: title mismatch", {
+          profileId, chaptarrId, label, chaptarrTitle: title, candidateId,
           matchedTitle: titleByBookId.get(candidate) ?? null,
         });
       }
