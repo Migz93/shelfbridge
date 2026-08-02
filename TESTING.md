@@ -69,6 +69,7 @@ section with hubarr's Playwright section, modified to suit.
 | File-path media separation | Ebook and audiobook Chaptarr path matches join only their matching format canonical |
 | File-path ID precedence | An exact Grimmory/Chaptarr path keeps local records together after a Goodreads edition ID is repaired |
 | Cross-profile path isolation | A shared global Chaptarr path cannot merge unrelated Grimmory instances from different profiles |
+| Cross-profile Goodreads bridge isolation | Corroborated Chaptarr/Goodreads bridging is skipped when the same path belongs to multiple Grimmory instances |
 | Chaptarr reassignment state preservation | User state moves before stale Chaptarr-only books are deleted |
 
 ### `tests/server/settings.test.ts` — App settings
@@ -81,11 +82,11 @@ Table-driven coverage of `computeSyncDecision` for every `conflict_strategy` (`l
 
 ### `tests/server/pruning.test.ts` — Pruning
 
-Each `prune*UserStatesMissingFromFetch` / `prune*SourcesMissingFromFetch` helper, checked for: only pruning the calling profile's own rows (never another profile's), never pruning a source with live user state, pruning a complete empty snapshot, and preserving all rows for partial or failed snapshots.
+Each `prune*UserStatesMissingFromFetch` / `prune*SourcesMissingFromFetch` helper, checked for: only pruning the calling profile's own rows (never another profile's), preserving state while a book still has another live source row, never pruning a source with live user state, pruning a complete empty snapshot, and preserving all rows for partial or failed snapshots.
 
 ### `tests/server/normalization.test.ts` — Title/date helpers
 
-`normalizeTitle`, `normalizeSeriesNumber`, `newerSource`, `shouldGoodreadsOverwriteGrimmory`.
+`normalizeTitle`, `normalizeSeriesNumber`, ISBN-10 check-digit normalization, `newerSource`, `shouldGoodreadsOverwriteGrimmory`.
 
 ### `tests/server/concurrency.test.ts` — Bounded work queues
 

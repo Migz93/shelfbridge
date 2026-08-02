@@ -201,6 +201,28 @@ test("reconcileBookIdentities does not bridge one Chaptarr path across Grimmory 
   }
 });
 
+test("reconcileBookIdentities does not use a Goodreads bridge across colliding Grimmory profiles", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const firstProfile = seedProfile(db, "First");
+    const secondProfile = seedProfile(db, "Second");
+    const firstBookId = Number(db.prepare("INSERT INTO books (title) VALUES ('First book')").run().lastInsertRowid);
+    const secondBookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Second book')").run().lastInsertRowid);
+    const path = "/library/colliding-path.epub";
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type) VALUES (?, 'goodreads', ?, 'edition', 'First book', 'book')").run(firstBookId, firstProfile);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type, source_goodreads_edition_id, chaptarr_primary_file_path) VALUES (?, 'chaptarr', 0, 'chap', 'First book', 'book', 'edition', ?)").run(firstBookId, path);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type, grimmory_primary_file_path) VALUES (?, 'grimmory', ?, '1', 'First book', 'book', ?)").run(firstBookId, firstProfile, path);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type, grimmory_primary_file_path) VALUES (?, 'grimmory', ?, '1', 'Second book', 'book', ?)").run(secondBookId, secondProfile, path);
+
+    reconcileBookIdentities(db);
+
+    const secondGrimmory = db.prepare("SELECT book_id FROM book_sources WHERE source_type = 'grimmory' AND source_instance_id = ?").get(secondProfile) as { book_id: number };
+    assert.equal(secondGrimmory.book_id, secondBookId);
+  } finally {
+    cleanup();
+  }
+});
+
 test("reconcileBookIdentities moves state before deleting a reassigned Chaptarr-only book", () => {
   const { db, cleanup } = createTestDatabase();
   try {

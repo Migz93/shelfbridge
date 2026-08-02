@@ -638,6 +638,7 @@ export function BookDetailPage() {
   }
 
   async function dismissDuplicate(duplicateId: number) {
+    if (dismissingDuplicateId !== null || mergingDuplicateId !== null) return;
     setDismissingDuplicateId(duplicateId);
     setDuplicateError(null);
     try {
@@ -652,6 +653,7 @@ export function BookDetailPage() {
   }
 
   function requestDuplicateAction(duplicateId: number, action: "dismiss" | "merge") {
+    if (dismissingDuplicateId !== null || mergingDuplicateId !== null) return;
     if (confirmingDuplicateAction?.id !== duplicateId || confirmingDuplicateAction.action !== action) {
       setConfirmingDuplicateAction({ id: duplicateId, action });
       return;
@@ -662,6 +664,7 @@ export function BookDetailPage() {
   }
 
   async function mergeDuplicate(duplicateId: number) {
+    if (dismissingDuplicateId !== null || mergingDuplicateId !== null) return;
     setMergingDuplicateId(duplicateId);
     setDuplicateError(null);
     try {

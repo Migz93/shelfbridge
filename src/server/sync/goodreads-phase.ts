@@ -23,7 +23,15 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
     const goodreadsBooks = await adapters.fetchAllGoodreadsBooks(goodreadsUserId, goodreadsShelves);
     logger.info("Goodreads library fetched", { profileId, count: goodreadsBooks.length, shelfFilter: goodreadsSyncShelfName });
 
-    pruneGoodreadsUserStatesMissingFromFetch(db, profileId, new Set(goodreadsBooks.map((b: any) => b.goodreadsId)), "complete");
+    // A selected shelf is intentionally only a subset of the Goodreads library.
+    // It may enrich the selected books, but it must never prune state for books
+    // on the user's other shelves.
+    pruneGoodreadsUserStatesMissingFromFetch(
+      db,
+      profileId,
+      new Set(goodreadsBooks.map((b: any) => b.goodreadsId)),
+      goodreadsSyncShelfName ? "partial" : "complete"
+    );
 
     // Build lookup indexes from existing book_sources and user_book_states for matching
     type LinkLookup = { book_id: number; ustate_id: number | null };

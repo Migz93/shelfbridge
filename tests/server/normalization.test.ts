@@ -27,6 +27,7 @@ test("normalizeIsbn ignores conventional separators", () => {
   assert.equal(normalizeIsbn("978-1-4028-9462-6"), "9781402894626");
   assert.equal(normalizeIsbn("0 306 40615 2"), "0306406152");
   assert.equal(normalizeIsbn("  "), null);
+  assert.equal(normalizeIsbn("0-8044-2957-x"), "080442957X");
 });
 
 test("newerSource returns whichever timestamp is later, or null when either side is missing", () => {

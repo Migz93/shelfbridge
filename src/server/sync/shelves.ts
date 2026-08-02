@@ -9,6 +9,7 @@ type Db = ReturnType<typeof getDb>;
 // Some supported SQLite builds retain the historical 999-variable limit. The
 // reverse shelf query binds an ID list twice, so leave room for its fixed args.
 const SQLITE_ID_BATCH_SIZE = 400;
+const MAX_GOODREADS_SHELF_PAGES = 200;
 
 function batches<T>(values: readonly T[]): T[][] {
   const result: T[][] = [];
@@ -67,12 +68,12 @@ export async function syncGoodreadsShelvesToGrimmory(
 
   for (const mapping of mappings) {
     const shelfName = mapping.source_list_name;
-    let grimmoryBookIds: number[] = [];
+    const grimmoryBookIdSet = new Set<number>();
 
     try {
       let page = 1;
       let hasMore = true;
-      while (hasMore) {
+      while (hasMore && page <= MAX_GOODREADS_SHELF_PAGES) {
         const { books, hasMore: more } = await adapters.fetchShelfPage(goodreadsUserId, shelfName, page);
         for (const book of books) {
           let gId: number | undefined;
@@ -83,17 +84,21 @@ export async function syncGoodreadsShelvesToGrimmory(
           else if (isbn13 && grimmoryByIsbn13[isbn13]) gId = grimmoryByIsbn13[isbn13];
           else if (isbn10 && grimmoryByIsbn10[isbn10]) gId = grimmoryByIsbn10[isbn10];
           else { const norm = normalizeTitle(book.title); if (norm && grimmoryByTitle[norm]) gId = grimmoryByTitle[norm]; }
-          if (gId && !grimmoryBookIds.includes(gId)) grimmoryBookIds.push(gId);
+          if (gId) grimmoryBookIdSet.add(gId);
         }
         hasMore = more;
         page++;
         if (hasMore) await new Promise((r) => setTimeout(r, 300));
+      }
+      if (hasMore) {
+        logger.warn("Stopped Goodreads shelf pagination at the safety limit", { profileId, shelfName, maxPages: MAX_GOODREADS_SHELF_PAGES });
       }
     } catch (err) {
       logger.warn("Failed to fetch Goodreads shelf books for mapping", { profileId, shelfName, error: err });
       continue;
     }
 
+    const grimmoryBookIds = [...grimmoryBookIdSet];
     if (grimmoryBookIds.length === 0) {
       logger.info("No matched Grimmory books for Goodreads shelf", { profileId, shelfName, grimmoryShelfName: mapping.grimmory_shelf_name });
     }
@@ -140,7 +145,7 @@ export async function syncGoodreadsShelvesToGrimmory(
 
     // Record Grimmory shelf membership on user_book_states
     const allOnShelf = [...new Set([...currentIds, ...toAdd])];
-    if (allOnShelf.length > 0 && !dryRun) {
+    if (allOnShelf.length > 0 && !dryRun && !mapping.grimmory_shelf_name.includes(",")) {
       const grimmoryShelfName = mapping.grimmory_shelf_name;
       for (const ids of batches(allOnShelf)) {
         const shelfPlaceholders = ids.map(() => "?").join(",");
@@ -157,6 +162,8 @@ export async function syncGoodreadsShelvesToGrimmory(
           )
         `).run(grimmoryShelfName, grimmoryShelfName, grimmoryShelfName, profileId, profileId, ...ids);
       }
+    } else if (allOnShelf.length > 0 && !dryRun) {
+      logger.warn("Skipped comma-delimited shelf membership cache for shelf name containing a comma", { profileId, shelfName: mapping.grimmory_shelf_name });
     }
   }
 }
@@ -265,7 +272,7 @@ export async function syncListsToShelves(
     }
 
     const allOnShelf = [...new Set([...currentIds, ...toAdd])];
-    if (allOnShelf.length > 0 && !dryRun) {
+    if (allOnShelf.length > 0 && !dryRun && !mapping.grimmory_shelf_name.includes(",")) {
       const shelfName = mapping.grimmory_shelf_name;
       for (const ids of batches(allOnShelf)) {
         const shelfPlaceholders = ids.map(() => "?").join(",");
@@ -282,6 +289,8 @@ export async function syncListsToShelves(
           )
         `).run(shelfName, shelfName, shelfName, profileId, profileId, ...ids);
       }
+    } else if (allOnShelf.length > 0 && !dryRun) {
+      logger.warn("Skipped comma-delimited shelf membership cache for shelf name containing a comma", { profileId, shelfName: mapping.grimmory_shelf_name });
     }
 
     if (currentIds.length === 0) continue;

@@ -23,13 +23,22 @@ export function pruneGoodreadsUserStatesMissingFromFetch(db: Db, profileId: numb
 function pruneUserStates(db: Db, profileId: number, sourceType: string, fetchedIds: Set<string | number>, snapshotStatus: SourceSnapshotStatus, sourceIdSql: string, sourceName: string): void {
   if (!canPruneSnapshot(profileId, sourceName, fetchedIds.size, snapshotStatus)) return;
   stageFetchedIds(db, fetchedIds);
+  const staleSourceIdSql = sourceIdSql.replace("external_id", "stale_source.external_id");
+  const liveSourceIdSql = sourceIdSql.replace("external_id", "live_source.external_id");
   const result = db.prepare(`
     DELETE FROM user_book_states
     WHERE profile_id = ? AND source_type = ? AND book_id IN (
-      SELECT book_id FROM book_sources
-      WHERE source_type = ? AND source_instance_id = ? AND CAST(${sourceIdSql} AS TEXT) NOT IN (SELECT id FROM shelfbridge_fetched_ids)
+      SELECT book_id FROM book_sources AS stale_source
+      WHERE stale_source.source_type = ? AND stale_source.source_instance_id = ?
+        AND CAST(${staleSourceIdSql} AS TEXT) NOT IN (SELECT id FROM shelfbridge_fetched_ids)
+        AND NOT EXISTS (
+          SELECT 1 FROM book_sources AS live_source
+          WHERE live_source.book_id = stale_source.book_id
+            AND live_source.source_type = ? AND live_source.source_instance_id = ?
+            AND CAST(${liveSourceIdSql} AS TEXT) IN (SELECT id FROM shelfbridge_fetched_ids)
+        )
     )
-  `).run(profileId, sourceType, sourceType, profileId);
+  `).run(profileId, sourceType, sourceType, profileId, sourceType, profileId);
   if (result.changes > 0) logger.info(`Pruned ${sourceName} user states missing from fetched library`, { profileId, deleted: result.changes });
 }
 

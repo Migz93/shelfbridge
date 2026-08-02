@@ -102,6 +102,24 @@ test("pruneHardcoverUserStatesMissingFromFetch removes this profile's stale HC u
   }
 });
 
+test("pruneHardcoverUserStatesMissingFromFetch preserves state when the same book has another live HC source", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const bookId = insertBook(db, "Multi-source book");
+    insertBookSource(db, bookId, "hardcover", profileId, "111");
+    insertBookSource(db, bookId, "hardcover", profileId, "222");
+    insertUserState(db, bookId, profileId, "hardcover");
+
+    pruneHardcoverUserStatesMissingFromFetch(db, profileId, new Set([111]), "complete");
+
+    const remaining = db.prepare("SELECT COUNT(*) AS count FROM user_book_states WHERE book_id = ? AND source_type = 'hardcover'").get(bookId) as { count: number };
+    assert.equal(remaining.count, 1);
+  } finally {
+    cleanup();
+  }
+});
+
 test("pruneGrimmorySourcesMissingFromFetch and pruneGrimmoryUserStatesMissingFromFetch mirror the Hardcover behavior", () => {
   const { db, cleanup } = createTestDatabase();
   try {
