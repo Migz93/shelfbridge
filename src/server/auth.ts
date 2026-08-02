@@ -153,20 +153,11 @@ const loginIpLimiter = rateLimit({
   skipSuccessfulRequests: true,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: "Too many login attempts. Try again later." }
-});
-
-const loginUsernameLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: 5,
-  skipSuccessfulRequests: true,
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req) => {
-    const username = typeof req.body?.username === "string" ? req.body.username.trim().toLowerCase() : "";
-    return crypto.createHash("sha256").update(username).digest("hex");
+  message: { error: "Too many login attempts. Try again later." },
+  handler: (_req, res, _next, options) => {
+    logger.warn("ShelfBridge login rate limit exceeded", { limiter: "ip" });
+    res.status(options.statusCode).send(options.message);
   },
-  message: { error: "Too many login attempts. Try again later." }
 });
 
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
@@ -211,7 +202,7 @@ export function registerAuthRoutes(router: Router): void {
     res.json({ authenticated: true });
   });
 
-  router.post("/auth/login", loginIpLimiter, loginUsernameLimiter, async (req, res) => {
+  router.post("/auth/login", loginIpLimiter, async (req, res) => {
     const passwordHash = getSetting("auth.passwordHash", "");
     const passwordSalt = getSetting("auth.passwordSalt", "");
     const password = typeof req.body?.password === "string" ? req.body.password : "";

@@ -5,7 +5,10 @@ export class UnsafeIntegrationUrlError extends Error {
   }
 }
 
-export function validateIntegrationUrl(value: string): string {
+export function validateIntegrationUrl(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new UnsafeIntegrationUrlError("Integration URL must be a valid absolute URL");
+  }
   const input = value.trim();
   if (!input) return "";
 
@@ -21,6 +24,9 @@ export function validateIntegrationUrl(value: string): string {
   }
   if (url.username || url.password) {
     throw new UnsafeIntegrationUrlError("Integration URL must not include credentials");
+  }
+  if (url.search || url.hash) {
+    throw new UnsafeIntegrationUrlError("Integration URL must not include a query or fragment");
   }
 
   return url.toString().replace(/\/$/, "");

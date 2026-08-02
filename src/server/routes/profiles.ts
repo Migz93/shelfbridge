@@ -247,6 +247,7 @@ router.patch("/:id", (req, res) => {
       db.prepare(`INSERT INTO grimmory_connections (profile_id, username, password, base_url) VALUES (?, ?, ?, ?)`)
         .run(id, g.username ?? "", g.password ?? "", g.baseUrl === undefined ? "" : validateIntegrationUrl(g.baseUrl));
     }
+    logger.info("Updated Grimmory connection", { profileId: id });
   }
 
   if (body.hardcover) {
@@ -278,6 +279,7 @@ router.patch("/:id", (req, res) => {
       `).run(id, h.apiToken ?? "", h.syncListId ? String(h.syncListId) : null, h.syncListName?.trim() || null, h.targetShelfName?.trim() || null);
     }
     }
+    logger.info("Updated Hardcover connection", { profileId: id });
   }
 
   if (body.goodreads) {
@@ -325,6 +327,7 @@ router.patch("/:id", (req, res) => {
           INSERT INTO audiobookshelf_connections (profile_id, api_key) VALUES (?, ?)
         `).run(id, abs.apiKey);
       }
+      logger.info("Updated Audiobookshelf connection", { profileId: id });
     }
   }
 

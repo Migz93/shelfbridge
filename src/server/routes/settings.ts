@@ -66,6 +66,7 @@ router.patch("/", (req, res) => {
     if (body.audiobookshelf?.baseUrl !== undefined) validateIntegrationUrl(body.audiobookshelf.baseUrl);
   } catch (error) {
     if (error instanceof UnsafeIntegrationUrlError) {
+      logger.warn("Rejected unsafe integration URL update", { error: error.message });
       res.status(400).json({ error: error.message });
       return;
     }
