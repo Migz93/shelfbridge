@@ -78,6 +78,21 @@ section with hubarr's Playwright section, modified to suit.
 
 `getSetting`/`setSetting` fallback and round-trip behaviour.
 
+### `tests/server/auth.test.ts` — Authentication sessions
+
+| Test | What it checks |
+|---|---|
+| Malformed cookie | Invalid percent-encoding is treated as unauthenticated input rather than throwing |
+| Hashed session storage | The database contains only a SHA-256 session-token hash with a numeric expiry |
+| Secure cookie | HTTPS requests receive a `Secure` session cookie |
+
+### `tests/server/outbound.test.ts` — Outbound integration requests
+
+| Test | What it checks |
+|---|---|
+| URL validation | HTTP/HTTPS LAN URLs work; relative URLs, non-HTTP schemes, and embedded credentials are rejected |
+| Redirect handling | Integration requests disable automatic redirects |
+
 ### `tests/server/sync-decision.test.ts` — Sync decision table
 
 Table-driven coverage of `computeSyncDecision` for every `conflict_strategy` (`latest_wins`, `grimmory_wins`, `hardcover_wins`) across: no Grimmory match, status sync disabled, already synced, one side changed, both sides changed, steady-state conflicts with and without timestamps, and one-sided statuses with/without a valid cross-source mapping.
@@ -152,7 +167,7 @@ Adapters not relevant to a given test are left unimplemented via `createFakeAdap
 - No coverage yet for Goodreads/Chaptarr/Audiobookshelf sync paths or shelf/list syncing.
 - The Grimmory cover-caching path (`cacheGrimmoryCover` in `engine.ts`) makes a real `fetch()` call outside the adapter seam — `sync-engine.test.ts` stubs `globalThis.fetch` globally so it never hits the network, but the cover-caching logic itself has no dedicated test coverage.
 - No forced mid-transaction failure test for `reconcileBookIdentities`'s rollback behaviour.
-- No auth/session-expiry tests.
+- No expired-session cleanup or expiry-boundary coverage.
 
 ---
 

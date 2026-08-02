@@ -18,7 +18,6 @@ It connects Grimmory, Hardcover, Goodreads, Chaptarr, and Audiobookshelf through
 - Matches books across services using IDs, ISBNs, ASINs, file paths, titles, authors, and stored cross-references
 - Highlights missing matches, ID mismatches, probable duplicates, and download/review actions
 - Writes selected status, progress, shelf, tag, and external ID updates back to supported services
-- Stores third-party credentials encrypted at rest in the app data directory
 
 ## Preview
 
@@ -44,7 +43,6 @@ Filter by source, profile, and reading status. Each book shows which services it
 - Goodreads shelf import into Grimmory shelves
 - Hardcover list import into Grimmory shelves
 - Manual sync runs, scheduled sync jobs, sync history, and log viewer
-- AES-256-GCM credential storage for API keys, tokens, and passwords
 - Reverse proxy support with a Trust Proxy setting for forwarded client IPs
 
 ## How It Works
@@ -107,7 +105,7 @@ docker compose up -d
 ShelfBridge is configured through its web UI after first run. The main things you may want to adjust in your Docker setup before starting:
 
 - **Port** — change the left side of `9303:9303` to expose ShelfBridge on a different host port (e.g. `8080:9303`)
-- **Data directory** — change the left side of `/opt/shelfbridge:/config` to store ShelfBridge's database, logs, credential key, and image cache wherever you prefer on your host
+- **Data directory** — change the left side of `/opt/shelfbridge:/config` to store ShelfBridge's database, logs, and image cache wherever you prefer on your host
 - **Timezone** — set `TZ` to your preferred timezone if you do not want UTC
 
 If ShelfBridge is served through a reverse proxy such as Nginx, Traefik, or Caddy, enable **Settings → General → Network → Trust Proxy** and restart the container so rate limiting uses the real client IP from forwarded headers.

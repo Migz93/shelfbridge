@@ -1,8 +1,8 @@
 import { getDb, getSetting } from "../db/index.js";
 import { logger } from "../logger.js";
 import { identifierVariants, normalizeExternalId } from "../identifiers.js";
-import { decryptCredential } from "../security/credentials.js";
 import { mapWithConcurrency } from "./concurrency.js";
+import { fetchIntegration } from "../security/outbound.js";
 
 const DEFAULT_BOOKFILE_CONCURRENCY = 5;
 const MAX_BOOKFILE_CONCURRENCY = 10;
@@ -16,7 +16,7 @@ function bookfileConcurrency(): number {
 
 async function chaptarrGet<T>(baseUrl: string, apiKey: string, path: string): Promise<T> {
   const url = `${baseUrl.replace(/\/$/, "")}${path}`;
-  const res = await fetch(url, {
+  const res = await fetchIntegration(url, {
     headers: { "X-Api-Key": apiKey },
     signal: AbortSignal.timeout(20_000),
   });
@@ -144,7 +144,7 @@ function chaptarrBookHasFile(book: Record<string, unknown>, filePaths: string[] 
  */
 export async function syncChaptarrStatus(profileId: number): Promise<void> {
   const baseUrl = getSetting("chaptarr.baseUrl", "");
-  const apiKey = decryptCredential(getSetting("chaptarr.apiKey", ""));
+  const apiKey = getSetting("chaptarr.apiKey", "");
 
   if (!baseUrl || !apiKey) {
     logger.info("Chaptarr not configured, skipping status pass", { profileId });

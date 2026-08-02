@@ -14,7 +14,6 @@ import type {
 } from "../../shared/types.js";
 import { getGrimmoryToken, writeGrimmoryExternalIds } from "../sync/grimmory.js";
 import { logger } from "../logger.js";
-import { decryptCredential } from "../security/credentials.js";
 import { reconcileBookIdentities } from "../db/bookIdentity.js";
 import { normalizeExternalId, identifiersEqual } from "../identifiers.js";
 
@@ -1092,9 +1091,9 @@ router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
   try {
     const resolvedPlans: Array<{ plan: typeof plans[number]; baseUrl: string; token: string; grimmoryLocalId: number }> = [];
     for (const plan of plans) {
-      const connection = db.prepare("SELECT base_url, username, encrypted_password FROM grimmory_connections WHERE profile_id = ?").get(plan.profileId) as { base_url: string; username: string; encrypted_password: string } | undefined;
+      const connection = db.prepare("SELECT base_url, username, password FROM grimmory_connections WHERE profile_id = ?").get(plan.profileId) as { base_url: string; username: string; password: string } | undefined;
       const baseUrl = connection?.base_url?.trim() || getSetting("grimmory.baseUrl", "");
-      const password = decryptCredential(connection?.encrypted_password);
+      const password = connection?.password;
       if (!baseUrl || !connection?.username || !password) { res.status(400).json({ error: "Grimmory connection is not configured" }); return; }
       const token = await getGrimmoryToken(baseUrl, connection.username, password);
       if (!token) { res.status(502).json({ error: "Could not authenticate with Grimmory" }); return; }
@@ -1194,13 +1193,13 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
 
   // Grimmory connection is per-profile
   const gc = db.prepare(`
-    SELECT base_url, username, encrypted_password
+    SELECT base_url, username, password
     FROM grimmory_connections WHERE profile_id = ?
-  `).get(profileId) as { base_url: string; username: string; encrypted_password: string } | undefined;
+  `).get(profileId) as { base_url: string; username: string; password: string } | undefined;
 
   const baseUrl = gc?.base_url?.trim() || getSetting("grimmory.baseUrl", "");
   const username = gc?.username;
-  const password = decryptCredential(gc?.encrypted_password);
+  const password = gc?.password;
   if (!baseUrl || !username || !password) {
     res.status(400).json({ error: "Grimmory connection is not configured" });
     return;

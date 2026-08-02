@@ -1,8 +1,8 @@
 import { getDb, getSetting } from "../db/index.js";
 import { logger } from "../logger.js";
 import { ensureCoverCached, getCachedCoverPath, storeFetchedCover } from "../image-cache.js";
-import { decryptCredential } from "../security/credentials.js";
 import { getGrimmoryToken } from "./grimmory.js";
+import { fetchIntegration } from "../security/outbound.js";
 
 type Db = ReturnType<typeof getDb>;
 const MAX_COVER_BYTES = 20 * 1024 * 1024;
@@ -25,7 +25,7 @@ async function fetchGrimmoryCoverFromPath(baseUrl: string, token: string, grimmo
   const timeout = setTimeout(() => { controller.abort(); rejectTimeout(new Error("Grimmory cover download timed out")); }, 15000);
   try {
     return await Promise.race([(async () => {
-      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal });
+      const res = await fetchIntegration(url, { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal });
       if (!res.ok) { logger.warn("Grimmory cover fetch non-OK", { grimmoryBookId, status: res.status, url }); return null; }
       const reader = res.body?.getReader();
       if (!reader) return null;
@@ -109,14 +109,14 @@ export async function refreshStaleGrimmoryCovers(): Promise<void> {
   for (const [profileId, entries] of groups) {
     try {
       const conn = db.prepare(`
-        SELECT g.base_url, g.username, g.encrypted_password FROM grimmory_connections g
+        SELECT g.base_url, g.username, g.password FROM grimmory_connections g
         JOIN profiles p ON p.id = g.profile_id
-        WHERE g.profile_id = ? AND p.enabled = 1 AND g.username IS NOT NULL AND g.encrypted_password IS NOT NULL
-      `).get(profileId) as { base_url: string | null; username: string; encrypted_password: string } | undefined;
+        WHERE g.profile_id = ? AND p.enabled = 1 AND g.username IS NOT NULL AND g.password IS NOT NULL
+      `).get(profileId) as { base_url: string | null; username: string; password: string } | undefined;
       const baseUrl = conn?.base_url || getSetting("grimmory.baseUrl", "");
       if (!conn || !baseUrl) { logger.warn("ImageCache: no Grimmory connection available for cover refresh", { profileId }); continue; }
-      const password = decryptCredential(conn.encrypted_password);
-      if (!password) { logger.warn("ImageCache: could not decrypt Grimmory password", { profileId }); continue; }
+      const password = conn.password;
+      if (!password) { logger.warn("ImageCache: no Grimmory password available for cover refresh", { profileId }); continue; }
       const token = await getGrimmoryToken(baseUrl, conn.username, password);
       if (!token) { logger.warn("ImageCache: Grimmory login failed, skipping cover refresh", { profileId }); continue; }
       for (const { entity_id, grimmory_book_id } of entries) {

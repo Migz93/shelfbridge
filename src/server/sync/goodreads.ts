@@ -1,5 +1,6 @@
 import type { TestResult } from "../../shared/types.js";
 import { logger } from "../logger.js";
+import { fetchIntegration } from "../security/outbound.js";
 
 export interface GoodreadsBook {
   goodreadsId: string;
@@ -134,7 +135,7 @@ export async function fetchShelfPage(
   page: number
 ): Promise<{ books: GoodreadsBook[]; hasMore: boolean }> {
   const url = `https://www.goodreads.com/review/list_rss/${encodeURIComponent(userId)}?shelf=${encodeURIComponent(shelf)}&per_page=200&page=${page}`;
-  const res = await fetch(url, {
+  const res = await fetchIntegration(url, {
     headers: { "User-Agent": "ShelfBridge/0.1 (book sync app)" },
     signal: AbortSignal.timeout(15000)
   });
@@ -181,7 +182,7 @@ export async function fetchAllGoodreadsBooks(userId: string, shelves?: string[])
       let hasMore = true;
       while (hasMore) {
         const url = `https://www.goodreads.com/review/list_rss/${encodeURIComponent(userId)}?shelf=all&per_page=200&page=${page}`;
-        const res = await fetch(url, {
+        const res = await fetchIntegration(url, {
           headers: { "User-Agent": "ShelfBridge/0.1 (book sync app)" },
           signal: AbortSignal.timeout(15000)
         });
@@ -236,7 +237,7 @@ export async function fetchGoodreadsCustomShelves(userId: string): Promise<strin
     let anyBooks = false;
     while (hasMore) {
       const url = `https://www.goodreads.com/review/list_rss/${encodeURIComponent(userId)}?shelf=${encodeURIComponent(shelf)}&per_page=200&page=${page}`;
-      const res = await fetch(url, {
+      const res = await fetchIntegration(url, {
         headers: { "User-Agent": "ShelfBridge/0.1 (book sync app)" },
         signal: AbortSignal.timeout(15000)
       });
@@ -283,7 +284,7 @@ export async function testGoodreadsUser(userId: string): Promise<TestResult> {
   if (!userId?.trim()) return { ok: false, message: "No user ID provided" };
   try {
     const url = `https://www.goodreads.com/review/list_rss/${encodeURIComponent(userId)}?shelf=read&per_page=1`;
-    const res = await fetch(url, {
+    const res = await fetchIntegration(url, {
       headers: { "User-Agent": "ShelfBridge/0.1 (book sync app)" },
       signal: AbortSignal.timeout(12000)
     });

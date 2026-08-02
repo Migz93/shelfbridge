@@ -1,5 +1,6 @@
 import type { TestResult } from "../../shared/types.js";
 import { logger } from "../logger.js";
+import { fetchIntegration } from "../security/outbound.js";
 
 const HARDCOVER_API = "https://api.hardcover.app/v1/graphql";
 
@@ -53,7 +54,7 @@ export interface HardcoverEdition {
 }
 
 export async function hardcoverQuery<T>(token: string, query: string, variables?: Record<string, unknown>): Promise<T> {
-  const res = await fetch(HARDCOVER_API, {
+  const res = await fetchIntegration(HARDCOVER_API, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
