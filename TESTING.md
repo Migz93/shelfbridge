@@ -33,15 +33,77 @@ test in it seeds its own profile and scopes assertions to that profile's id.
 
 ## Playwright End-To-End Tests
 
-Not implemented yet. Tracked in
-[#59](https://github.com/Migz93/shelfbridge/issues/59).
+ShelfBridge uses [Playwright](https://playwright.dev/) for end-to-end tests, mirroring
+[hubarr](https://github.com/Migz93/hubarr)'s setup. Tests run against a **live, fully
+set-up ShelfBridge instance** — there is no mocking or test database.
 
-When Playwright is added, copy the setup from
-[hubarr](https://github.com/Migz93/hubarr) — `playwright.config.ts`,
-`.env.playwright.example`, `tests/playwright/auth.setup.ts`, and the `test:e2e`
-scripts — and adjust for ShelfBridge: the session cookie is
-`shelfbridge_session` and `BASE_URL` points at port `9303`. Then replace this
-section with hubarr's Playwright section, modified to suit.
+### First-time setup
+
+1. Have a running instance. Docker serves on port `9303`. For a bare local run:
+   ```bash
+   npm run build
+   NODE_ENV=production npm start   # serves on port 3000
+   ```
+
+2. Copy the env template:
+   ```bash
+   cp .env.playwright.example .env.playwright
+   ```
+
+3. Edit `.env.playwright` and set `BASE_URL` to your running instance.
+
+4. Grab your session cookie from the browser:
+   - Open your ShelfBridge instance in Chrome or Firefox and log in
+   - DevTools → Application → Cookies → find `shelfbridge_session`
+   - Copy the **Value** and paste it into `.env.playwright` as `SESSION_COOKIE`
+
+5. Run the tests:
+   ```bash
+   npm run test:e2e
+   ```
+
+   The first run validates the cookie and saves the session to
+   `tests/playwright/.auth/storageState.json` (gitignored). All subsequent runs
+   reuse the saved session automatically.
+
+### Re-authenticating
+
+When your session expires, the auth setup will tell you. Clear the saved session
+and re-run with a fresh cookie:
+
+```bash
+rm tests/playwright/.auth/storageState.json
+# Update SESSION_COOKIE in .env.playwright with a fresh value, then:
+npm run test:e2e
+```
+
+### Generated test files
+
+Playwright-generated files are kept under `tests/` so the repo root stays tidy.
+All are gitignored:
+
+- `tests/playwright/.auth/storageState.json` — saved authenticated session state
+- `tests/test-results/` — Playwright run artifacts
+- `tests/playwright-report/` — Playwright HTML report output
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `npm run test:e2e` | Run all tests (auth check + full suite) |
+| `npm run test:e2e:auth` | Run the auth setup step only |
+
+### Auth note
+
+ShelfBridge uses a local password login, so the cookie-paste step is simpler than
+hubarr's Plex OAuth — but the mechanism is kept identical (`SESSION_COOKIE` env var
+plus saved `storageState.json`) so the config stays comparable across the three apps.
+
+### Adding new tests
+
+Create a `*.spec.ts` file in `tests/playwright/` and it will be picked up
+automatically. The saved session in `storageState.json` is loaded for every test,
+so all tests start already authenticated.
 
 ---
 
@@ -208,7 +270,7 @@ Expected log line:
 ShelfBridge listening on port 9303
 ```
 
-Then open `http://localhost:9303`, create or enter the ShelfBridge admin
+Then open `http://localhost:3000`, create or enter the ShelfBridge admin
 password, and smoke-test:
 
 - Dashboard loads after authentication
