@@ -37,6 +37,13 @@ ShelfBridge uses [Playwright](https://playwright.dev/) for end-to-end tests, mir
 [hubarr](https://github.com/Migz93/hubarr)'s setup. Tests run against a **live, fully
 set-up ShelfBridge instance** — there is no mocking or test database.
 
+Tests are read-only unless a spec file's own doc comment says otherwise. The one
+exception is `jobs.spec.ts`, which triggers the Maintenance job — safe because it
+only prunes rows already past the retention window, with no external side
+effects. Sync and Image Cache Refresh are never triggered this way, since they
+write real data back to Hardcover/Audiobookshelf/Grimmory and to those services'
+APIs respectively.
+
 ### First-time setup
 
 1. Have a running instance. Docker serves on port `9303`. For a bare local run:
@@ -92,6 +99,12 @@ All are gitignored:
 |---|---|
 | `npm run test:e2e` | Run all tests (auth check + full suite) |
 | `npm run test:e2e:auth` | Run the auth setup step only |
+
+If you rerun the suite again immediately after a previous run, you can trip
+ShelfBridge's own rate limiter (600 requests/min globally, 300/min on `/api`) —
+page loads and polling from both runs count against the same rolling window. If
+several unrelated pages suddenly fail to render together, wait about 60 seconds
+and rerun rather than assuming the tests themselves are broken.
 
 ### Auth note
 
@@ -233,6 +246,103 @@ Adapters not relevant to a given test are left unimplemented via `createFakeAdap
 
 ---
 
+### `tests/playwright/pages.spec.ts` — Page smoke tests
+
+Read-only. Safe to run against a live instance.
+
+| Test | What it checks |
+|---|---|
+| Dashboard loads | Navigates to `/dashboard`, asserts the "Dashboard" heading is visible |
+| Books loads | Navigates to `/books`, asserts the "Books" heading is visible |
+| Audiobooks loads | Navigates to `/audiobooks`, asserts the "Audiobooks" heading is visible |
+| Users loads | Navigates to `/users`, asserts the "Users" heading is visible |
+| Sync History loads | Navigates to `/history`, asserts the "Sync History" heading is visible |
+| Settings loads | Navigates to `/settings`, asserts the "Settings" heading is visible |
+| Sidebar navigation links are present | On the dashboard, checks all five nav links exist inside `<nav>` |
+| Sidebar navigation works | Clicks each sidebar link in turn and verifies the URL and page heading update correctly |
+| Unauthenticated request redirects to login | Opens a fresh browser context with no session cookies, navigates to `/dashboard`, expects a redirect to `/login` |
+
+### `tests/playwright/dashboard.spec.ts` — Dashboard UI
+
+Read-only. Safe to run against a live instance.
+
+| Test | What it checks |
+|---|---|
+| Stat chips are visible after load | Asserts the "Books Tracked", "Missing", "Pending Download", and "Needs Review" stat chips render |
+| Books Tracked stat chip links to the books page | Asserts a link to `/books` is present |
+| Missing stat chip links to the filtered books view | Asserts a link to `/books?health=missing` is present |
+| Recently Added section heading is visible | Asserts the "Recently Added" heading renders |
+| Recent Syncs panel is visible and links to history | Asserts the Recent Syncs panel (an `<a>` to `/history`) renders |
+| Run Sync button is present | Asserts the button renders (not clicked — a real click would trigger a live sync) |
+
+### `tests/playwright/books.spec.ts` — Books & Audiobooks filters
+
+Read-only. Safe to run against a live instance.
+
+| Test | What it checks |
+|---|---|
+| Status filter chips are all visible | Verifies the Books status row shows All, To Read, Reading, Read, and DNF |
+| Reading status filter updates the URL | Clicks the Reading chip and verifies `?status=READING` appears in the URL |
+| All status filter clears the status param | Clicks Reading then All, verifies the `status` param is removed |
+| Audiobooks page shows its own status labels | Verifies the Audiobooks status row shows To Listen, Listening, Listened, and DNF |
+
+### `tests/playwright/history.spec.ts` — Sync History filters
+
+Read-only. Safe to run against a live instance.
+
+| Test | What it checks |
+|---|---|
+| Status filter buttons are all visible | Verifies All, Running, Success, and Error render |
+| Page size select is visible | Verifies the page-size selector renders |
+| Success status filter updates the URL | Clicks Success and verifies `?status=success` appears in the URL |
+| All status filter resets the status param to all | Clicks Success then All, verifies `?status=all` |
+
+### `tests/playwright/settings.spec.ts` — Settings sections
+
+Read-only. Safe to run against a live instance.
+
+| Test | What it checks |
+|---|---|
+| Network section shows the Trust Proxy control and its save button | Asserts the section, control, and Save Network button render |
+| Sync Behaviour section shows Startup Sync and conflict strategy controls | Asserts the section and both controls render |
+| History Retention section shows the retention period field | Asserts the section, field, and Save History button render |
+
+### `tests/playwright/api.spec.ts` — API smoke tests
+
+Read-only. Safe to run against a live instance. Uses the `request` fixture (no
+browser) with the stored session cookie applied automatically via
+`storageState`.
+
+| Test | What it checks |
+|---|---|
+| GET /api/health returns 200 | Asserts `{ ok: true }` |
+| GET /api/auth/session returns authenticated session | Asserts `authenticated: true` |
+| GET /api/dashboard returns expected shape | Asserts the response has `stats`, `recentlyAdded`, and `recentActivity`, and that `stats` has the four dashboard counters |
+
+### `tests/playwright/images.spec.ts` — Image cache
+
+Read-only. Safe to run against a live instance. Images are cached at sync time —
+tests log and skip gracefully if nothing has been cached yet.
+
+| Test | What it checks |
+|---|---|
+| /images/ route requires authentication | Opens a fresh context with no session and requests `/images/test.jpg` — expects `401` |
+| Dashboard recently added covers all load | Checks every `img.object-cover[src*='/images/']` on the dashboard has loaded successfully |
+| Books page covers all load | Same check on the Books grid |
+
+### `tests/playwright/jobs.spec.ts` — Live refresh (Jobs)
+
+**Not read-only.** Triggers the real Maintenance job via the API and verifies the
+open Settings page reflects its completion without a reload. See the note at the
+top of the Playwright section for why Maintenance specifically is safe to
+trigger this way.
+
+| Test | What it checks |
+|---|---|
+| Maintenance job runs via Run Now and the Jobs table updates without reload | Clicks Run Now for Maintenance, polls the API until the job completes, then asserts the Jobs table shows the updated status without a page reload |
+
+---
+
 ## Adding New Tests
 
 Which layer to reach for — server test or Playwright — is covered in `AGENTS.md`
@@ -241,9 +351,11 @@ under Tests. Mechanically:
 - **Server tests:** create a `*.test.ts` file under `tests/server/` and it is
   picked up automatically by `npm test`. Use `createTestDatabase()` from
   `test-db.ts` so each test gets a fresh isolated database.
-- **Playwright:** not wired up yet — see
-  [#59](https://github.com/Migz93/shelfbridge/issues/59). Say so rather than
-  substituting a server test for a UI concern.
+- **Playwright:** create a `*.spec.ts` file in `tests/playwright/` and it is picked
+  up automatically. The saved session in `storageState.json` is loaded for every
+  test, so all tests start already authenticated. Keep new tests read-only unless
+  there's a specific, agreed reason not to — see the note at the top of the
+  Playwright section.
 
 When a test is agreed and written, add a row for it in the relevant table above.
 
@@ -270,7 +382,7 @@ Expected log line:
 ShelfBridge listening on port 9303
 ```
 
-Then open `http://localhost:3000`, create or enter the ShelfBridge admin
+Then open `http://localhost:9303`, create or enter the ShelfBridge admin
 password, and smoke-test:
 
 - Dashboard loads after authentication

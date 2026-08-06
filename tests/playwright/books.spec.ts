@@ -45,8 +45,12 @@ test.describe("Books filters", () => {
 
   test("All status filter clears the status param", async ({ page }) => {
     const row = statusRow(page);
-    await row.getByRole("button", { name: chip("Reading") }).click();
-    await expect(page).toHaveURL(/[?&]status=READING/);
+    // Retry the click briefly — on a cold load the chip can render a moment
+    // before its click handler is attached (same race as the Reading test above).
+    await expect(async () => {
+      await row.getByRole("button", { name: chip("Reading") }).click();
+      await expect(page).toHaveURL(/[?&]status=READING/, { timeout: 1000 });
+    }).toPass({ timeout: 10_000 });
     await row.getByRole("button", { name: chip("All") }).click();
     await expect(page).not.toHaveURL(/[?&]status=/);
   });

@@ -64,4 +64,13 @@ test.describe("Page smoke tests", () => {
     await nav.getByRole("link", { name: /settings/i }).click();
     await expect(page).toHaveURL(/\/settings/);
   });
+
+  test("Unauthenticated request redirects to login", async ({ browser }) => {
+    // Fresh context with no session cookies
+    const context = await browser.newContext({ storageState: undefined });
+    const page = await context.newPage();
+    await page.goto("/dashboard");
+    await expect(page).toHaveURL(/\/login/);
+    await context.close();
+  });
 });
