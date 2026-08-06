@@ -28,22 +28,35 @@ if (getSetting("app.trustProxy", "false") === "true") {
   logger.info("Trust proxy enabled — using one trusted proxy hop for client IP identification");
 }
 // The client is a same-origin Vite/React bundle with no inline scripts, but it does use
-// inline `style` attributes and loads Google Fonts via @import, so those need explicit allowances.
+// inline `style` attributes, so that needs an explicit allowance. Fonts are bundled
+// locally (see index.css), so no third-party font host needs to be whitelisted.
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-      fontSrc: ["'self'", "https://fonts.gstatic.com"],
+      styleSrc: ["'self'"],
+      styleSrcAttr: ["'unsafe-inline'"],
+      fontSrc: ["'self'"],
       imgSrc: ["'self'", "data:"],
       connectSrc: ["'self'"],
       objectSrc: ["'none'"],
       baseUri: ["'self'"],
-      frameAncestors: ["'self'"]
+      frameAncestors: ["'self'"],
+      // Disable upgrade-insecure-requests: this app runs over plain HTTP in
+      // the default Docker setup, so this directive would cause browsers to
+      // rewrite HTTP sub-requests to HTTPS and break the UI. Must be set to
+      // null (not deleted) so Helmet's useDefaults logic doesn't re-add it.
+      "upgrade-insecure-requests": null
     }
-  }
+  },
+  // Disable HSTS: not appropriate for a plain-HTTP self-hosted deployment.
+  hsts: false
 }));
+logger.info("Transport security policy configured for plain-HTTP deployment", {
+  upgradeInsecureRequests: false,
+  hsts: false
+});
 app.use(express.json());
 app.use(sessionMiddleware);
 // Applies to every route (including /images and the static/catch-all client routes below),
