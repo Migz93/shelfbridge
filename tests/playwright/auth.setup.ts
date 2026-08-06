@@ -20,7 +20,6 @@ const baseURL = process.env.BASE_URL ?? "http://localhost:9303";
  * The session will be saved to tests/playwright/.auth/storageState.json and
  * reused on every subsequent run. When it expires, repeat steps 2-5.
  */
-/* eslint-disable playwright/no-conditional-in-test -- Auth setup branches around saved-session state and SESSION_COOKIE availability. */
 setup("authenticate", async ({ request }) => {
   // If we already have a saved session, check it's still valid and bound to the current host
   if (fs.existsSync(authFile)) {
@@ -90,7 +89,6 @@ setup("authenticate", async ({ request }) => {
   );
   console.log("  Session saved to", authFile);
 });
-/* eslint-enable playwright/no-conditional-in-test */
 
 function buildCookieHeader(): string {
   if (!fs.existsSync(authFile)) return "";
