@@ -53,6 +53,10 @@ app.use(helmet({
   // Disable HSTS: not appropriate for a plain-HTTP self-hosted deployment.
   hsts: false
 }));
+logger.info("Transport security policy configured for plain-HTTP deployment", {
+  upgradeInsecureRequests: false,
+  hsts: false
+});
 app.use(express.json());
 app.use(sessionMiddleware);
 // Applies to every route (including /images and the static/catch-all client routes below),
