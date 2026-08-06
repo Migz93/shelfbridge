@@ -3,7 +3,7 @@ import fs from "fs";
 import path from "path";
 
 const authFile = "tests/playwright/.auth/storageState.json";
-const baseURL = process.env.BASE_URL ?? "http://localhost:3000";
+const baseURL = process.env.BASE_URL ?? "http://localhost:9303";
 
 /**
  * Auth setup for Playwright tests.
