@@ -126,6 +126,8 @@ so all tests start already authenticated.
 
 | Test | What it checks |
 |---|---|
+| `runTransactionalStep` rollback | A `PRAGMA foreign_key_check` violation rolls back the entire step atomically — the violating row and everything else written in the same step, not just the violation itself |
+| `runGuardedStep` abort-without-rollback | A violation is still detected and thrown, but since `step()` already committed on its own (no transaction), the violating row survives — the documented behavior for steps that can't be one transaction |
 | Fresh database applies migration 1 | `initSchema` on an empty DB reaches `LATEST_MIGRATION_VERSION` via `PRAGMA user_version`, never creates a `schema_version` table, with no foreign-key violations |
 | Idempotent re-run | Running `initSchema` twice makes no further changes |
 | Legacy handover | A pre-existing `schema_version` database is migrated to v14 via the preserved sequential logic, then handed over to `user_version = 1`; verifies `source_instance_id` is added, existing rows survive, Chaptarr is backfilled to instance `0`, per-profile sources are left unscoped, the per-instance unique constraint is enforced, exactly one pre-migration backup was written (not one per step), and the stale `schema_version` table is dropped |

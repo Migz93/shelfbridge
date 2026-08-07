@@ -106,21 +106,37 @@ Schema version is tracked with SQLite's built-in `PRAGMA user_version`, driven b
 a `Migration[]` array in `src/server/db/migrations.ts` — the same pattern Hubarr
 and Pacearr use. Each migration is a `{ version, description, up(db) }` entry;
 `runMigrations()` applies every migration newer than the database's current
-`user_version`, in ascending order, each inside its own transaction so a
-mid-migration failure cannot leave the database partially migrated. Migration 1
-is a single flattened `CREATE TABLE` block, so a fresh install reaches a correct
-schema in one migration.
+`user_version`, in ascending order. Migration 1 is a single flattened
+`CREATE TABLE` block, so a fresh install reaches a correct schema in one migration.
 
 Before applying any pending migration to a database that already has tables,
 `initSchema()` snapshots it once with `VACUUM INTO` into `<data dir>/backups/`
-and threads that path into both the legacy handover (below) and
-`runMigrations()`, so a startup that needs both only pays for one snapshot.
-`backupBeforeMigrating()` also prunes that directory down to the 5 most recent
-backups each time it runs. After each migration commits, `runGuardedStep()` runs
-`PRAGMA foreign_key_check` and aborts startup on any violation — pointing at the
-backup for recovery. `initSchema()` (in `src/server/db/schema.ts`) wires all of
-this up: WAL/foreign-key pragmas, the backup, the legacy handover if needed,
-`runMigrations()`, then `reconcileBookIdentities()`.
+(created owner-only, since a snapshot is a full copy of the database including
+API tokens and passwords) and threads that path into both the legacy handover
+(below) and `runMigrations()`, so a startup that needs both only pays for one
+snapshot. `backupBeforeMigrating()` also prunes that directory down to the 5
+most recent backups each time it runs (best-effort — a prune failure is logged
+and swallowed, never allowed to block startup over a successfully-taken backup).
+`initSchema()` (in `src/server/db/schema.ts`) wires all of this up: WAL/foreign-key
+pragmas, the backup, the legacy handover if needed, `runMigrations()`, then
+`reconcileBookIdentities()`.
+
+**Two guard primitives, chosen by whether a step can be one transaction:**
+
+- `runTransactionalStep(db, label, backupPath, step)` — wraps `step` and a
+  `PRAGMA foreign_key_check` in one transaction, so a violation (or any thrown
+  error) rolls the whole step back atomically. This is the default: every
+  `Migration.up()` applied by `runMigrations()` runs through it, one transaction
+  per migration covering the schema/data changes and the `user_version` bump
+  together.
+- `runGuardedStep(db, label, backupPath, step)` — runs `step`, then checks
+  `PRAGMA foreign_key_check` afterward. Because `step` has already committed by
+  the time the check runs, a violation here can only abort startup with recovery
+  guidance pointing at the backup — it cannot undo anything. Use this only when
+  `step` genuinely cannot be one transaction.
+
+Both log the same way (`logGuardedFailure()`) and both raise a
+`ForeignKeyViolationError` carrying the raw violation rows.
 
 > **Handover from the old `schema_version` table.** Before this pattern, schema
 > version lived in a `schema_version` table with a sequential run of
@@ -128,17 +144,21 @@ this up: WAL/foreign-key pragmas, the backup, the legacy handover if needed,
 > has that table is pre-migrations-pattern: `initSchema()` runs that old sequential
 > logic once (preserved as `legacyMigrateToV14()` in `schema.ts`) to bring it to
 > the v14 shape — which is exactly migration 1 — then drops `schema_version` and
-> sets `user_version = 1`. That step goes through the same backup-then-
-> `foreign_key_check` guard as `runMigrations()` (`runGuardedStep()`, shared by
-> both), so an existing install's handover gets the same crash-safety net as any
-> future migration. Within `legacyMigrateToV14()` itself, every block whose
-> statements aren't independently idempotent (the v7 table rebuild, the bare
-> `ALTER TABLE ADD COLUMN`s in v8/v9) wraps its statements and its `schema_version`
-> bump in one `db.transaction()`, so a crash mid-block rolls back cleanly instead
-> of leaving a half-applied state a retry can't get past — the other blocks are
-> already naturally idempotent (guarded by an existence check, or built entirely
-> from `IF NOT EXISTS`/no-op-on-retry statements) and don't need the same wrapping.
-> A brand-new install has no `schema_version` table and skips straight to
+> sets `user_version = 1`.
+>
+> Protection there is layered, because `legacyMigrateToV14()` is a sequence of
+> independently-committed statements, not one transaction (some of it must run
+> outside a transaction, since it toggles `PRAGMA foreign_keys`, which is a no-op
+> once a transaction is open). Its v7/v8/v9/v14 sub-steps — the ones that rebuild
+> tables or add columns without an existence check — each run through
+> `runTransactionalStep()` individually, so a crash or FK regression in one of
+> them rolls back just that step. The other sub-steps (v3, v5, v6, v10–v13) are
+> already naturally idempotent (existence-check guarded, or built from statements
+> that are no-ops on retry) and don't need it. The whole `legacyMigrateToV14()`
+> call is additionally wrapped in `runGuardedStep()` as a backstop, catching
+> anything the per-step checks didn't — it can only abort, not roll back, but
+> that's still better than continuing on a silently broken database. A brand-new
+> install has no `schema_version` table and skips straight to
 > `runMigrations()`. Do not add new migrations to `legacyMigrateToV14()`; new
 > schema changes are a new entry in the `migrations` array with `version > 1`.
 

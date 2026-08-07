@@ -354,17 +354,26 @@ export function getPendingMigrations(db: Database.Database): Migration[] {
 // time-based retention setting like sync_runs has.
 const MAX_RETAINED_BACKUPS = 5;
 
+// Housekeeping only — a prune failure (e.g. a permissions issue on one stale
+// file) must never block startup when the actual backup just above it
+// succeeded. Log and move on rather than letting the error propagate.
 function pruneOldBackups(backupDir: string, dbBaseName: string): void {
-  const prefix = `${dbBaseName}.pre-migration-`;
-  const backups = readdirSync(backupDir)
-    .filter((name) => name.startsWith(prefix) && name.endsWith(".bak"))
-    .sort(); // the ISO timestamp in the filename sorts chronologically
-  const stale = backups.slice(0, Math.max(0, backups.length - MAX_RETAINED_BACKUPS));
-  for (const name of stale) {
-    rmSync(path.join(backupDir, name), { force: true });
-  }
-  if (stale.length > 0) {
-    logger.info("Pruned old pre-migration database backups", { pruned: stale.length, retained: MAX_RETAINED_BACKUPS });
+  try {
+    const prefix = `${dbBaseName}.pre-migration-`;
+    const backups = readdirSync(backupDir)
+      .filter((name) => name.startsWith(prefix) && name.endsWith(".bak"))
+      .sort(); // the ISO timestamp in the filename sorts chronologically
+    const stale = backups.slice(0, Math.max(0, backups.length - MAX_RETAINED_BACKUPS));
+    for (const name of stale) {
+      rmSync(path.join(backupDir, name), { force: true });
+    }
+    if (stale.length > 0) {
+      logger.info("Pruned old pre-migration database backups", { pruned: stale.length, retained: MAX_RETAINED_BACKUPS });
+    }
+  } catch (err) {
+    logger.warn("Failed to prune old pre-migration database backups", {
+      error: err instanceof Error ? err.message : String(err)
+    });
   }
 }
 
@@ -386,7 +395,9 @@ export function backupBeforeMigrating(db: Database.Database): string | undefined
   if (!hasExistingTables) return undefined; // nothing to protect on a brand-new database file
 
   const backupDir = path.join(path.dirname(dbPath), "backups");
-  mkdirSync(backupDir, { recursive: true });
+  // Backups are full copies of the database — API tokens, refresh tokens, and
+  // passwords included — so the directory is created owner-only.
+  mkdirSync(backupDir, { recursive: true, mode: 0o700 });
   const dbBaseName = path.basename(dbPath);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const backupPath = path.join(backupDir, `${dbBaseName}.pre-migration-${stamp}.bak`);
@@ -396,49 +407,95 @@ export function backupBeforeMigrating(db: Database.Database): string | undefined
   return backupPath;
 }
 
+/** Thrown when a guarded step's `PRAGMA foreign_key_check` finds violations. */
+export class ForeignKeyViolationError extends Error {
+  constructor(message: string, public readonly violations: unknown[]) {
+    super(message);
+    this.name = "ForeignKeyViolationError";
+  }
+}
+
+function logGuardedFailure(label: string, backupPath: string | undefined, err: unknown): void {
+  const recovery = backupPath
+    ? `Restore from the pre-migration backup at ${backupPath} and investigate before retrying.`
+    : "No pre-migration backup was available (fresh database) — investigate before retrying.";
+  if (err instanceof ForeignKeyViolationError) {
+    logger.error(err.message, { violations: err.violations, recovery });
+  } else {
+    logger.error(`${label} failed`, { error: err instanceof Error ? err.message : String(err), recovery });
+  }
+}
+
 /**
- * Runs `step` (expected to make its own schema/data changes, transactionally),
- * then checks `PRAGMA foreign_key_check` and throws with recovery guidance if it
- * finds violations. Shared by runMigrations() and the legacy schema_version
- * handover in schema.ts, so both get the same backup-then-verify protection.
+ * Runs `step` and `PRAGMA foreign_key_check` inside one transaction, so a
+ * violation rolls back `step`'s changes atomically instead of merely being
+ * detected after they already committed. This is the preferred guard for any
+ * new, self-contained migration step — used by runMigrations() and by the
+ * legacy handover's own v7/v8/v9/v14 sub-steps in schema.ts.
+ *
+ * `step` must not itself open a nested transaction that toggles `PRAGMA
+ * foreign_keys` — that pragma is a silent no-op inside an already-open
+ * transaction, so a step relying on it (e.g. a table rebuild) needs the
+ * pragma toggled by its caller *before* calling this function, not inside it.
+ */
+export function runTransactionalStep(db: Database.Database, label: string, backupPath: string | undefined, step: () => void): void {
+  const guarded = db.transaction(() => {
+    step();
+    const violations = db.pragma("foreign_key_check") as unknown[];
+    if (violations.length > 0) {
+      throw new ForeignKeyViolationError(`${label} left ${violations.length} foreign-key violation(s)`, violations);
+    }
+  });
+
+  try {
+    guarded();
+  } catch (err) {
+    logGuardedFailure(label, backupPath, err);
+    throw err;
+  }
+}
+
+/**
+ * Runs `step` (which manages its own transactionality, or is a sequence of
+ * several independently-committed statements that cannot be wrapped in one
+ * outer transaction — e.g. the legacy schema_version upgrade chain as a
+ * whole, which toggles `PRAGMA foreign_keys` around some of its own
+ * sub-steps), then checks `PRAGMA foreign_key_check` afterward.
+ *
+ * Because `step` has already committed by the time this runs, a violation
+ * here can only abort startup with recovery guidance — it cannot roll
+ * anything back. Prefer runTransactionalStep() over this for any new,
+ * self-contained migration step; this function exists for the cases where
+ * that genuinely isn't possible.
  */
 export function runGuardedStep(db: Database.Database, label: string, backupPath: string | undefined, step: () => void): void {
   try {
     step();
   } catch (err) {
-    logger.error(`${label} failed`, {
-      error: err instanceof Error ? err.message : String(err),
-      recovery: backupPath
-        ? `Restore from the pre-migration backup at ${backupPath} and investigate before retrying.`
-        : "No pre-migration backup was available (fresh database) — investigate before retrying."
-    });
+    logGuardedFailure(label, backupPath, err);
     throw err;
   }
 
   const violations = db.pragma("foreign_key_check") as unknown[];
   if (violations.length > 0) {
-    const message = `${label} left ${violations.length} foreign-key violation(s)`;
-    logger.error(message, {
-      violations,
-      recovery: backupPath
-        ? `Restore from the pre-migration backup at ${backupPath} and investigate before retrying.`
-        : "No pre-migration backup was available (fresh database) — investigate before retrying."
-    });
-    throw new Error(message);
+    const err = new ForeignKeyViolationError(`${label} left ${violations.length} foreign-key violation(s)`, violations);
+    logGuardedFailure(label, backupPath, err);
+    throw err;
   }
 }
 
 /**
  * Applies every migration newer than the database's current `PRAGMA user_version`,
- * in ascending order, each inside its own transaction so a mid-migration failure
- * cannot leave the database partially migrated. Advances `user_version` only after
- * a migration's `up()` completes successfully.
+ * in ascending order, each via runTransactionalStep() — one transaction per
+ * migration covering both its schema/data changes and the `user_version` bump,
+ * with a `foreign_key_check` before commit — so a mid-migration failure or a
+ * foreign-key regression rolls back cleanly instead of partially applying.
  *
- * `precomputedBackupPath` lets a caller that already took a backup this startup
- * (schema.ts's legacy handover, when both it and a pending migration 2+ run in
- * the same initSchema() call) pass it through instead of this function taking a
- * second, redundant VACUUM INTO snapshot. Pass `undefined` to have this function
- * take its own backup if there's anything pending.
+ * If `precomputedBackupPath` is passed, it's used as-is (the caller already took
+ * a backup this startup — schema.ts's `initSchema()` does this so the legacy
+ * handover and a pending migration 2+ share one VACUUM INTO snapshot instead of
+ * each taking their own). If omitted and there's anything pending, this function
+ * takes its own backup via backupBeforeMigrating().
  */
 export function runMigrations(db: Database.Database, precomputedBackupPath?: string): void {
   const pending = getPendingMigrations(db);
@@ -451,12 +508,11 @@ export function runMigrations(db: Database.Database, precomputedBackupPath?: str
 
   for (const migration of pending) {
     logger.info(`Starting schema migration to version ${migration.version}: ${migration.description}`);
-    const applyMigration = db.transaction(() => {
+
+    runTransactionalStep(db, `Schema migration to version ${migration.version}`, backupPath, () => {
       migration.up(db);
       db.pragma(`user_version = ${migration.version}`);
     });
-
-    runGuardedStep(db, `Schema migration to version ${migration.version}`, backupPath, applyMigration);
 
     logger.info(`Schema migrated to version ${migration.version}: ${migration.description}`);
   }

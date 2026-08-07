@@ -1,7 +1,6 @@
 import { Router } from "express";
-import { getSetting, setSetting } from "../db/index.js";
+import { getDb, getSetting, setSetting } from "../db/index.js";
 import { LOG_LEVELS, type AboutInfo, type AppSettings, type JobInfo, type LogsPageResponse } from "../../shared/types.js";
-import { LATEST_MIGRATION_VERSION } from "../db/migrations.js";
 import { testGrimmoryServer } from "../sync/grimmory.js";
 import { testChaptarrConnection } from "../sync/chaptarr.js";
 import { testAudiobookshelfServer } from "../sync/audiobookshelf.js";
@@ -286,13 +285,17 @@ router.get("/logs", async (req, res) => {
 });
 
 router.get("/about", (_req, res) => {
+  // Read the database's actual PRAGMA user_version rather than the code's
+  // LATEST_MIGRATION_VERSION constant, so this reflects what's really applied
+  // — e.g. if a migration is pending or failed partway, this shows the truth.
+  const dbVersion = getDb().pragma("user_version", { simple: true }) as number;
   const info: AboutInfo = {
     version: APP_VERSION,
     buildChannel: BUILD_CHANNEL,
     commitSha: BUILD_COMMIT,
     dataDir: process.env["DATA_DIR"] ?? "./data",
     tz: process.env["TZ"] ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
-    dbVersion: LATEST_MIGRATION_VERSION
+    dbVersion
   };
   res.json(info);
 });

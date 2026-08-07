@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { reconcileBookIdentities } from "./bookIdentity.js";
 import { logger } from "../logger.js";
-import { backupBeforeMigrating, getPendingMigrations, runGuardedStep, runMigrations } from "./migrations.js";
+import { backupBeforeMigrating, getPendingMigrations, runGuardedStep, runMigrations, runTransactionalStep } from "./migrations.js";
 
 export function initSchema(db: Database.Database): void {
   db.pragma("journal_mode = WAL");
@@ -53,9 +53,19 @@ function legacyHandoverNeeded(db: Database.Database): boolean {
  * runMigrations() treated migration 1 as pending on that phantom retry, its bare
  * `CREATE TABLE app_settings` (no IF NOT EXISTS) would fail against tables that
  * already exist — a permanent boot failure, exactly what #32 exists to prevent.
+ *
+ * Protection is layered: legacyMigrateToV14()'s own v7/v8/v9/v14 sub-steps each
+ * run via runTransactionalStep(), so a foreign-key regression introduced by one
+ * of them rolls back just that step. The runGuardedStep() wrapped around the
+ * whole call here is a backstop on top of that — it cannot roll anything back
+ * (legacyMigrateToV14() is a sequence of independently-committed statements, not
+ * one transaction; some of them must run outside a transaction because they
+ * toggle `PRAGMA foreign_keys`, which is a no-op once a transaction is open), but
+ * it still catches anything the per-step checks didn't, aborting startup with
+ * recovery guidance instead of leaving a silently broken database running.
  */
 function handleLegacySchemaVersionHandover(db: Database.Database, backupPath: string | undefined): void {
-  runGuardedStep(db, "Legacy schema_version handover to v14", backupPath, () => legacyMigrateToV14(db));
+  runGuardedStep(db, "Legacy schema_version handover to v14", backupPath, () => legacyMigrateToV14(db, backupPath));
   db.transaction(() => {
     db.exec("DROP TABLE schema_version");
     db.pragma("user_version = 1");
@@ -68,7 +78,7 @@ function handleLegacySchemaVersionHandover(db: Database.Database, backupPath: st
  * above. Do not add new migrations here — new schema changes belong in
  * migrations.ts as a migration with version > 1.
  */
-function legacyMigrateToV14(db: Database.Database): void {
+function legacyMigrateToV14(db: Database.Database, backupPath: string | undefined): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_version (
       version INTEGER NOT NULL
@@ -533,9 +543,12 @@ function legacyMigrateToV14(db: Database.Database): void {
   // 'audiobookshelf' rows can be inserted. Also rebuild user_book_states to
   // drop its CHECK constraint for the same reason.
   //
-  // The rebuild + version bump run as a single transaction (foreign_keys toggled
-  // outside it, since that pragma is a no-op inside a transaction — same pattern
-  // as the v14 block below). Without this, a crash mid-exec (multi-statement
+  // The rebuild + version bump run via runTransactionalStep() — one transaction
+  // covering both, with a foreign_key_check before commit — so a mid-rebuild
+  // crash or a foreign-key regression rolls back the whole step atomically.
+  // foreign_keys is toggled outside the transaction, since that pragma is a
+  // no-op once a transaction is already open (same pattern as the v14 block
+  // below). Without the transaction wrapping, a crash mid-exec (multi-statement
   // db.exec() is not itself atomic) could leave book_sources_v7 populated by the
   // INSERT...SELECT but the original book_sources not yet dropped and the version
   // still < 7; retrying would then re-run the INSERT...SELECT against rows that
@@ -544,7 +557,7 @@ function legacyMigrateToV14(db: Database.Database): void {
   if (!row || row.version < 7) {
     db.pragma("foreign_keys = OFF");
     try {
-      const migrateV7 = db.transaction(() => {
+      runTransactionalStep(db, "Legacy schema migration to version 7", backupPath, () => {
         db.exec(`
       CREATE TABLE IF NOT EXISTS book_sources_v7 (
         id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -670,7 +683,6 @@ function legacyMigrateToV14(db: Database.Database): void {
         `);
         db.prepare("UPDATE schema_version SET version = 7").run();
       });
-      migrateV7();
     } finally {
       db.pragma("foreign_keys = ON");
     }
@@ -679,12 +691,13 @@ function legacyMigrateToV14(db: Database.Database): void {
 
   // v8: Add hardcover_audio_seconds to book_sources and hardcover_user_book_id + progress_seconds to user_book_states
   //
-  // Wrapped in a transaction with the version bump so a crash between the three
-  // ALTER statements (none of which check column existence first, unlike the
-  // guarded ALTERs above) can't leave one column added and the version still < 8
-  // — that state made a retry throw "duplicate column name" and brick startup.
+  // Runs via runTransactionalStep() so a crash between the three ALTER
+  // statements (none of which check column existence first, unlike the guarded
+  // ALTERs above) — or a foreign-key regression from them — rolls back instead
+  // of leaving one column added and the version still < 8, which made a retry
+  // throw "duplicate column name" and brick startup.
   if (!row || row.version < 8) {
-    const migrateV8 = db.transaction(() => {
+    runTransactionalStep(db, "Legacy schema migration to version 8", backupPath, () => {
       db.exec(`
         ALTER TABLE book_sources ADD COLUMN hardcover_audio_seconds INTEGER;
         ALTER TABLE user_book_states ADD COLUMN hardcover_user_book_id INTEGER;
@@ -692,7 +705,6 @@ function legacyMigrateToV14(db: Database.Database): void {
       `);
       db.prepare("UPDATE schema_version SET version = 8").run();
     });
-    migrateV8();
     logger.info("Schema migrated to version 8: added hardcover_audio_seconds, hardcover_user_book_id, progress_seconds");
   }
 
@@ -701,17 +713,17 @@ function legacyMigrateToV14(db: Database.Database): void {
   // hardcover_edition_pages: the page count we matched against — if hcPages drifts from
   // this (e.g. user switches edition or file is replaced), we know to re-resolve.
   //
-  // Same crash-safety reasoning as v8: wrap the ALTERs and the version bump in one
-  // transaction so a crash between them can't leave a half-applied, non-retriable state.
+  // Same crash-safety reasoning as v8: runTransactionalStep() covers the ALTERs,
+  // the version bump, and a foreign_key_check in one transaction, so a crash or
+  // an FK regression between them can't leave a half-applied, non-retriable state.
   if (!row || row.version < 9) {
-    const migrateV9 = db.transaction(() => {
+    runTransactionalStep(db, "Legacy schema migration to version 9", backupPath, () => {
       db.exec(`
         ALTER TABLE user_book_states ADD COLUMN hardcover_edition_id INTEGER;
         ALTER TABLE user_book_states ADD COLUMN hardcover_edition_pages INTEGER;
       `);
       db.prepare("UPDATE schema_version SET version = 9").run();
     });
-    migrateV9();
     logger.info("Schema migrated to version 9: added hardcover_edition_id, hardcover_edition_pages");
   }
 
@@ -786,11 +798,12 @@ function legacyMigrateToV14(db: Database.Database): void {
     });
 
     // foreign_keys is a no-op inside a transaction, so it must be toggled outside the
-    // BEGIN/COMMIT below. The rebuild + backfill + version bump run as a single
-    // transaction so a mid-migration failure can't leave book_sources half-rebuilt.
+    // BEGIN/COMMIT below. The rebuild + backfill + version bump + foreign_key_check
+    // run as a single transaction (via runTransactionalStep) so a mid-migration
+    // failure or an FK regression can't leave book_sources half-rebuilt.
     db.pragma("foreign_keys = OFF");
     try {
-      const migrateV14 = db.transaction(() => {
+      runTransactionalStep(db, "Legacy schema migration to version 14", backupPath, () => {
         db.exec(`
           CREATE TABLE book_sources_v14 (
             ${colDefs.join(",\n            ")},
@@ -840,7 +853,6 @@ function legacyMigrateToV14(db: Database.Database): void {
 
         db.prepare("UPDATE schema_version SET version = 14").run();
       });
-      migrateV14();
     } finally {
       db.pragma("foreign_keys = ON");
     }

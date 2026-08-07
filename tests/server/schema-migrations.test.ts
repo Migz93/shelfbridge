@@ -5,7 +5,13 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { initSchema } from "../../src/server/db/schema.js";
-import { backupBeforeMigrating, LATEST_MIGRATION_VERSION, runMigrations } from "../../src/server/db/migrations.js";
+import {
+  backupBeforeMigrating,
+  LATEST_MIGRATION_VERSION,
+  runGuardedStep,
+  runMigrations,
+  runTransactionalStep
+} from "../../src/server/db/migrations.js";
 import { createTestDatabase } from "./test-db.js";
 
 function openRawDb(): { db: BetterSqlite3.Database; dataDir: string; cleanup: () => void } {
@@ -57,6 +63,69 @@ function seedLegacyBooksSchema(db: BetterSqlite3.Database, startingVersion: numb
     );
   `);
 }
+
+test("runTransactionalStep rolls back the whole step, not just detects it, when foreign_key_check finds a violation", () => {
+  const { db, cleanup } = openRawDb();
+  try {
+    db.exec(`
+      CREATE TABLE parent (id INTEGER PRIMARY KEY);
+      CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id));
+      CREATE TABLE marker (id INTEGER PRIMARY KEY);
+    `);
+
+    // Enforcement is toggled off outside the call, exactly like the real
+    // migration blocks that use runTransactionalStep — PRAGMA foreign_keys is a
+    // no-op once a transaction is open, so it must be set before entering one.
+    db.pragma("foreign_keys = OFF");
+    try {
+      assert.throws(() => {
+        runTransactionalStep(db, "test step", undefined, () => {
+          db.prepare("INSERT INTO child (id, parent_id) VALUES (1, 999)").run();
+          db.prepare("INSERT INTO marker (id) VALUES (1)").run();
+        });
+      }, /foreign-key violation/);
+    } finally {
+      db.pragma("foreign_keys = ON");
+    }
+
+    const child = db.prepare("SELECT * FROM child").get();
+    assert.equal(child, undefined, "the violating row must be rolled back, not merely detected");
+    const marker = db.prepare("SELECT * FROM marker").get();
+    assert.equal(marker, undefined, "everything in the same transaction must roll back together, not just the violating row");
+  } finally {
+    cleanup();
+  }
+});
+
+test("runGuardedStep detects a foreign-key violation but cannot roll it back once step() has already committed", () => {
+  const { db, cleanup } = openRawDb();
+  try {
+    db.exec(`
+      CREATE TABLE parent (id INTEGER PRIMARY KEY);
+      CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id));
+    `);
+
+    db.pragma("foreign_keys = OFF");
+    try {
+      assert.throws(() => {
+        runGuardedStep(db, "test step", undefined, () => {
+          // step() commits on its own, with no transaction wrapper — matching how
+          // the legacy handover's non-transactional sub-blocks (v3/v5/v6/v10-13)
+          // behave, and why the outer runGuardedStep() around the whole legacy
+          // chain can only abort startup, not undo this.
+          db.prepare("INSERT INTO child (id, parent_id) VALUES (1, 999)").run();
+        });
+      }, /foreign-key violation/);
+    } finally {
+      db.pragma("foreign_keys = ON");
+    }
+
+    const child = db.prepare("SELECT * FROM child").get();
+    assert.ok(child, "runGuardedStep has no transaction to roll back — the violating row legitimately survives");
+  } finally {
+    cleanup();
+  }
+});
 
 test("initSchema on a fresh database applies migration 1 and lands on the latest migration version", () => {
   const { db, cleanup } = createTestDatabase();
