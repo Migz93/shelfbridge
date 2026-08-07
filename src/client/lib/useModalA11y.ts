@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useEffectEvent, useRef } from "react";
 
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -11,8 +11,7 @@ const FOCUSABLE_SELECTOR =
 export function useModalA11y<T extends HTMLElement = HTMLDivElement>(open: boolean, onClose: () => void) {
   const containerRef = useRef<T>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+  const handleClose = useEffectEvent(() => onClose());
 
   useEffect(() => {
     if (!open) return;
@@ -33,7 +32,7 @@ export function useModalA11y<T extends HTMLElement = HTMLDivElement>(open: boole
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") {
         e.stopPropagation();
-        onCloseRef.current();
+        handleClose();
         return;
       }
       if (e.key !== "Tab" || !container) return;
