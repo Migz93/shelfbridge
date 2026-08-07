@@ -1,13 +1,52 @@
 import type Database from "better-sqlite3";
 import { reconcileBookIdentities } from "./bookIdentity.js";
 import { logger } from "../logger.js";
-
-export const CURRENT_SCHEMA_VERSION = 14;
+import { backupBeforeMigrating, runGuardedStep, runMigrations } from "./migrations.js";
 
 export function initSchema(db: Database.Database): void {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
 
+  handleLegacySchemaVersionHandover(db);
+  runMigrations(db);
+
+  db.prepare("DELETE FROM auth_sessions WHERE expires_at <= unixepoch()").run();
+  reconcileBookIdentities(db);
+}
+
+/**
+ * Any database that still has a `schema_version` table predates the `PRAGMA
+ * user_version` + `Migration[]` pattern in migrations.ts. Bring it up to the v14
+ * shape using the same sequential logic ShelfBridge always used for that, then
+ * hand it over: set `user_version = 1` (migration 1 in migrations.ts is exactly
+ * that v14 shape) and never consult `schema_version` again. A brand-new install
+ * has no `schema_version` table and skips straight to runMigrations(), which
+ * applies migration 1 directly.
+ */
+function handleLegacySchemaVersionHandover(db: Database.Database): void {
+  const userVersion = db.pragma("user_version", { simple: true }) as number;
+  if (userVersion > 0) return; // already migrated under the new pattern
+
+  const legacyTable = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
+    .get();
+  if (!legacyTable) return; // fresh install; runMigrations() below establishes the baseline
+
+  const backupPath = backupBeforeMigrating(db);
+  if (backupPath) {
+    logger.info("Created pre-migration database backup", { backupPath });
+  }
+  runGuardedStep(db, "Legacy schema_version handover to v14", backupPath, () => legacyMigrateToV14(db));
+  db.pragma("user_version = 1");
+  logger.info("Handed database off from schema_version tracking to PRAGMA user_version (migration 1 = v14 baseline)");
+}
+
+/**
+ * The pre-migrations-pattern upgrade path, preserved verbatim for the handover
+ * above. Do not add new migrations here — new schema changes belong in
+ * migrations.ts as a migration with version > 1.
+ */
+function legacyMigrateToV14(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_version (
       version INTEGER NOT NULL
@@ -103,7 +142,6 @@ export function initSchema(db: Database.Database): void {
       UNIQUE(profile_id)
     );
 
-    -- Master book record. Canonical title/author/ISBNs/cover aggregated from all sources.
     CREATE TABLE IF NOT EXISTS books (
       id               INTEGER PRIMARY KEY AUTOINCREMENT,
       media_type       TEXT NOT NULL DEFAULT 'unknown',
@@ -120,14 +158,6 @@ export function initSchema(db: Database.Database): void {
       created_at       TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
-    -- One row per (book × source system × source instance). external_id is the
-    -- source's own ID for this book, scoped by source_instance_id since two
-    -- configured instances of the same integration (e.g. two Grimmory servers) can
-    -- reuse the same local ID for different books — see the v14 migration below,
-    -- which is what actually reshapes this table on upgrade. This declared shape
-    -- only takes effect directly on a brand-new install; existing installs always
-    -- go through the sequential migrations, including v14.
-    -- book_id is nullable until reconcileBookIdentities() assigns it.
     CREATE TABLE IF NOT EXISTS book_sources (
       id               INTEGER PRIMARY KEY AUTOINCREMENT,
       book_id          INTEGER REFERENCES books(id) ON DELETE CASCADE,
@@ -142,8 +172,6 @@ export function initSchema(db: Database.Database): void {
       isbn10           TEXT,
       series_name      TEXT,
       series_number    TEXT,
-      -- Cross-source identifiers observed on this source row. These preserve
-      -- source-provided IDs even when they are not this row's own external_id.
       source_hardcover_book_id   TEXT,
       source_hardcover_slug      TEXT,
       source_goodreads_book_id   TEXT,
@@ -155,21 +183,16 @@ export function initSchema(db: Database.Database): void {
       source_narrator           TEXT,
       source_asin                TEXT,
       source_audible_asin        TEXT,
-      -- Hardcover-specific
       hardcover_slug   TEXT,
-      -- Grimmory cross-references stored inside Grimmory metadata
       grimmory_hardcover_book_id   TEXT,
       grimmory_goodreads_id        TEXT,
       grimmory_hardcover_id        TEXT,
       grimmory_primary_file_path   TEXT,
-      -- Goodreads-specific
       goodreads_book_link TEXT,
-      -- Chaptarr-specific
       chaptarr_monitored         INTEGER,
       chaptarr_has_file          INTEGER,
       chaptarr_id_mismatch       INTEGER,
       chaptarr_primary_file_path TEXT,
-      -- Sync metadata
       last_sync_at     TEXT,
       last_sync_decision TEXT,
       last_modified_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -177,38 +200,32 @@ export function initSchema(db: Database.Database): void {
       UNIQUE(source_type, source_instance_id, external_id)
     );
 
-    -- One row per (book × profile × source) where the profile has user activity.
     CREATE TABLE IF NOT EXISTS user_book_states (
       id               INTEGER PRIMARY KEY AUTOINCREMENT,
       book_id          INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
       profile_id       INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
       source_type      TEXT NOT NULL CHECK(source_type IN ('hardcover','goodreads','grimmory')),
-      -- Generic reading state (mapped from source-specific values)
       status           TEXT,
       rating           REAL,
       progress         REAL,
       progress_pages   INTEGER,
       last_read_date   TEXT,
       date_finished    TEXT,
-      -- Sync metadata
       sync_health      TEXT NOT NULL DEFAULT 'pending',
       has_superseded   INTEGER NOT NULL DEFAULT 0,
       match_confidence TEXT NOT NULL DEFAULT 'none',
       match_type       TEXT,
       last_sync_decision TEXT,
-      -- Hardcover-specific
       hardcover_status_id  INTEGER,
       hardcover_read_id    INTEGER,
       hardcover_updated_at TEXT,
       hardcover_list_id    INTEGER,
       hardcover_pages      INTEGER,
-      -- Goodreads-specific
       goodreads_shelf      TEXT,
       goodreads_read_at    TEXT,
       goodreads_updated_at TEXT,
       goodreads_match_type TEXT,
       goodreads_book_link  TEXT,
-      -- Grimmory-specific
       grimmory_book_id        INTEGER,
       grimmory_last_read_time TEXT,
       grimmory_primary_file_id INTEGER,
@@ -317,11 +334,9 @@ export function initSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
   `);
 
-  db.prepare("DELETE FROM auth_sessions WHERE expires_at <= unixepoch()").run();
-
   const row = db.prepare("SELECT version FROM schema_version").get() as { version: number } | undefined;
   if (!row) {
-    db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(CURRENT_SCHEMA_VERSION);
+    db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(14);
   }
 
   // Add file-path columns to book_sources if they don't exist yet
@@ -780,6 +795,4 @@ export function initSchema(db: Database.Database): void {
     }
     logger.info("Schema migrated to version 14: scoped book_sources uniqueness to (source_type, source_instance_id, external_id)");
   }
-
-  reconcileBookIdentities(db);
 }

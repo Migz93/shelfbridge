@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
 import BetterSqlite3 from "better-sqlite3";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { CURRENT_SCHEMA_VERSION, initSchema } from "../../src/server/db/schema.js";
+import { initSchema } from "../../src/server/db/schema.js";
+import { LATEST_MIGRATION_VERSION, runMigrations } from "../../src/server/db/migrations.js";
 import { createTestDatabase } from "./test-db.js";
 
-function openRawDb(): { db: BetterSqlite3.Database; cleanup: () => void } {
+function openRawDb(): { db: BetterSqlite3.Database; dataDir: string; cleanup: () => void } {
   const dataDir = mkdtempSync(path.join(os.tmpdir(), "shelfbridge-migration-test-"));
   const db = new BetterSqlite3(path.join(dataDir, "test.db"));
-  return { db, cleanup: () => { db.close(); rmSync(dataDir, { recursive: true, force: true }); } };
+  return { db, dataDir, cleanup: () => { db.close(); rmSync(dataDir, { recursive: true, force: true }); } };
 }
 
 /**
@@ -57,11 +58,15 @@ function seedLegacyBooksSchema(db: BetterSqlite3.Database, startingVersion: numb
   `);
 }
 
-test("initSchema on a fresh database lands on the current schema version", () => {
+test("initSchema on a fresh database applies migration 1 and lands on the latest migration version", () => {
   const { db, cleanup } = createTestDatabase();
   try {
-    const row = db.prepare("SELECT version FROM schema_version").get() as { version: number };
-    assert.equal(row.version, CURRENT_SCHEMA_VERSION);
+    const userVersion = db.pragma("user_version", { simple: true }) as number;
+    assert.equal(userVersion, LATEST_MIGRATION_VERSION);
+
+    // A fresh install never creates the legacy schema_version table.
+    const legacyTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'").get();
+    assert.equal(legacyTable, undefined);
 
     const fkViolations = db.pragma("foreign_key_check") as unknown[];
     assert.deepEqual(fkViolations, []);
@@ -74,18 +79,15 @@ test("initSchema is idempotent: running it twice makes no further changes", () =
   const { db, cleanup } = createTestDatabase();
   try {
     initSchema(db);
-    const row = db.prepare("SELECT version FROM schema_version").get() as { version: number };
-    assert.equal(row.version, CURRENT_SCHEMA_VERSION);
-
-    const versionRows = db.prepare("SELECT COUNT(*) AS count FROM schema_version").get() as { count: number };
-    assert.equal(versionRows.count, 1, "schema_version should never accumulate extra rows");
+    const userVersion = db.pragma("user_version", { simple: true }) as number;
+    assert.equal(userVersion, LATEST_MIGRATION_VERSION);
   } finally {
     cleanup();
   }
 });
 
-test("v14 migration: rebuilds book_sources with a per-instance unique constraint and preserves rows", () => {
-  const { db, cleanup } = openRawDb();
+test("legacy handover: a pre-existing schema_version database is migrated to v14 then handed over to user_version = 1", () => {
+  const { db, dataDir, cleanup } = openRawDb();
   try {
     seedLegacyBooksSchema(db, 13);
     db.exec(`
@@ -97,11 +99,11 @@ test("v14 migration: rebuilds book_sources with a per-instance unique constraint
 
     initSchema(db);
 
-    const row = db.prepare("SELECT version FROM schema_version").get() as { version: number };
-    assert.equal(row.version, CURRENT_SCHEMA_VERSION);
+    const userVersion = db.pragma("user_version", { simple: true }) as number;
+    assert.equal(userVersion, 1, "handover lands on migration 1, which is the v14 baseline");
 
     const cols = (db.prepare("PRAGMA table_info(book_sources)").all() as { name: string }[]).map((c) => c.name);
-    assert.ok(cols.includes("source_instance_id"), "source_instance_id column should be added");
+    assert.ok(cols.includes("source_instance_id"), "source_instance_id column should be added by the legacy v14 rebuild");
 
     const sources = db.prepare("SELECT id, source_type, source_instance_id FROM book_sources ORDER BY id").all() as
       { id: number; source_type: string; source_instance_id: number | null }[];
@@ -126,12 +128,35 @@ test("v14 migration: rebuilds book_sources with a per-instance unique constraint
 
     const fkViolations = db.pragma("foreign_key_check") as unknown[];
     assert.deepEqual(fkViolations, []);
+
+    const backupDir = path.join(dataDir, "backups");
+    assert.ok(existsSync(backupDir), "the legacy handover must be backed up before it rebuilds book_sources");
+    assert.ok(readdirSync(backupDir).length > 0, "a backup file should exist from the legacy handover");
   } finally {
     cleanup();
   }
 });
 
-test("v3 migration: deletes orphan title-less books that have no non-chaptarr source", () => {
+test("legacy handover is not re-run: a database already at user_version >= 1 is left alone", () => {
+  const { db, cleanup } = openRawDb();
+  try {
+    // Simulate a database that already went through the handover in a prior run.
+    seedLegacyBooksSchema(db, 13);
+    db.exec("INSERT INTO books (id, title) VALUES (1, 'Book')");
+    initSchema(db);
+    const versionAfterFirstRun = db.pragma("user_version", { simple: true }) as number;
+    assert.equal(versionAfterFirstRun, 1);
+
+    // Re-running must not touch schema_version again or re-apply migration 1.
+    initSchema(db);
+    const versionAfterSecondRun = db.pragma("user_version", { simple: true }) as number;
+    assert.equal(versionAfterSecondRun, LATEST_MIGRATION_VERSION);
+  } finally {
+    cleanup();
+  }
+});
+
+test("legacy v3 migration: deletes orphan title-less books that have no non-chaptarr source", () => {
   const { db, cleanup } = openRawDb();
   try {
     seedLegacyBooksSchema(db, 2);
@@ -156,7 +181,7 @@ test("v3 migration: deletes orphan title-less books that have no non-chaptarr so
   }
 });
 
-test("v13 migration: repairs book_sources rows with the literal string \"datetime('now')\" as last_sync_at", () => {
+test("legacy v13 migration: repairs book_sources rows with the literal string \"datetime('now')\" as last_sync_at", () => {
   const { db, cleanup } = openRawDb();
   try {
     seedLegacyBooksSchema(db, 12);
@@ -173,5 +198,35 @@ test("v13 migration: repairs book_sources rows with the literal string \"datetim
     assert.equal(source.last_sync_at, null);
   } finally {
     cleanup();
+  }
+});
+
+test("runMigrations backs up an already-populated database before applying a pending migration, and fresh installs skip it", () => {
+  {
+    // A database with an arbitrary pre-existing table but no user_version yet has
+    // migration 1 pending — exercising the same "existing data, pending migration"
+    // path a future migration 2+ would hit, without depending on one existing yet.
+    const { db, dataDir, cleanup } = openRawDb();
+    try {
+      db.exec("CREATE TABLE pre_existing (id INTEGER PRIMARY KEY)");
+      runMigrations(db);
+
+      const backupDir = path.join(dataDir, "backups");
+      assert.ok(existsSync(backupDir), "a backup directory should be created before migrating an existing database");
+      const backups = readdirSync(backupDir);
+      assert.ok(backups.length > 0, "a backup file should be written before migrating an existing database");
+    } finally {
+      cleanup();
+    }
+  }
+
+  {
+    const { dataDir, cleanup } = createTestDatabase();
+    try {
+      const backupDir = path.join(dataDir, "backups");
+      assert.ok(!existsSync(backupDir), "a brand-new database has nothing to protect and should not be backed up");
+    } finally {
+      cleanup();
+    }
   }
 });

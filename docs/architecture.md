@@ -102,19 +102,34 @@ WAL mode matters here because the background sync worker writes concurrently wit
 the web server serving API reads. WAL prevents the sync worker from blocking HTTP
 responses by allowing concurrent readers and a single writer.
 
-Schema version is tracked in the `schema_version` table, with the current version
-defined in `src/server/db/schema.ts` as `CURRENT_SCHEMA_VERSION`. `initSchema()`
-creates every table, then applies a sequential run of version-guarded
-`ALTER TABLE` and table-rebuild blocks in the same file.
+Schema version is tracked with SQLite's built-in `PRAGMA user_version`, driven by
+a `Migration[]` array in `src/server/db/migrations.ts` — the same pattern Hubarr
+and Pacearr use. Each migration is a `{ version, description, up(db) }` entry;
+`runMigrations()` applies every migration newer than the database's current
+`user_version`, in ascending order, each inside its own transaction so a
+mid-migration failure cannot leave the database partially migrated. Before
+applying any pending migration to a database that already has tables,
+`runMigrations()` snapshots it with `VACUUM INTO` into `<data dir>/backups/`, and
+after each migration commits it runs `PRAGMA foreign_key_check` and aborts
+startup on any violation — pointing at the backup for recovery. Migration 1 is a
+single flattened `CREATE TABLE` block, so a fresh install reaches a correct
+schema in one migration. `initSchema()` (in `src/server/db/schema.ts`) just wires
+this up: WAL/foreign-key pragmas, then `runMigrations()`, then
+`reconcileBookIdentities()`.
 
-> **This diverges from the sibling projects.** Hubarr and Pacearr use SQLite's
-> built-in `PRAGMA user_version` with a `Migration[]` array in
-> `src/server/db/migrations.ts`, where each migration runs inside its own
-> transaction. Moving ShelfBridge onto that pattern is tracked in
-> [#58](https://github.com/Migz93/shelfbridge/issues/58), together with
-> [#32](https://github.com/Migz93/shelfbridge/issues/32) for the crash-safety
-> properties it should deliver. Do not hardcode the current version number in
-> this doc — it goes stale.
+> **Handover from the old `schema_version` table.** Before this pattern, schema
+> version lived in a `schema_version` table with a sequential run of
+> version-guarded `ALTER TABLE` and table-rebuild blocks. Any database that still
+> has that table is pre-migrations-pattern: `initSchema()` runs that old sequential
+> logic once (preserved as `legacyMigrateToV14()` in `schema.ts`) to bring it to
+> the v14 shape — which is exactly migration 1 — then sets `user_version = 1` and
+> never looks at `schema_version` again. That step is wrapped in the same
+> backup-then-`foreign_key_check` guard as `runMigrations()` (`runGuardedStep()`,
+> shared by both), so an existing install's handover gets the same crash-safety
+> net as any future migration. A brand-new install has no `schema_version` table
+> and skips straight to `runMigrations()`. Do not add new migrations to
+> `legacyMigrateToV14()`; new schema changes are a new entry in the `migrations`
+> array with `version > 1`.
 
 ### Tables
 

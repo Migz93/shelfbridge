@@ -126,11 +126,13 @@ so all tests start already authenticated.
 
 | Test | What it checks |
 |---|---|
-| Fresh database lands on the current schema version | `initSchema` on an empty DB reaches `CURRENT_SCHEMA_VERSION` with no foreign-key violations |
-| Idempotent re-run | Running `initSchema` twice makes no further changes and never duplicates the `schema_version` row |
-| v14 migration | Rebuilding `book_sources` with the per-instance unique constraint preserves existing rows, adds `source_instance_id`, and backfills Chaptarr's single global instance to `0` |
-| v3 migration | Orphan books (empty title, Chaptarr-only source) are deleted; books with a real source survive |
-| v13 migration | `book_sources` rows with the literal string `"datetime('now')"` as `last_sync_at` are repaired to `NULL` |
+| Fresh database applies migration 1 | `initSchema` on an empty DB reaches `LATEST_MIGRATION_VERSION` via `PRAGMA user_version`, never creates a `schema_version` table, with no foreign-key violations |
+| Idempotent re-run | Running `initSchema` twice makes no further changes |
+| Legacy handover | A pre-existing `schema_version` database is migrated to v14 via the preserved sequential logic, then handed over to `user_version = 1`; verifies `source_instance_id` is added, existing rows survive, Chaptarr is backfilled to instance `0`, per-profile sources are left unscoped, the per-instance unique constraint is enforced, and a pre-migration backup was written before the rebuild ran |
+| Handover is not re-run | A database already at `user_version >= 1` is left alone on a second `initSchema` call |
+| Legacy v3 migration | Orphan books (empty title, Chaptarr-only source) are deleted; books with a real source survive |
+| Legacy v13 migration | `book_sources` rows with the literal string `"datetime('now')"` as `last_sync_at` are repaired to `NULL` |
+| Pre-migration backup | `runMigrations` snapshots an already-populated database via `VACUUM INTO` into `<data dir>/backups/` before applying a pending migration, and skips the backup for a brand-new database with nothing to protect |
 
 ### `tests/server/book-identity.test.ts` — Identity reconciliation
 

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { getSetting, setSetting } from "../db/index.js";
 import { LOG_LEVELS, type AboutInfo, type AppSettings, type JobInfo, type LogsPageResponse } from "../../shared/types.js";
-import { CURRENT_SCHEMA_VERSION } from "../db/schema.js";
+import { LATEST_MIGRATION_VERSION } from "../db/migrations.js";
 import { testGrimmoryServer } from "../sync/grimmory.js";
 import { testChaptarrConnection } from "../sync/chaptarr.js";
 import { testAudiobookshelfServer } from "../sync/audiobookshelf.js";
@@ -292,7 +292,7 @@ router.get("/about", (_req, res) => {
     commitSha: BUILD_COMMIT,
     dataDir: process.env["DATA_DIR"] ?? "./data",
     tz: process.env["TZ"] ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
-    dbVersion: CURRENT_SCHEMA_VERSION
+    dbVersion: LATEST_MIGRATION_VERSION
   };
   res.json(info);
 });
