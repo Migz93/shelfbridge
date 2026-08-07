@@ -1,9 +1,26 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import type { Request, Response } from "express";
-import { getDb } from "../../src/server/db/index.js";
-import { initSchema } from "../../src/server/db/schema.js";
-import {
+
+// auth.ts and db/index.ts both operate on the db/index.ts singleton, which
+// reads DATA_DIR at module-evaluation time. A static `import` of auth.js would
+// transitively evaluate db/index.ts before this file's own top-level code runs
+// (ESM hoists imports ahead of everything else in the importing module), so
+// DATA_DIR is set first and the singleton is loaded dynamically afterward —
+// pointing it at a private temp dir keeps this file's runs off the shared
+// ./.test-data database (and off any other file that touches the singleton
+// without doing this, e.g. settings.test.ts) instead of racing them. Same
+// pattern and rationale as sync-engine.test.ts.
+const dataDir = mkdtempSync(path.join(os.tmpdir(), "shelfbridge-auth-test-"));
+process.env["DATA_DIR"] = dataDir;
+
+const { getDb } = await import("../../src/server/db/index.js");
+const { initSchema } = await import("../../src/server/db/schema.js");
+const { logger } = await import("../../src/server/logger.js");
+const {
   createSession,
   deleteSession,
   getValidSession,
@@ -11,7 +28,20 @@ import {
   isSessionExpiryValid,
   parseCookies,
   setSessionCookie
-} from "../../src/server/auth.js";
+} = await import("../../src/server/auth.js");
+
+test.after(async () => {
+  // The logger writes into dataDir too — end it and wait for the flush to
+  // finish before removing the directory, or its file transport throws an
+  // unhandled ENOENT trying to write after the directory is already gone.
+  await new Promise<void>((resolve) => {
+    logger.once("finish", resolve);
+    logger.end();
+  });
+  logger.close();
+  getDb().close();
+  rmSync(dataDir, { recursive: true, force: true });
+});
 
 test("malformed cookie encoding is ignored", () => {
   const cookies = parseCookies("valid=value; broken=%E0%A4%A");

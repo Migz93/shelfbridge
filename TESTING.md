@@ -26,10 +26,22 @@ Most tests should use `createTestDatabase()` from `test-db.ts`, which spins up a
 fresh temp-dir SQLite database with the current schema applied — no shared state
 between tests.
 
-`sync-engine.test.ts` is the one exception: `runSyncImpl` always operates on the
-`db/index.ts` singleton rather than an injected database, so that file points
-`DATA_DIR` at its own private temp dir before importing the engine, and every
-test in it seeds its own profile and scopes assertions to that profile's id.
+`sync-engine.test.ts`, `auth.test.ts`, and `settings.test.ts` are the exceptions:
+each operates on the `db/index.ts` singleton rather than an injected database,
+so each points `DATA_DIR` at its own private temp dir (via a dynamic `import()`
+of the singleton after setting the env var — a static `import` would evaluate
+the singleton too early, since ESM hoists imports ahead of the rest of the
+importing module) instead of sharing `./.test-data` with each other. Node's test
+runner runs each file in its own process, so two files racing to initialize the
+same fresh `./.test-data/shelfbridge.db` — both seeing no pending migrations, both
+running migration 1's non-`IF NOT EXISTS` `CREATE TABLE` statements — could
+otherwise intermittently fail with `table already exists`; isolating each of
+these three files removes the shared state the race depends on. `sync-engine.test.ts`
+additionally seeds its own profile per test and scopes assertions to that
+profile's id, since it shares one database across many tests within the file.
+Each of the three waits for the logger to flush (`logger.end()` + `"finish"`
+event) before deleting its temp dir in `test.after`, since the logger also
+writes into `DATA_DIR`.
 
 ## Playwright End-To-End Tests
 
