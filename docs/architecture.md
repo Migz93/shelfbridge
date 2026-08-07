@@ -381,8 +381,6 @@ running sync completes.
   `goodreads` sources only. `chaptarr` and `audiobookshelf` sources are joined as
   supplemental metadata so unmatched artifacts from those sources do not appear as
   blank catalog books.
-- Schema version is tracked in `schema_version`; the current version is
-  `CURRENT_SCHEMA_VERSION = 9` in `src/server/db/schema.ts`
 - `coverUrl` in all API book responses is always a local `/images/<uuid>.jpg`
   path from `book_sources.cover_cache_path` or `null` — external cover URLs from
   Hardcover, Grimmory, or Goodreads are never forwarded to the browser
