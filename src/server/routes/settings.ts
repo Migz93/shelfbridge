@@ -286,8 +286,9 @@ router.get("/logs", async (req, res) => {
 
 router.get("/about", (_req, res) => {
   // Read the database's actual PRAGMA user_version rather than the code's
-  // LATEST_MIGRATION_VERSION constant, so this reflects what's really applied
-  // — e.g. if a migration is pending or failed partway, this shows the truth.
+  // LATEST_MIGRATION_VERSION constant — this is the last migration version
+  // successfully applied during database initialization, which is what
+  // actually matters for troubleshooting a specific running instance.
   const dbVersion = getDb().pragma("user_version", { simple: true }) as number;
   const info: AboutInfo = {
     version: APP_VERSION,

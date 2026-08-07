@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import BetterSqlite3 from "better-sqlite3";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -123,6 +123,100 @@ test("runGuardedStep detects a foreign-key violation but cannot roll it back onc
 
     const child = db.prepare("SELECT * FROM child").get();
     assert.ok(child, "runGuardedStep has no transaction to roll back — the violating row legitimately survives");
+  } finally {
+    cleanup();
+  }
+});
+
+test("runTransactionalStep does not fail over a pre-existing foreign-key violation the step did not introduce", () => {
+  const { db, cleanup } = openRawDb();
+  try {
+    db.exec(`
+      CREATE TABLE parent (id INTEGER PRIMARY KEY);
+      CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id));
+      CREATE TABLE marker (id INTEGER PRIMARY KEY);
+    `);
+
+    // Seed a violation that exists *before* the guarded step runs — representing
+    // historical data debt unrelated to this migration. A database like this must
+    // still be able to apply new, unrelated migrations; only a violation the step
+    // itself introduces should be fatal.
+    db.pragma("foreign_keys = OFF");
+    db.prepare("INSERT INTO child (id, parent_id) VALUES (1, 999)").run();
+
+    try {
+      runTransactionalStep(db, "test step", undefined, () => {
+        db.prepare("INSERT INTO marker (id) VALUES (1)").run();
+      });
+    } finally {
+      db.pragma("foreign_keys = ON");
+    }
+
+    const marker = db.prepare("SELECT * FROM marker").get();
+    assert.ok(marker, "a step that introduces no new violations must commit even if pre-existing ones remain");
+    const child = db.prepare("SELECT * FROM child").get();
+    assert.ok(child, "the pre-existing violation is untouched, not silently cleaned up");
+  } finally {
+    cleanup();
+  }
+});
+
+test("runTransactionalStep still fails when a step introduces a new violation alongside a pre-existing one", () => {
+  const { db, cleanup } = openRawDb();
+  try {
+    db.exec(`
+      CREATE TABLE parent (id INTEGER PRIMARY KEY);
+      CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id));
+    `);
+
+    db.pragma("foreign_keys = OFF");
+    db.prepare("INSERT INTO child (id, parent_id) VALUES (1, 999)").run(); // pre-existing
+
+    try {
+      assert.throws(() => {
+        runTransactionalStep(db, "test step", undefined, () => {
+          db.prepare("INSERT INTO child (id, parent_id) VALUES (2, 888)").run(); // newly introduced
+        });
+      }, /introduced 1 new foreign-key violation/);
+    } finally {
+      db.pragma("foreign_keys = ON");
+    }
+
+    const newRow = db.prepare("SELECT * FROM child WHERE id = 2").get();
+    assert.equal(newRow, undefined, "the step that introduced a new violation must still roll back");
+    const preExistingRow = db.prepare("SELECT * FROM child WHERE id = 1").get();
+    assert.ok(preExistingRow, "the pre-existing violation from before the step is unaffected by its rollback");
+  } finally {
+    cleanup();
+  }
+});
+
+test("runTransactionalStep rolls back a user_version pragma write, not just table data, on a violation after it", () => {
+  const { db, cleanup } = openRawDb();
+  try {
+    db.exec(`
+      CREATE TABLE parent (id INTEGER PRIMARY KEY);
+      CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id));
+    `);
+    db.pragma("user_version = 5");
+
+    db.pragma("foreign_keys = OFF");
+    try {
+      assert.throws(() => {
+        runTransactionalStep(db, "test step", undefined, () => {
+          // The pragma write happens before the violation is introduced, exactly
+          // like a real migration's `migration.up(db); db.pragma('user_version = N')`
+          // — proving the rollback covers the version bump too, not only table rows.
+          db.pragma("user_version = 6");
+          db.prepare("INSERT INTO child (id, parent_id) VALUES (1, 999)").run();
+        });
+      }, /foreign-key violation/);
+    } finally {
+      db.pragma("foreign_keys = ON");
+    }
+
+    const userVersion = db.pragma("user_version", { simple: true }) as number;
+    assert.equal(userVersion, 5, "the user_version pragma write must roll back along with everything else in the transaction");
   } finally {
     cleanup();
   }
@@ -379,8 +473,12 @@ test("backupBeforeMigrating locks down the backups directory even if it already 
     // Simulate an already-deployed install: the directory exists from before this
     // hardening, at default (umask-affected) permissions. mkdirSync's `mode` is a
     // no-op on a directory that already exists, so without an explicit chmod this
-    // directory would stay at its old, looser permissions forever.
+    // directory would stay at its old, looser permissions forever. The explicit
+    // chmodSync (rather than relying on mkdirSync's requested mode, which the
+    // process umask can silently narrow) guarantees the starting state is
+    // actually 0o755 regardless of the environment's umask.
     mkdirSync(backupDir, { recursive: true, mode: 0o755 });
+    chmodSync(backupDir, 0o755);
     const before = statSync(backupDir).mode & 0o777;
     assert.notEqual(before, 0o700, "the test setup must start from a looser mode than the target, or this test proves nothing");
 
@@ -517,13 +615,13 @@ test("runMigrations backs up an already-populated database before applying a pen
 });
 
 /**
- * Order-independent per-table {columns, indexes} snapshot, plus any views/
- * triggers, so two databases built by different code paths can be compared for
- * equivalence without caring about column declaration order or the order
- * sqlite_master lists indexes in.
+ * Order-independent per-table {columns, indexes, foreignKeys} snapshot, plus
+ * any views/triggers, so two databases built by different code paths can be
+ * compared for equivalence without caring about column declaration order or
+ * the order sqlite_master/PRAGMA calls list indexes or foreign keys in.
  */
 function introspectSchema(db: BetterSqlite3.Database): {
-  tables: Record<string, { columns: string[]; indexes: string[] }>;
+  tables: Record<string, { columns: string[]; indexes: string[]; foreignKeys: string[] }>;
   viewsAndTriggers: string[];
 } {
   const tables = (
@@ -531,31 +629,55 @@ function introspectSchema(db: BetterSqlite3.Database): {
       { name: string }[]
   ).map((t) => t.name);
 
-  const schema: Record<string, { columns: string[]; indexes: string[] }> = {};
+  const schema: Record<string, { columns: string[]; indexes: string[]; foreignKeys: string[] }> = {};
   for (const table of tables) {
+    // `pk` (the column's 1-based position in the primary key, 0 if not part of
+    // one) is included so a primary-key difference between the two paths is
+    // caught here rather than silently passing.
     const columns = (
       db.prepare(`PRAGMA table_info("${table}")`).all() as
-        { name: string; type: string; notnull: number; dflt_value: string | null }[]
+        { name: string; type: string; notnull: number; dflt_value: string | null; pk: number }[]
     )
-      .map((c) => `${c.name}:${c.type}:${c.notnull}:${c.dflt_value ?? ""}`)
+      .map((c) => `${c.name}:${c.type}:${c.notnull}:${c.dflt_value ?? ""}:pk${c.pk}`)
       .sort();
-    // sqlite_autoindex_* entries are implicit, generated from inline UNIQUE/PK
-    // constraints already captured by the column list above and the presence of
-    // the same UNIQUE columns — comparing them by name would fail spuriously
+
+    // Every index is compared by shape (uniqueness + ordered indexed columns),
+    // including the implicit sqlite_autoindex_* entries SQLite generates for
+    // inline UNIQUE/PK constraints — those are keyed by shape only (no name),
     // since SQLite numbers them by creation order, which legitimately differs
-    // between the two code paths here. Named indexes are compared by their full
-    // shape (uniqueness + ordered indexed columns), not just their name, so two
-    // same-named indexes over different columns can't pass as equivalent.
+    // between the two code paths here. A named index keeps its name in the key,
+    // so a rename or a same-named index over different columns is still caught.
     const indexes = (db.prepare(`PRAGMA index_list("${table}")`).all() as { name: string; unique: number }[])
-      .filter((i) => !i.name.startsWith("sqlite_autoindex_"))
       .map((i) => {
         const indexedColumns = (db.prepare(`PRAGMA index_info("${i.name}")`).all() as { name: string }[])
           .map((c) => c.name)
           .join(",");
-        return `${i.name}:${i.unique}:${indexedColumns}`;
+        return i.name.startsWith("sqlite_autoindex_")
+          ? `implicit:${i.unique}:${indexedColumns}`
+          : `named:${i.name}:${i.unique}:${indexedColumns}`;
       })
       .sort();
-    schema[table] = { columns, indexes };
+
+    // A composite foreign key spans multiple PRAGMA foreign_key_list rows that
+    // share the same `id`; group by id and join columns in `seq` order before
+    // comparing, so a multi-column FK is compared as one logical constraint.
+    const fkRows = db.prepare(`PRAGMA foreign_key_list("${table}")`).all() as
+      { id: number; seq: number; table: string; from: string; to: string; on_delete: string }[];
+    const fkGroups = new Map<number, typeof fkRows>();
+    for (const row of fkRows) {
+      const group = fkGroups.get(row.id) ?? [];
+      group.push(row);
+      fkGroups.set(row.id, group);
+    }
+    const foreignKeys = [...fkGroups.values()]
+      .map((group) => {
+        const sorted = [...group].sort((a, b) => a.seq - b.seq);
+        const columnPairs = sorted.map((r) => `${r.from}->${r.to}`).join(",");
+        return `${sorted[0]!.table}:${sorted[0]!.on_delete}:${columnPairs}`;
+      })
+      .sort();
+
+    schema[table] = { columns, indexes, foreignKeys };
   }
 
   const viewsAndTriggers = (
@@ -596,6 +718,11 @@ test("schema equivalence: a fresh install (migration 1) and a full legacy v3-v14
         legacy_.tables[table]!.indexes,
         fresh_.tables[table]!.indexes,
         `indexes for "${table}" must match between a fresh install and a full legacy chain + handover`
+      );
+      assert.deepEqual(
+        legacy_.tables[table]!.foreignKeys,
+        fresh_.tables[table]!.foreignKeys,
+        `foreign keys for "${table}" must match between a fresh install and a full legacy chain + handover`
       );
     }
     assert.deepEqual(

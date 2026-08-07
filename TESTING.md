@@ -126,8 +126,11 @@ so all tests start already authenticated.
 
 | Test | What it checks |
 |---|---|
-| `runTransactionalStep` rollback | A `PRAGMA foreign_key_check` violation rolls back the entire step atomically — the violating row and everything else written in the same step, not just the violation itself |
-| `runGuardedStep` abort-without-rollback | A violation is still detected and thrown, but since `step()` already committed on its own (no transaction), the violating row survives — the documented behavior for steps that can't be one transaction |
+| `runTransactionalStep` rollback | A newly-introduced `PRAGMA foreign_key_check` violation rolls back the entire step atomically — the violating row and everything else written in the same step, not just the violation itself |
+| `runGuardedStep` abort-without-rollback | A newly-introduced violation is still detected and thrown, but since `step()` already committed on its own (no transaction), the violating row survives — the documented behavior for steps that can't be one transaction |
+| Pre-existing violations don't block | A `runTransactionalStep` step that introduces no *new* foreign-key violations still commits even if pre-existing ones (unrelated historical data debt) remain — only newly-introduced violations are fatal |
+| New violation alongside a pre-existing one | A step that introduces one new violation on top of a pre-existing, unrelated one still rolls back — the pre-existing violation doesn't mask a real new one, and survives the rollback untouched |
+| `user_version` rollback | A violation introduced after `db.pragma('user_version = N')` inside a `runTransactionalStep` rolls back the pragma write too, not just table rows — proving the whole transaction is atomic, not just data changes |
 | Fresh database applies migration 1 | `initSchema` on an empty DB reaches `LATEST_MIGRATION_VERSION` via `PRAGMA user_version`, never creates a `schema_version` table, with no foreign-key violations |
 | Idempotent re-run | Running `initSchema` twice makes no further changes |
 | Legacy handover | A pre-existing `schema_version` database is migrated to v14 via the preserved sequential logic, then handed over to `user_version = 1`; verifies `source_instance_id` is added, existing rows survive, Chaptarr is backfilled to instance `0`, per-profile sources are left unscoped, the per-instance unique constraint is enforced, exactly one pre-migration backup was written (not one per step), and the stale `schema_version` table is dropped |
@@ -141,7 +144,7 @@ so all tests start already authenticated.
 | Backup retention | `backupBeforeMigrating` prunes `<data dir>/backups/` down to the 5 most recently created backups each time it runs |
 | Backup directory permissions | `backupBeforeMigrating` locks `<data dir>/backups/` down to owner-only (`0o700`) even when the directory already existed with looser permissions from before this hardening shipped — `mkdirSync`'s `mode` alone is a no-op on an existing directory, so this is only correct if it's backed by an explicit `chmodSync` |
 | Downgrade guard | `getPendingMigrations`/`runMigrations` reject a database whose `user_version` is newer than this build's `LATEST_MIGRATION_VERSION`, instead of silently seeing nothing pending and booting into an unknown schema |
-| Schema equivalence | The flattened baseline (migration 1, a fresh install) and a full legacy `v3`→`v14` chain plus handover produce the same set of tables, columns (with full index shape — name, uniqueness, and ordered indexed columns, not just name), and views/triggers — order-independent, so this catches the baseline silently drifting from what the legacy chain actually produces |
+| Schema equivalence | The flattened baseline (migration 1, a fresh install) and a full legacy `v3`→`v14` chain plus handover produce the same set of tables, columns (including primary-key ordinal), indexes (including implicit ones from inline `UNIQUE`/PK constraints, compared by shape rather than their creation-order-dependent name), foreign keys, and views/triggers — order-independent, so this catches the baseline silently drifting from what the legacy chain actually produces |
 
 ### `tests/server/book-identity.test.ts` — Identity reconciliation
 

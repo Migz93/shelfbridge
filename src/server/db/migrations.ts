@@ -453,12 +453,35 @@ export function backupBeforeMigrating(db: Database.Database): string | undefined
   return backupPath;
 }
 
-/** Thrown when a guarded step's `PRAGMA foreign_key_check` finds violations. */
+/** Thrown when a guarded step's `PRAGMA foreign_key_check` finds violations it introduced. */
 export class ForeignKeyViolationError extends Error {
   constructor(message: string, public readonly violations: unknown[]) {
     super(message);
     this.name = "ForeignKeyViolationError";
   }
+}
+
+interface ForeignKeyViolation {
+  table: string;
+  rowid: number | null;
+  parent: string;
+  fkid: number;
+}
+
+function foreignKeyViolationKey(v: ForeignKeyViolation): string {
+  return `${v.table}:${v.rowid}:${v.parent}:${v.fkid}`;
+}
+
+/**
+ * Returns only the violations in `after` that weren't already present in
+ * `before`. A database can carry pre-existing foreign-key inconsistencies
+ * unrelated to migrations (historical data issues from before this crash-safety
+ * system existed) — those must not newly block every future migration or
+ * startup. Only violations a step actually introduces are worth failing over.
+ */
+function newForeignKeyViolations(before: ForeignKeyViolation[], after: ForeignKeyViolation[]): ForeignKeyViolation[] {
+  const beforeKeys = new Set(before.map(foreignKeyViolationKey));
+  return after.filter((v) => !beforeKeys.has(foreignKeyViolationKey(v)));
 }
 
 function logGuardedFailure(label: string, backupPath: string | undefined, err: unknown): void {
@@ -473,11 +496,14 @@ function logGuardedFailure(label: string, backupPath: string | undefined, err: u
 }
 
 /**
- * Runs `step` and `PRAGMA foreign_key_check` inside one transaction, so a
- * violation rolls back `step`'s changes atomically instead of merely being
- * detected after they already committed. This is the preferred guard for any
- * new, self-contained migration step — used by runMigrations() and by the
- * legacy handover's own v7/v8/v9/v14 sub-steps in schema.ts.
+ * Runs `step` and a `PRAGMA foreign_key_check` inside one transaction, so a
+ * newly-introduced violation rolls back `step`'s changes atomically instead of
+ * merely being detected after they already committed. This is the preferred
+ * guard for any new, self-contained migration step — used by runMigrations()
+ * and by the legacy handover's own v7/v8/v9/v14 sub-steps in schema.ts.
+ *
+ * Only violations introduced by `step` itself are fatal — see
+ * newForeignKeyViolations(). Pre-existing violations are logged, not thrown.
  *
  * `step` must not itself open a nested transaction that toggles `PRAGMA
  * foreign_keys` — that pragma is a silent no-op inside an already-open
@@ -485,11 +511,19 @@ function logGuardedFailure(label: string, backupPath: string | undefined, err: u
  * pragma toggled by its caller *before* calling this function, not inside it.
  */
 export function runTransactionalStep(db: Database.Database, label: string, backupPath: string | undefined, step: () => void): void {
+  const before = db.pragma("foreign_key_check") as ForeignKeyViolation[];
+
   const guarded = db.transaction(() => {
     step();
-    const violations = db.pragma("foreign_key_check") as unknown[];
-    if (violations.length > 0) {
-      throw new ForeignKeyViolationError(`${label} left ${violations.length} foreign-key violation(s)`, violations);
+    const after = db.pragma("foreign_key_check") as ForeignKeyViolation[];
+    const introduced = newForeignKeyViolations(before, after);
+    if (introduced.length > 0) {
+      throw new ForeignKeyViolationError(`${label} introduced ${introduced.length} new foreign-key violation(s)`, introduced);
+    }
+    if (after.length > 0) {
+      logger.warn(`${label} completed with ${after.length} pre-existing foreign-key violation(s) it did not introduce`, {
+        violations: after
+      });
     }
   });
 
@@ -508,13 +542,16 @@ export function runTransactionalStep(db: Database.Database, label: string, backu
  * whole, which toggles `PRAGMA foreign_keys` around some of its own
  * sub-steps), then checks `PRAGMA foreign_key_check` afterward.
  *
- * Because `step` has already committed by the time this runs, a violation
- * here can only abort startup with recovery guidance — it cannot roll
- * anything back. Prefer runTransactionalStep() over this for any new,
- * self-contained migration step; this function exists for the cases where
- * that genuinely isn't possible.
+ * Only violations introduced by `step` itself are fatal — see
+ * newForeignKeyViolations(). Because `step` has already committed by the time
+ * this runs, an introduced violation here can only abort startup with recovery
+ * guidance — it cannot roll anything back. Prefer runTransactionalStep() over
+ * this for any new, self-contained migration step; this function exists for
+ * the cases where that genuinely isn't possible.
  */
 export function runGuardedStep(db: Database.Database, label: string, backupPath: string | undefined, step: () => void): void {
+  const before = db.pragma("foreign_key_check") as ForeignKeyViolation[];
+
   try {
     step();
   } catch (err) {
@@ -522,11 +559,17 @@ export function runGuardedStep(db: Database.Database, label: string, backupPath:
     throw err;
   }
 
-  const violations = db.pragma("foreign_key_check") as unknown[];
-  if (violations.length > 0) {
-    const err = new ForeignKeyViolationError(`${label} left ${violations.length} foreign-key violation(s)`, violations);
+  const after = db.pragma("foreign_key_check") as ForeignKeyViolation[];
+  const introduced = newForeignKeyViolations(before, after);
+  if (introduced.length > 0) {
+    const err = new ForeignKeyViolationError(`${label} introduced ${introduced.length} new foreign-key violation(s)`, introduced);
     logGuardedFailure(label, backupPath, err);
     throw err;
+  }
+  if (after.length > 0) {
+    logger.warn(`${label} completed with ${after.length} pre-existing foreign-key violation(s) it did not introduce`, {
+      violations: after
+    });
   }
 }
 

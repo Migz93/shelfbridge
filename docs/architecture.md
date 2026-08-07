@@ -115,15 +115,20 @@ boundaries, pragma-timing constraints, backup permissions) lives in code
 comments in `migrations.ts` and `schema.ts`, not here.
 
 Before applying any pending migration to a database that already has tables,
-`initSchema()` takes one `VACUUM INTO` snapshot into `<data dir>/backups/`
-(owner-only permissions, retained: 5 most recent) and shares that path with
-both the legacy handover and `runMigrations()`. `initSchema()` (in
+`initSchema()` takes one `VACUUM INTO` snapshot into `<data dir>/backups/`,
+attempts to restrict it to owner-only permissions (best-effort — a permissions
+failure is logged and does not block the backup or startup), and shares the
+resulting path with both the legacy handover and `runMigrations()`. Old backups
+beyond the 5 most recent are pruned, also best-effort. `initSchema()` (in
 `src/server/db/schema.ts`) wires the whole startup sequence together:
 WAL/foreign-key pragmas, the backup, the legacy handover if needed,
 `runMigrations()`, then `reconcileBookIdentities()`.
 
 Two guard primitives apply a migration step and verify it with
-`PRAGMA foreign_key_check`, raising a `ForeignKeyViolationError` on a violation:
+`PRAGMA foreign_key_check`, raising a `ForeignKeyViolationError` only for
+violations the step itself introduced — a database can carry pre-existing,
+unrelated foreign-key inconsistencies that must not block every future
+migration:
 
 | Primitive | Behavior | Used by |
 |---|---|---|
