@@ -14,6 +14,7 @@ import {
   runTransactionalStep
 } from "../../src/server/db/migrations.js";
 import { createTestDatabase } from "./test-db.js";
+import { logger } from "../../src/server/logger.js";
 
 function openRawDb(): { db: BetterSqlite3.Database; dataDir: string; cleanup: () => void } {
   const dataDir = mkdtempSync(path.join(os.tmpdir(), "shelfbridge-migration-test-"));
@@ -395,6 +396,37 @@ test("v7 migration atomicity: a crash before the version bump rolls back the who
     const survivingSource = db.prepare("SELECT title FROM book_sources WHERE external_id = 'grim-1'").get() as
       { title: string } | undefined;
     assert.equal(survivingSource?.title, "Book", "data must survive all the way through a successful retry");
+  } finally {
+    cleanup();
+  }
+});
+
+test("a v7 sub-step failure during the legacy handover is logged once, not twice", () => {
+  const { db, cleanup } = openRawDb();
+  try {
+    seedLegacyBooksSchema(db, 6);
+    db.exec("INSERT INTO books (id, title) VALUES (1, 'Book')");
+
+    // v7's failure propagates through two layers of guarding: the inner
+    // runTransactionalStep wrapping v7 itself, then the outer runGuardedStep
+    // wrapping the whole legacy handover. Without the LOGGED_BY_GUARDED_STEP
+    // marker, logGuardedFailure would fire once at each layer for the same error.
+    const originalError = logger.error.bind(logger);
+    let errorCallCount = 0;
+    (logger as unknown as { error: typeof logger.error }).error = ((message: string, meta?: unknown) => {
+      errorCallCount++;
+      return originalError(message, meta as Record<string, unknown>);
+    }) as typeof logger.error;
+
+    const restore = injectFailureOnce(db, "prepare", "UPDATE schema_version SET version = 7");
+    try {
+      assert.throws(() => initSchema(db), /simulated crash/);
+    } finally {
+      restore();
+      (logger as unknown as { error: typeof logger.error }).error = originalError;
+    }
+
+    assert.equal(errorCallCount, 1, "the same failure must be logged exactly once, not once per guarding layer it propagates through");
   } finally {
     cleanup();
   }

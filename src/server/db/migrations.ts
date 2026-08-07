@@ -341,12 +341,21 @@ const migration1: Migration = {
 
 export const migrations: Migration[] = [migration1];
 
-const seenVersions = new Set<number>();
-for (const migration of migrations) {
-  if (seenVersions.has(migration.version)) {
-    throw new Error(`Duplicate migration version ${migration.version} in the migrations registry`);
+// Guards against a typo'd version number: a duplicate would let two migrations
+// silently race to apply at the same version, and a gap (e.g. 1, 3 — skipping
+// 2) would mean a database that stopped exactly at version 2 for any reason
+// can never reach version 3, since getPendingMigrations() only ever looks for
+// `version > currentVersion`, not sequential coverage.
+const sortedVersions = migrations.map((m) => m.version).sort((a, b) => a - b);
+for (let i = 0; i < sortedVersions.length; i++) {
+  const expected = i + 1;
+  if (sortedVersions[i] !== expected) {
+    throw new Error(
+      sortedVersions[i] === sortedVersions[i - 1]
+        ? `Duplicate migration version ${sortedVersions[i]} in the migrations registry`
+        : `Migration versions must be contiguous starting at 1 with no gaps; expected ${expected}, found ${sortedVersions[i]}`
+    );
   }
-  seenVersions.add(migration.version);
 }
 
 export const LATEST_MIGRATION_VERSION = Math.max(...migrations.map((m) => m.version));
@@ -388,6 +397,8 @@ function pruneOldBackups(backupDir: string, dbBaseName: string): void {
     }
     if (stale.length > 0) {
       logger.info("Pruned old pre-migration database backups", { pruned: stale.length, retained: MAX_RETAINED_BACKUPS });
+    } else {
+      logger.debug("No old pre-migration database backups to prune", { count: backups.length, retained: MAX_RETAINED_BACKUPS });
     }
   } catch (err) {
     logger.warn("Failed to prune old pre-migration database backups", {
@@ -484,15 +495,37 @@ function newForeignKeyViolations(before: ForeignKeyViolation[], after: ForeignKe
   return after.filter((v) => !beforeKeys.has(foreignKeyViolationKey(v)));
 }
 
+// Marks an error as already logged, so a guarded step nested inside another
+// guarded step (the legacy handover's v7/v8/v9/v14 sub-steps, each wrapped in
+// their own runTransactionalStep, all running inside the outer runGuardedStep
+// around the whole handover) doesn't log the same failure a second time as it
+// propagates outward.
+const LOGGED_BY_GUARDED_STEP = Symbol("loggedByGuardedStep");
+
 function logGuardedFailure(label: string, backupPath: string | undefined, err: unknown): void {
+  if (err && typeof err === "object" && LOGGED_BY_GUARDED_STEP in err) return;
+
   const recovery = backupPath
     ? `Restore from the pre-migration backup at ${backupPath} and investigate before retrying.`
     : "No pre-migration backup was available (fresh database) — investigate before retrying.";
   if (err instanceof ForeignKeyViolationError) {
     logger.error(err.message, { violations: err.violations, recovery });
   } else {
-    logger.error(`${label} failed`, { error: err instanceof Error ? err.message : String(err), recovery });
+    logger.error("Guarded migration step failed", { label, error: err instanceof Error ? err.message : String(err), recovery });
   }
+
+  if (err && typeof err === "object") {
+    Object.defineProperty(err, LOGGED_BY_GUARDED_STEP, { value: true, enumerable: false });
+  }
+}
+
+function logPreExistingViolationsIfAny(label: string, violations: ForeignKeyViolation[]): void {
+  if (violations.length === 0) return;
+  logger.warn("Guarded migration step completed with pre-existing foreign-key violations it did not introduce", {
+    label,
+    count: violations.length,
+    violations
+  });
 }
 
 /**
@@ -520,11 +553,7 @@ export function runTransactionalStep(db: Database.Database, label: string, backu
     if (introduced.length > 0) {
       throw new ForeignKeyViolationError(`${label} introduced ${introduced.length} new foreign-key violation(s)`, introduced);
     }
-    if (after.length > 0) {
-      logger.warn(`${label} completed with ${after.length} pre-existing foreign-key violation(s) it did not introduce`, {
-        violations: after
-      });
-    }
+    logPreExistingViolationsIfAny(label, after);
   });
 
   try {
@@ -566,11 +595,7 @@ export function runGuardedStep(db: Database.Database, label: string, backupPath:
     logGuardedFailure(label, backupPath, err);
     throw err;
   }
-  if (after.length > 0) {
-    logger.warn(`${label} completed with ${after.length} pre-existing foreign-key violation(s) it did not introduce`, {
-      violations: after
-    });
-  }
+  logPreExistingViolationsIfAny(label, after);
 }
 
 /**
@@ -593,13 +618,13 @@ export function runMigrations(db: Database.Database, precomputedBackupPath?: str
   const backupPath = precomputedBackupPath ?? backupBeforeMigrating(db);
 
   for (const migration of pending) {
-    logger.info(`Starting schema migration to version ${migration.version}: ${migration.description}`);
+    logger.info("Starting schema migration", { version: migration.version, description: migration.description });
 
     runTransactionalStep(db, `Schema migration to version ${migration.version}`, backupPath, () => {
       migration.up(db);
       db.pragma(`user_version = ${migration.version}`);
     });
 
-    logger.info(`Schema migrated to version ${migration.version}: ${migration.description}`);
+    logger.info("Schema migrated", { version: migration.version, description: migration.description });
   }
 }

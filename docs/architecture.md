@@ -122,7 +122,8 @@ resulting path with both the legacy handover and `runMigrations()`. Old backups
 beyond the 5 most recent are pruned, also best-effort. `initSchema()` (in
 `src/server/db/schema.ts`) wires the whole startup sequence together:
 WAL/foreign-key pragmas, the backup, the legacy handover if needed,
-`runMigrations()`, then `reconcileBookIdentities()`.
+`runMigrations()`, an expired-`auth_sessions` cleanup, then
+`reconcileBookIdentities()`.
 
 Two guard primitives apply a migration step and verify it with
 `PRAGMA foreign_key_check`, raising a `ForeignKeyViolationError` only for
