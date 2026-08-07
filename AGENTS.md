@@ -28,7 +28,7 @@ This table is the only place the projects differ — when a rule below refers to
 | Workspace path | `/workspaces/shelfbridge` (same as `app/` on the host at `/opt/vscode/node/shelfbridge/app/`) |
 | Version files | `package.json` and `package-lock.json` |
 | Checks to run before closing out work | `npm run check` |
-| Test suite | Server tests — `npm test`. No Playwright suite yet ([#59](https://github.com/Migz93/shelfbridge/issues/59)). |
+| Test suite | Server tests — `npm test` (also run in CI). Playwright end-to-end suite — `npm run test:e2e` (needs a live instance). |
 | Integrations to flag in review | Audiobookshelf, Hardcover, Grimmory, Chaptarr |
 
 > **Until [#54](https://github.com/Migz93/shelfbridge/issues/54) lands**, a version bump also has to update the hardcoded literal in
