@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import BetterSqlite3 from "better-sqlite3";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -359,6 +359,29 @@ test("backupBeforeMigrating retains only the 5 most recent backups", () => {
     assert.ok(remaining.includes(path.basename(newBackupPath!)), "the just-created backup must survive pruning");
     assert.ok(!remaining.includes(`${dbBaseName}.pre-migration-0000-00-00T00-00-00-000Z.bak`), "the oldest seeded backup should be pruned");
     assert.ok(!remaining.includes(`${dbBaseName}.pre-migration-0000-00-01T00-00-00-000Z.bak`), "the second-oldest seeded backup should be pruned");
+  } finally {
+    cleanup();
+  }
+});
+
+test("backupBeforeMigrating locks down the backups directory even if it already existed with looser permissions", { skip: process.platform === "win32" }, () => {
+  const { db, dataDir, cleanup } = openRawDb();
+  try {
+    db.exec("CREATE TABLE pre_existing (id INTEGER PRIMARY KEY)");
+    const backupDir = path.join(dataDir, "backups");
+
+    // Simulate an already-deployed install: the directory exists from before this
+    // hardening, at default (umask-affected) permissions. mkdirSync's `mode` is a
+    // no-op on a directory that already exists, so without an explicit chmod this
+    // directory would stay at its old, looser permissions forever.
+    mkdirSync(backupDir, { recursive: true, mode: 0o755 });
+    const before = statSync(backupDir).mode & 0o777;
+    assert.notEqual(before, 0o700, "the test setup must start from a looser mode than the target, or this test proves nothing");
+
+    backupBeforeMigrating(db);
+
+    const after = statSync(backupDir).mode & 0o777;
+    assert.equal(after, 0o700, "an already-existing backups directory must be locked down to owner-only too, not just newly-created ones");
   } finally {
     cleanup();
   }

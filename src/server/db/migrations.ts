@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { logger } from "../logger.js";
 
@@ -396,8 +396,13 @@ export function backupBeforeMigrating(db: Database.Database): string | undefined
 
   const backupDir = path.join(path.dirname(dbPath), "backups");
   // Backups are full copies of the database — API tokens, refresh tokens, and
-  // passwords included — so the directory is created owner-only.
+  // passwords included — so the directory is owner-only. mkdirSync's `mode` is
+  // only applied when it actually creates the directory: with `recursive: true`
+  // it silently no-ops (no chmod) on a directory that already exists, which
+  // every already-deployed install has had since this feature's first commit.
+  // The explicit chmodSync makes this retroactive instead of new-installs-only.
   mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+  chmodSync(backupDir, 0o700);
   const dbBaseName = path.basename(dbPath);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const backupPath = path.join(backupDir, `${dbBaseName}.pre-migration-${stamp}.bak`);

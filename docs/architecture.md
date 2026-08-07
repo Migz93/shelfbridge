@@ -111,12 +111,17 @@ and Pacearr use. Each migration is a `{ version, description, up(db) }` entry;
 
 Before applying any pending migration to a database that already has tables,
 `initSchema()` snapshots it once with `VACUUM INTO` into `<data dir>/backups/`
-(created owner-only, since a snapshot is a full copy of the database including
-API tokens and passwords) and threads that path into both the legacy handover
-(below) and `runMigrations()`, so a startup that needs both only pays for one
-snapshot. `backupBeforeMigrating()` also prunes that directory down to the 5
-most recent backups each time it runs (best-effort — a prune failure is logged
-and swallowed, never allowed to block startup over a successfully-taken backup).
+and threads that path into both the legacy handover (below) and
+`runMigrations()`, so a startup that needs both only pays for one snapshot. A
+snapshot is a full copy of the database, API tokens and passwords included, so
+`backupBeforeMigrating()` locks that directory to owner-only (`chmod 0o700`) on
+every call — not just when it creates the directory. `mkdirSync`'s `mode` option
+is a no-op on a directory that already exists, so an explicit `chmodSync` is
+what makes this apply retroactively to installs that had the directory before
+this hardening shipped, not just fresh ones. `backupBeforeMigrating()` also
+prunes that directory down to the 5 most recent backups each time it runs
+(best-effort — a prune failure is logged and swallowed, never allowed to block
+startup over a successfully-taken backup).
 `initSchema()` (in `src/server/db/schema.ts`) wires all of this up: WAL/foreign-key
 pragmas, the backup, the legacy handover if needed, `runMigrations()`, then
 `reconcileBookIdentities()`.

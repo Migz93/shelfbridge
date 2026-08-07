@@ -139,6 +139,7 @@ so all tests start already authenticated.
 | Legacy v13 migration | `book_sources` rows with the literal string `"datetime('now')"` as `last_sync_at` are repaired to `NULL` |
 | Pre-migration backup | `runMigrations` snapshots an already-populated database via `VACUUM INTO` into `<data dir>/backups/` before applying a pending migration, and skips the backup for a brand-new database with nothing to protect |
 | Backup retention | `backupBeforeMigrating` prunes `<data dir>/backups/` down to the 5 most recently created backups each time it runs |
+| Backup directory permissions | `backupBeforeMigrating` locks `<data dir>/backups/` down to owner-only (`0o700`) even when the directory already existed with looser permissions from before this hardening shipped — `mkdirSync`'s `mode` alone is a no-op on an existing directory, so this is only correct if it's backed by an explicit `chmodSync` |
 
 ### `tests/server/book-identity.test.ts` — Identity reconciliation
 
