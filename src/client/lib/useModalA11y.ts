@@ -20,10 +20,15 @@ export function useModalA11y<T extends HTMLElement = HTMLDivElement>(open: boole
     triggerRef.current = document.activeElement as HTMLElement | null;
 
     const container = containerRef.current;
-    const focusable = Array.from(container?.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR) ?? []).filter(
+    if (!container) return;
+
+    const hadTabIndex = container.hasAttribute("tabindex");
+    if (!hadTabIndex) container.tabIndex = -1;
+
+    const focusable = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
       (el) => el.offsetParent !== null
     );
-    (focusable[0] ?? container)?.focus();
+    (focusable[0] ?? container).focus();
 
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") {
@@ -36,13 +41,20 @@ export function useModalA11y<T extends HTMLElement = HTMLDivElement>(open: boole
       const nodes = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
         (el) => el.offsetParent !== null
       );
-      if (nodes.length === 0) return;
+      if (nodes.length === 0) {
+        e.preventDefault();
+        container.focus();
+        return;
+      }
 
       const first = nodes[0];
       const last = nodes[nodes.length - 1];
       const active = document.activeElement;
 
-      if (e.shiftKey && active === first) {
+      if (!container.contains(active)) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      } else if (e.shiftKey && active === first) {
         e.preventDefault();
         last.focus();
       } else if (!e.shiftKey && active === last) {
@@ -54,6 +66,7 @@ export function useModalA11y<T extends HTMLElement = HTMLDivElement>(open: boole
     document.addEventListener("keydown", onKeyDown);
     return () => {
       document.removeEventListener("keydown", onKeyDown);
+      if (!hadTabIndex) container.removeAttribute("tabindex");
       triggerRef.current?.focus();
     };
   }, [open]);

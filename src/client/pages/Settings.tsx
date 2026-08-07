@@ -942,28 +942,33 @@ function JobsTab() {
 
 function AboutTab() {
   const [info, setInfo] = useState<AboutInfo | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
-    apiGet<AboutInfo>("/api/settings/about").then(setInfo).catch(() => null);
+    apiGet<AboutInfo>("/api/settings/about")
+      .then(setInfo)
+      .catch(() => setLoadFailed(true));
   }, []);
+
+  const placeholder = loadFailed ? "unavailable" : "...";
 
   return (
     <SectionCard title="About ShelfBridge">
-      <InfoRow label="Version"><span className="font-mono text-sm text-on-surface">{info?.version ?? "..."}</span></InfoRow>
-      <InfoRow label="Build Channel"><span className="text-sm text-on-surface capitalize">{info?.buildChannel ?? "..."}</span></InfoRow>
+      <InfoRow label="Version"><span className="font-mono text-sm text-on-surface">{info?.version ?? placeholder}</span></InfoRow>
+      <InfoRow label="Build Channel"><span className="text-sm text-on-surface capitalize">{info?.buildChannel ?? placeholder}</span></InfoRow>
       {info?.buildChannel !== "stable" && (
         <InfoRow label="Commit">
-          <code className="text-sm text-on-surface bg-background-container-high px-2 py-0.5 rounded font-mono">{info?.commitSha ?? "..."}</code>
+          <code className="text-sm text-on-surface bg-background-container-high px-2 py-0.5 rounded font-mono">{info?.commitSha ?? placeholder}</code>
         </InfoRow>
       )}
       <InfoRow label="Data Directory">
-        <code className="text-sm text-on-surface bg-background-container-high px-2 py-0.5 rounded">{info?.dataDir ?? "..."}</code>
+        <code className="text-sm text-on-surface bg-background-container-high px-2 py-0.5 rounded">{info?.dataDir ?? placeholder}</code>
       </InfoRow>
       <InfoRow label="Timezone">
-        <code className="text-sm text-on-surface bg-background-container-high px-2 py-0.5 rounded">{info?.tz ?? "..."}</code>
+        <code className="text-sm text-on-surface bg-background-container-high px-2 py-0.5 rounded">{info?.tz ?? placeholder}</code>
       </InfoRow>
       <InfoRow label="DB Schema Version">
-        <span className="text-sm text-on-surface">{info?.dbVersion ?? "..."}</span>
+        <span className="text-sm text-on-surface">{info?.dbVersion ?? placeholder}</span>
       </InfoRow>
     </SectionCard>
   );
