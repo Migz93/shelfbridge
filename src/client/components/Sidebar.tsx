@@ -36,16 +36,16 @@ export default function Sidebar({ mobileOpen, onMobileClose, onLogout }: Sidebar
   }, []);
 
   const externalLinks: { href: string; icon: React.ElementType; label: string }[] = [];
-  if (settings?.grimmory.baseUrl.trim()) {
+  if (settings?.grimmory.baseUrl.trim() && settings.grimmory.addMenuLink) {
     externalLinks.push({ href: settings.grimmory.baseUrl, icon: ExternalLink, label: "Grimmory" });
   }
-  if (settings?.download.baseUrl.trim()) {
+  if (settings?.download.baseUrl.trim() && settings.download.addMenuLink) {
     externalLinks.push({ href: settings.download.baseUrl, icon: Download, label: "Shelfmark" });
   }
-  if (settings?.chaptarr.baseUrl.trim()) {
+  if (settings?.chaptarr.baseUrl.trim() && settings.chaptarr.addMenuLink) {
     externalLinks.push({ href: settings.chaptarr.baseUrl, icon: ExternalLink, label: "Chaptarr" });
   }
-  if (settings?.audiobookshelf.baseUrl.trim()) {
+  if (settings?.audiobookshelf.baseUrl.trim() && settings.audiobookshelf.addMenuLink) {
     externalLinks.push({ href: settings.audiobookshelf.baseUrl, icon: Headphones, label: "Audiobookshelf" });
   }
 

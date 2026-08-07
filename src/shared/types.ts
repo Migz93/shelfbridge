@@ -356,9 +356,11 @@ export interface AppSettings {
   chaptarr: {
     baseUrl: string;
     apiKeyConfigured: boolean;
+    addMenuLink: boolean;
   };
   audiobookshelf: {
     baseUrl: string;
+    addMenuLink: boolean;
   };
 }
 

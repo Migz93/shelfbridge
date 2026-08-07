@@ -20,11 +20,11 @@ function readSettings(): AppSettings {
     },
     grimmory: {
       baseUrl: getSetting("grimmory.baseUrl", ""),
-      addMenuLink: getSetting("grimmory.addMenuLink", "false") === "true"
+      addMenuLink: getSetting("grimmory.addMenuLink", "true") === "true"
     },
     download: {
       baseUrl: getSetting("download.baseUrl", ""),
-      addMenuLink: getSetting("download.addMenuLink", "false") === "true",
+      addMenuLink: getSetting("download.addMenuLink", "true") === "true",
     },
     sync: {
       startupSyncEnabled: getSetting("sync.startupSyncEnabled", "false") === "true",
@@ -34,9 +34,11 @@ function readSettings(): AppSettings {
     chaptarr: {
       baseUrl: getSetting("chaptarr.baseUrl", ""),
       apiKeyConfigured: Boolean(getSetting("chaptarr.apiKey", "").trim()),
+      addMenuLink: getSetting("chaptarr.addMenuLink", "true") === "true",
     },
     audiobookshelf: {
       baseUrl: getSetting("audiobookshelf.baseUrl", ""),
+      addMenuLink: getSetting("audiobookshelf.addMenuLink", "true") === "true",
     },
   };
 }
@@ -53,9 +55,11 @@ router.patch("/", (req, res) => {
     chaptarr?: {
       baseUrl?: string;
       apiKey?: string;
+      addMenuLink?: boolean;
     };
     audiobookshelf?: {
       baseUrl?: string;
+      addMenuLink?: boolean;
     };
   };
 
@@ -96,9 +100,13 @@ router.patch("/", (req, res) => {
   if (body.chaptarr) {
     if (body.chaptarr.baseUrl !== undefined) setSetting("chaptarr.baseUrl", validateIntegrationUrl(body.chaptarr.baseUrl));
     if (body.chaptarr.apiKey !== undefined) setSetting("chaptarr.apiKey", body.chaptarr.apiKey);
+    if (body.chaptarr.addMenuLink !== undefined)
+      setSetting("chaptarr.addMenuLink", String(body.chaptarr.addMenuLink));
   }
   if (body.audiobookshelf) {
     if (body.audiobookshelf.baseUrl !== undefined) setSetting("audiobookshelf.baseUrl", validateIntegrationUrl(body.audiobookshelf.baseUrl));
+    if (body.audiobookshelf.addMenuLink !== undefined)
+      setSetting("audiobookshelf.addMenuLink", String(body.audiobookshelf.addMenuLink));
   }
   res.json(readSettings());
 });
