@@ -106,11 +106,13 @@ Schema version is tracked with SQLite's built-in `PRAGMA user_version`, driven b
 a `Migration[]` array in `src/server/db/migrations.ts` — the same pattern Hubarr
 and Pacearr use. Each migration is a `{ version, description, up(db) }` entry;
 `runMigrations()` applies every migration newer than the database's current
-`user_version`, in ascending order. Migration 1 is a single flattened
-`CREATE TABLE` block, so a fresh install reaches a correct schema in one migration.
-Implementation rationale (transaction boundaries, pragma-timing constraints,
-backup permissions) lives in code comments in `migrations.ts` and `schema.ts`,
-not here.
+`user_version`, in ascending order, and rejects a database whose `user_version`
+is *newer* than this build's `LATEST_MIGRATION_VERSION` (a downgrade to an older
+image) rather than silently booting into a schema it doesn't understand.
+Migration 1 is a single flattened `CREATE TABLE` block, so a fresh install
+reaches a correct schema in one migration. Implementation rationale (transaction
+boundaries, pragma-timing constraints, backup permissions) lives in code
+comments in `migrations.ts` and `schema.ts`, not here.
 
 Before applying any pending migration to a database that already has tables,
 `initSchema()` takes one `VACUUM INTO` snapshot into `<data dir>/backups/`

@@ -13,9 +13,6 @@ export function initSchema(db: Database.Database): void {
   // upgrading straight into a future migration would pay for two VACUUM INTO
   // snapshots of the same starting state.
   const backupPath = (needsHandover || getPendingMigrations(db).length > 0) ? backupBeforeMigrating(db) : undefined;
-  if (backupPath) {
-    logger.info("Created pre-migration database backup", { backupPath });
-  }
 
   if (needsHandover) {
     handleLegacySchemaVersionHandover(db, backupPath);

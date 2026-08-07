@@ -140,7 +140,8 @@ so all tests start already authenticated.
 | Pre-migration backup | `backupBeforeMigrating` snapshots an already-populated database via `VACUUM INTO` into `<data dir>/backups/` before `runMigrations` applies a pending migration, and skips the backup for a brand-new database with nothing to protect |
 | Backup retention | `backupBeforeMigrating` prunes `<data dir>/backups/` down to the 5 most recently created backups each time it runs |
 | Backup directory permissions | `backupBeforeMigrating` locks `<data dir>/backups/` down to owner-only (`0o700`) even when the directory already existed with looser permissions from before this hardening shipped — `mkdirSync`'s `mode` alone is a no-op on an existing directory, so this is only correct if it's backed by an explicit `chmodSync` |
-| Schema equivalence | The flattened baseline (migration 1, a fresh install) and a full legacy `v3`→`v14` chain plus handover produce the same set of tables, columns, and named indexes — order-independent, so this catches the baseline silently drifting from what the legacy chain actually produces |
+| Downgrade guard | `getPendingMigrations`/`runMigrations` reject a database whose `user_version` is newer than this build's `LATEST_MIGRATION_VERSION`, instead of silently seeing nothing pending and booting into an unknown schema |
+| Schema equivalence | The flattened baseline (migration 1, a fresh install) and a full legacy `v3`→`v14` chain plus handover produce the same set of tables, columns (with full index shape — name, uniqueness, and ordered indexed columns, not just name), and views/triggers — order-independent, so this catches the baseline silently drifting from what the legacy chain actually produces |
 
 ### `tests/server/book-identity.test.ts` — Identity reconciliation
 

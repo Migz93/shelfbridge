@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { logger } from "../logger.js";
 
@@ -351,9 +351,20 @@ for (const migration of migrations) {
 
 export const LATEST_MIGRATION_VERSION = Math.max(...migrations.map((m) => m.version));
 
-/** Returns every migration newer than the database's current PRAGMA user_version, ascending. */
+/**
+ * Returns every migration newer than the database's current PRAGMA user_version,
+ * ascending. Rejects a database whose user_version is newer than this build
+ * knows about — otherwise a downgrade (rolling back to an older image after an
+ * upgrade) would silently see no pending migrations and boot straight into a
+ * schema it doesn't understand, risking corruption on write.
+ */
 export function getPendingMigrations(db: Database.Database): Migration[] {
   const currentVersion = db.pragma("user_version", { simple: true }) as number;
+  if (currentVersion > LATEST_MIGRATION_VERSION) {
+    throw new Error(
+      `Database schema version ${currentVersion} is newer than this build supports (${LATEST_MIGRATION_VERSION}). Downgrading to this version is not supported.`
+    );
+  }
   return migrations.filter((m) => m.version > currentVersion).sort((a, b) => a.version - b.version);
 }
 
@@ -385,6 +396,24 @@ function pruneOldBackups(backupDir: string, dbBaseName: string): void {
   }
 }
 
+// Hardening only — never let a permissions failure block startup or the backup
+// itself. chmodSync throws EPERM if another UID owns an already-existing
+// directory (plausible with a UID/GID mismatch in a container deployment) and
+// throws outright on filesystems that don't support POSIX modes (e.g. a
+// CIFS/SMB bind mount) — an install that boots fine today must not stop
+// booting because this hardening couldn't apply.
+function restrictPermissions(target: string, mode: number): void {
+  try {
+    chmodSync(target, mode);
+  } catch (err) {
+    logger.warn("Could not restrict permissions on a pre-migration backup path", {
+      target,
+      mode: mode.toString(8),
+      error: err instanceof Error ? err.message : String(err)
+    });
+  }
+}
+
 /**
  * Snapshots the database via VACUUM INTO before schema changes, so a failed
  * migration or handover has a restore point. Call this once per initSchema()
@@ -408,9 +437,9 @@ export function backupBeforeMigrating(db: Database.Database): string | undefined
   // only applied when it actually creates the directory: with `recursive: true`
   // it silently no-ops (no chmod) on a directory that already exists, which
   // every already-deployed install has had since this feature's first commit.
-  // The explicit chmodSync makes this retroactive instead of new-installs-only.
+  // The explicit chmod makes this retroactive instead of new-installs-only.
   mkdirSync(backupDir, { recursive: true, mode: 0o700 });
-  chmodSync(backupDir, 0o700);
+  restrictPermissions(backupDir, 0o700);
   const dbBaseName = path.basename(dbPath);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const backupPath = path.join(backupDir, `${dbBaseName}.pre-migration-${stamp}.bak`);
@@ -418,8 +447,9 @@ export function backupBeforeMigrating(db: Database.Database): string | undefined
   db.prepare("VACUUM INTO ?").run(backupPath);
   // The directory is already owner-only, but lock the file down too — defense
   // in depth in case it's ever copied or the directory permissions loosen.
-  chmodSync(backupPath, 0o600);
+  restrictPermissions(backupPath, 0o600);
   pruneOldBackups(backupDir, dbBaseName);
+  logger.info("Created pre-migration database backup", { backupPath });
   return backupPath;
 }
 
@@ -518,9 +548,6 @@ export function runMigrations(db: Database.Database, precomputedBackupPath?: str
   if (pending.length === 0) return;
 
   const backupPath = precomputedBackupPath ?? backupBeforeMigrating(db);
-  if (backupPath && !precomputedBackupPath && existsSync(backupPath)) {
-    logger.info("Created pre-migration database backup", { backupPath });
-  }
 
   for (const migration of pending) {
     logger.info(`Starting schema migration to version ${migration.version}: ${migration.description}`);

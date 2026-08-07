@@ -7,6 +7,7 @@ import test from "node:test";
 import { initSchema } from "../../src/server/db/schema.js";
 import {
   backupBeforeMigrating,
+  getPendingMigrations,
   LATEST_MIGRATION_VERSION,
   runGuardedStep,
   runMigrations,
@@ -392,6 +393,25 @@ test("backupBeforeMigrating locks down the backups directory even if it already 
   }
 });
 
+test("getPendingMigrations/runMigrations reject a database newer than this build supports", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    // Simulate an operator downgrading to an older image after upgrading: the
+    // database's user_version is ahead of anything this build's migrations
+    // array knows about.
+    db.pragma(`user_version = ${LATEST_MIGRATION_VERSION + 1}`);
+
+    assert.throws(
+      () => getPendingMigrations(db),
+      /is newer than this build supports/,
+      "a downgrade must fail loudly instead of silently seeing nothing pending and booting into an unknown schema"
+    );
+    assert.throws(() => runMigrations(db), /is newer than this build supports/);
+  } finally {
+    cleanup();
+  }
+});
+
 test("legacy handover is not re-run: a database already at user_version >= 1 is left alone", () => {
   const { db, dataDir, cleanup } = openRawDb();
   try {
@@ -497,12 +517,15 @@ test("runMigrations backs up an already-populated database before applying a pen
 });
 
 /**
- * Order-independent per-table {columns, indexes} snapshot, so two databases
- * built by different code paths can be compared for equivalence without
- * caring about column declaration order or the order sqlite_master lists
- * indexes in.
+ * Order-independent per-table {columns, indexes} snapshot, plus any views/
+ * triggers, so two databases built by different code paths can be compared for
+ * equivalence without caring about column declaration order or the order
+ * sqlite_master lists indexes in.
  */
-function introspectSchema(db: BetterSqlite3.Database): Record<string, { columns: string[]; indexes: string[] }> {
+function introspectSchema(db: BetterSqlite3.Database): {
+  tables: Record<string, { columns: string[]; indexes: string[] }>;
+  viewsAndTriggers: string[];
+} {
   const tables = (
     db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name != 'sqlite_sequence'").all() as
       { name: string }[]
@@ -520,14 +543,29 @@ function introspectSchema(db: BetterSqlite3.Database): Record<string, { columns:
     // constraints already captured by the column list above and the presence of
     // the same UNIQUE columns — comparing them by name would fail spuriously
     // since SQLite numbers them by creation order, which legitimately differs
-    // between the two code paths here.
-    const indexes = (db.prepare(`PRAGMA index_list("${table}")`).all() as { name: string }[])
-      .map((i) => i.name)
-      .filter((name) => !name.startsWith("sqlite_autoindex_"))
+    // between the two code paths here. Named indexes are compared by their full
+    // shape (uniqueness + ordered indexed columns), not just their name, so two
+    // same-named indexes over different columns can't pass as equivalent.
+    const indexes = (db.prepare(`PRAGMA index_list("${table}")`).all() as { name: string; unique: number }[])
+      .filter((i) => !i.name.startsWith("sqlite_autoindex_"))
+      .map((i) => {
+        const indexedColumns = (db.prepare(`PRAGMA index_info("${i.name}")`).all() as { name: string }[])
+          .map((c) => c.name)
+          .join(",");
+        return `${i.name}:${i.unique}:${indexedColumns}`;
+      })
       .sort();
     schema[table] = { columns, indexes };
   }
-  return schema;
+
+  const viewsAndTriggers = (
+    db.prepare("SELECT type, name, sql FROM sqlite_master WHERE type IN ('view', 'trigger')").all() as
+      { type: string; name: string; sql: string }[]
+  )
+    .map((o) => `${o.type}:${o.name}:${o.sql}`)
+    .sort();
+
+  return { tables: schema, viewsAndTriggers };
 }
 
 test("schema equivalence: a fresh install (migration 1) and a full legacy v3-v14 chain produce the same schema", () => {
@@ -540,26 +578,31 @@ test("schema equivalence: a fresh install (migration 1) and a full legacy v3-v14
     legacy.db.exec("INSERT INTO books (id, title) VALUES (1, 'Book')");
     initSchema(legacy.db);
 
-    const freshSchema = introspectSchema(fresh.db);
-    const legacySchema = introspectSchema(legacy.db);
+    const fresh_ = introspectSchema(fresh.db);
+    const legacy_ = introspectSchema(legacy.db);
 
     assert.deepEqual(
-      Object.keys(legacySchema).sort(),
-      Object.keys(freshSchema).sort(),
+      Object.keys(legacy_.tables).sort(),
+      Object.keys(fresh_.tables).sort(),
       "both code paths must produce the same set of tables"
     );
-    for (const table of Object.keys(freshSchema)) {
+    for (const table of Object.keys(fresh_.tables)) {
       assert.deepEqual(
-        legacySchema[table]!.columns,
-        freshSchema[table]!.columns,
+        legacy_.tables[table]!.columns,
+        fresh_.tables[table]!.columns,
         `columns for "${table}" must match between a fresh install and a full legacy chain + handover`
       );
       assert.deepEqual(
-        legacySchema[table]!.indexes,
-        freshSchema[table]!.indexes,
+        legacy_.tables[table]!.indexes,
+        fresh_.tables[table]!.indexes,
         `indexes for "${table}" must match between a fresh install and a full legacy chain + handover`
       );
     }
+    assert.deepEqual(
+      legacy_.viewsAndTriggers,
+      fresh_.viewsAndTriggers,
+      "views and triggers must match between a fresh install and a full legacy chain + handover"
+    );
   } finally {
     fresh.cleanup();
     legacy.cleanup();
