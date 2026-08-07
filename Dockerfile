@@ -4,8 +4,11 @@
 FROM node:22-trixie-slim@sha256:517aa41d78545cb1b8c67b13655b4c13ede1ee9df1da8aab54cd7434aefbcaf8 AS deps
 WORKDIR /app
 COPY package.json package-lock.json* ./
-# better-sqlite3 may not have a prebuilt binary for every Node and CPU
-# combination, so provide node-gyp's native build requirements in this stage.
+# better-sqlite3 has no install/postinstall script of its own, so npm falls
+# back to its legacy default for packages with a binding.gyp: it always runs
+# `node-gyp rebuild` on install, even though better-sqlite3 already bundles a
+# matching prebuilt binary. Provide node-gyp's native build requirements so
+# that unconditional rebuild succeeds.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends python3 make g++ \
   && rm -rf /var/lib/apt/lists/*
