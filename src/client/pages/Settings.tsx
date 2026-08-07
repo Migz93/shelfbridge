@@ -4,6 +4,7 @@ import { ChevronLeft, ChevronRight, ClipboardCopy, Eye, Pause, Play, Pencil, Ref
 import { apiGet, apiPatch, apiPost } from "../lib/api";
 import { notifySettingsChanged } from "../lib/settingsEvents";
 import { useLiveRefresh } from "../lib/useLiveRefresh";
+import { useModalA11y } from "../lib/useModalA11y";
 import { formatRelativeTime } from "../lib/utils";
 import { Field, SaveBar, SectionCard, SelectInput, TextInput, ToggleField } from "../components/FormControls";
 import type { AboutInfo, AppSettings, JobInfo, LogEntry, LogsPageResponse, TestResult } from "../../shared/types";
@@ -459,6 +460,7 @@ function LogsTab() {
   const [page, setPage] = useState(1);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [activeLog, setActiveLog] = useState<LogEntry | null>(null);
+  const logModalRef = useModalA11y(activeLog !== null, () => setActiveLog(null));
   const [copied, setCopied] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -515,11 +517,16 @@ function LogsTab() {
           onClick={() => setActiveLog(null)}
         >
           <div
+            ref={logModalRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="log-details-title"
+            tabIndex={-1}
             className="bg-background-container-high rounded-2xl border border-outline-variant/30 w-full max-w-2xl p-6 space-y-4"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between">
-              <h3 className="font-semibold text-on-surface">Log Details</h3>
+              <h3 id="log-details-title" className="font-semibold text-on-surface">Log Details</h3>
               <button onClick={() => setActiveLog(null)} className="text-on-surface-variant hover:text-on-surface">
                 <X size={18} />
               </button>
@@ -723,6 +730,7 @@ function JobsTab() {
   const [runningId, setRunningId] = useState<string | null>(null);
   const [editingJob, setEditingJob] = useState<JobInfo | null>(null);
   const [editValue, setEditValue] = useState<string>("");
+  const scheduleModalRef = useModalA11y(editingJob !== null, () => setEditingJob(null));
   const [saving, setSaving] = useState(false);
   const [fastRefreshUntil, setFastRefreshUntil] = useState<number | null>(null);
 
@@ -789,9 +797,16 @@ function JobsTab() {
       {/* Edit schedule modal */}
       {editingJob && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
-          <div className="bg-background-container rounded-2xl border border-outline-variant/20 w-full max-w-md shadow-2xl">
+          <div
+            ref={scheduleModalRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-schedule-title"
+            tabIndex={-1}
+            className="bg-background-container rounded-2xl border border-outline-variant/20 w-full max-w-md shadow-2xl"
+          >
             <div className="flex items-center justify-between px-6 py-4 border-b border-outline-variant/20">
-              <h2 className="font-headline font-semibold text-on-surface">Edit Schedule</h2>
+              <h2 id="edit-schedule-title" className="font-headline font-semibold text-on-surface">Edit Schedule</h2>
               <button onClick={() => setEditingJob(null)} className="text-on-surface-variant hover:text-on-surface transition-colors">
                 <X size={18} />
               </button>
@@ -927,28 +942,33 @@ function JobsTab() {
 
 function AboutTab() {
   const [info, setInfo] = useState<AboutInfo | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
-    apiGet<AboutInfo>("/api/settings/about").then(setInfo).catch(() => null);
+    apiGet<AboutInfo>("/api/settings/about")
+      .then(setInfo)
+      .catch(() => setLoadFailed(true));
   }, []);
+
+  const placeholder = loadFailed ? "unavailable" : "...";
 
   return (
     <SectionCard title="About ShelfBridge">
-      <InfoRow label="Version"><span className="font-mono text-sm text-on-surface">{info?.version ?? "..."}</span></InfoRow>
-      <InfoRow label="Build Channel"><span className="text-sm text-on-surface capitalize">{info?.buildChannel ?? "..."}</span></InfoRow>
+      <InfoRow label="Version"><span className="font-mono text-sm text-on-surface">{info?.version ?? placeholder}</span></InfoRow>
+      <InfoRow label="Build Channel"><span className="text-sm text-on-surface capitalize">{info?.buildChannel ?? placeholder}</span></InfoRow>
       {info?.buildChannel !== "stable" && (
         <InfoRow label="Commit">
-          <code className="text-sm text-on-surface bg-background-container-high px-2 py-0.5 rounded font-mono">{info?.commitSha ?? "..."}</code>
+          <code className="text-sm text-on-surface bg-background-container-high px-2 py-0.5 rounded font-mono">{info?.commitSha ?? placeholder}</code>
         </InfoRow>
       )}
       <InfoRow label="Data Directory">
-        <code className="text-sm text-on-surface bg-background-container-high px-2 py-0.5 rounded">{info?.dataDir ?? "..."}</code>
+        <code className="text-sm text-on-surface bg-background-container-high px-2 py-0.5 rounded">{info?.dataDir ?? placeholder}</code>
       </InfoRow>
       <InfoRow label="Timezone">
-        <code className="text-sm text-on-surface bg-background-container-high px-2 py-0.5 rounded">{info?.tz ?? "..."}</code>
+        <code className="text-sm text-on-surface bg-background-container-high px-2 py-0.5 rounded">{info?.tz ?? placeholder}</code>
       </InfoRow>
       <InfoRow label="DB Schema Version">
-        <span className="text-sm text-on-surface">{info?.dbVersion ?? "..."}</span>
+        <span className="text-sm text-on-surface">{info?.dbVersion ?? placeholder}</span>
       </InfoRow>
     </SectionCard>
   );
