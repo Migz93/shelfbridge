@@ -11,6 +11,8 @@ const FOCUSABLE_SELECTOR =
 export function useModalA11y<T extends HTMLElement = HTMLDivElement>(open: boolean, onClose: () => void) {
   const containerRef = useRef<T>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!open) return;
@@ -18,13 +20,15 @@ export function useModalA11y<T extends HTMLElement = HTMLDivElement>(open: boole
     triggerRef.current = document.activeElement as HTMLElement | null;
 
     const container = containerRef.current;
-    const focusable = container?.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR);
-    (focusable?.[0] ?? container)?.focus();
+    const focusable = Array.from(container?.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR) ?? []).filter(
+      (el) => el.offsetParent !== null
+    );
+    (focusable[0] ?? container)?.focus();
 
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") {
         e.stopPropagation();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key !== "Tab" || !container) return;
@@ -52,7 +56,7 @@ export function useModalA11y<T extends HTMLElement = HTMLDivElement>(open: boole
       document.removeEventListener("keydown", onKeyDown);
       triggerRef.current?.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   return containerRef;
 }

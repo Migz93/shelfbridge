@@ -55,7 +55,7 @@ export default function Sidebar({ mobileOpen, onMobileClose, onLogout }: Sidebar
       role={mobileOpen ? "dialog" : undefined}
       aria-modal={mobileOpen ? true : undefined}
       aria-label={mobileOpen ? "Navigation" : undefined}
-      tabIndex={-1}
+      tabIndex={mobileOpen ? -1 : undefined}
       className={`fixed inset-y-0 left-0 w-64 flex flex-col bg-background-container-low border-r border-outline-variant/20 z-40 transition-transform duration-300
         md:translate-x-0 ${mobileOpen ? "translate-x-0" : "-translate-x-full"}`}
     >
