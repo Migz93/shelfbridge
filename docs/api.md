@@ -55,8 +55,8 @@ Returns the full application settings object.
   "general": {
     "trustProxy": false
   },
-  "grimmory": { "baseUrl": "http://grimmory:8080", "addMenuLink": false },
-  "download": { "baseUrl": "", "addMenuLink": false },
+  "grimmory": { "baseUrl": "http://grimmory:8080", "addMenuLink": true },
+  "download": { "baseUrl": "", "addMenuLink": true },
   "sync": {
     "startupSyncEnabled": false,
     "historyRetentionDays": 7,
@@ -64,18 +64,20 @@ Returns the full application settings object.
   },
   "chaptarr": {
     "baseUrl": "http://chaptarr:8787",
-    "apiKeyConfigured": true
+    "apiKeyConfigured": true,
+    "addMenuLink": true
   },
   "audiobookshelf": {
-    "baseUrl": "http://abs:13378"
+    "baseUrl": "http://abs:13378",
+    "addMenuLink": true
   }
 }
 ```
 
-The sidebar automatically shows links for Grimmory, Shelfmark, and Chaptarr
-whenever their `baseUrl` values are set. The legacy `addMenuLink` fields may
-still appear in the settings payload for compatibility, but the UI no longer
-uses them to decide whether those links render.
+The sidebar shows a link for Grimmory, Shelfmark, Chaptarr, or Audiobookshelf
+whenever that integration's `baseUrl` is set **and** its `addMenuLink` is
+`true`. Each `addMenuLink` field defaults to `true` so existing installs keep
+their current appearance until a user opts out in Settings.
 
 ### `PATCH /api/settings`
 
@@ -88,8 +90,8 @@ are updated; others are untouched.
   "general": {
     "trustProxy": false
   },
-  "grimmory": { "baseUrl": "string", "addMenuLink": false },
-  "download": { "baseUrl": "string", "addMenuLink": false },
+  "grimmory": { "baseUrl": "string", "addMenuLink": true },
+  "download": { "baseUrl": "string", "addMenuLink": true },
   "sync": {
     "startupSyncEnabled": false,
     "historyRetentionDays": 7,
@@ -97,10 +99,12 @@ are updated; others are untouched.
   },
   "chaptarr": {
     "baseUrl": "string",
-    "apiKey": "string"
+    "apiKey": "string",
+    "addMenuLink": true
   },
   "audiobookshelf": {
-    "baseUrl": "string"
+    "baseUrl": "string",
+    "addMenuLink": true
   }
 }
 ```

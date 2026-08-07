@@ -198,8 +198,11 @@ through `GET /api/settings`. Covers:
 - Download/Shelfmark: base URL
 
 The sidebar refreshes when settings change and renders external links for
-Grimmory, Shelfmark, and Chaptarr automatically whenever each service has a
-base URL configured. No link appears for services with an empty base URL.
+Grimmory, Shelfmark, Chaptarr, and Audiobookshelf whenever each service has a
+base URL configured **and** that integration's "Show link in navigation"
+toggle (`addMenuLink`, per integration, defaults to `true`) is enabled. No
+link appears for services with an empty base URL or with the toggle turned
+off.
 
 Timezone is **not** a settings field. It is controlled entirely by the `TZ`
 environment variable passed to the container (e.g. `-e TZ=Europe/London`). The

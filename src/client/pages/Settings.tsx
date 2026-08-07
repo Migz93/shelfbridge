@@ -222,6 +222,12 @@ function GrimmoryTab({ settings, onSave }: { settings: AppSettings; onSave: () =
             placeholder="http://grimmory:8080"
           />
         </Field>
+        <ToggleField
+          label="Show link in navigation"
+          hint="Show a Grimmory link in the bottom-left navigation menu."
+          checked={form.addMenuLink}
+          onChange={(v) => setForm((f) => ({ ...f, addMenuLink: v }))}
+        />
         <div className="flex items-center justify-between gap-3 pt-2 border-t border-outline-variant/15">
           <div className="flex items-center gap-3 flex-wrap">
             <button
@@ -271,6 +277,12 @@ function DownloadTab({ settings, onSave }: { settings: AppSettings; onSave: () =
             placeholder="https://shelfmark.example.com"
           />
         </Field>
+        <ToggleField
+          label="Show link in navigation"
+          hint="Show a Shelfmark link in the bottom-left navigation menu."
+          checked={form.addMenuLink}
+          onChange={(v) => setForm((f) => ({ ...f, addMenuLink: v }))}
+        />
         <SaveBar saving={saving} success={success} error={error} onSave={() => void save()} label="Save Shelfmark" />
       </SectionCard>
     </div>
@@ -283,6 +295,7 @@ function ChaptarrTab({ settings, onSave }: { settings: AppSettings; onSave: () =
   const [form, setForm] = useState({
     baseUrl: settings.chaptarr.baseUrl,
     apiKey: "",
+    addMenuLink: settings.chaptarr.addMenuLink,
   });
   const [apiKeyConfigured, setApiKeyConfigured] = useState(settings.chaptarr.apiKeyConfigured);
   const [saving, setSaving] = useState(false);
@@ -294,7 +307,7 @@ function ChaptarrTab({ settings, onSave }: { settings: AppSettings; onSave: () =
   const isConfigured = !!(form.baseUrl.trim() && (form.apiKey.trim() || apiKeyConfigured));
 
   useEffect(() => {
-    setForm({ baseUrl: settings.chaptarr.baseUrl, apiKey: "" });
+    setForm({ baseUrl: settings.chaptarr.baseUrl, apiKey: "", addMenuLink: settings.chaptarr.addMenuLink });
     setApiKeyConfigured(settings.chaptarr.apiKeyConfigured);
   }, [settings]);
 
@@ -304,6 +317,7 @@ function ChaptarrTab({ settings, onSave }: { settings: AppSettings; onSave: () =
       await apiPatch("/api/settings", {
         chaptarr: {
           baseUrl: form.baseUrl,
+          addMenuLink: form.addMenuLink,
           ...(form.apiKey.trim() ? { apiKey: form.apiKey } : {})
         }
       });
@@ -350,6 +364,12 @@ function ChaptarrTab({ settings, onSave }: { settings: AppSettings; onSave: () =
             className="w-full bg-background-container-low border border-outline-variant/30 rounded-xl px-4 py-2.5 text-sm text-on-surface placeholder:text-on-surface-variant/40 focus:outline-none focus:border-primary/50 transition-colors font-mono"
           />
         </Field>
+        <ToggleField
+          label="Show link in navigation"
+          hint="Show a Chaptarr link in the bottom-left navigation menu."
+          checked={form.addMenuLink}
+          onChange={(v) => setForm((f) => ({ ...f, addMenuLink: v }))}
+        />
         <div className="flex items-center justify-between gap-3 pt-2 border-t border-outline-variant/15 flex-wrap">
           <div className="flex items-center gap-3 flex-wrap">
             <button
@@ -376,7 +396,7 @@ function ChaptarrTab({ settings, onSave }: { settings: AppSettings; onSave: () =
 // ─── Audiobookshelf tab ───────────────────────────────────────────────────────
 
 function AudiobookshelfTab({ settings, onSave }: { settings: AppSettings; onSave: () => Promise<void> }) {
-  const [form, setForm] = useState({ baseUrl: settings.audiobookshelf.baseUrl });
+  const [form, setForm] = useState({ baseUrl: settings.audiobookshelf.baseUrl, addMenuLink: settings.audiobookshelf.addMenuLink });
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -384,13 +404,13 @@ function AudiobookshelfTab({ settings, onSave }: { settings: AppSettings; onSave
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
   useEffect(() => {
-    setForm({ baseUrl: settings.audiobookshelf.baseUrl });
+    setForm({ baseUrl: settings.audiobookshelf.baseUrl, addMenuLink: settings.audiobookshelf.addMenuLink });
   }, [settings]);
 
   async function save() {
     setSaving(true); setSaveError(null); setSuccess(false);
     try {
-      await apiPatch("/api/settings", { audiobookshelf: { baseUrl: form.baseUrl } });
+      await apiPatch("/api/settings", { audiobookshelf: { baseUrl: form.baseUrl, addMenuLink: form.addMenuLink } });
       setSuccess(true);
       notifySettingsChanged();
       await onSave();
@@ -417,6 +437,12 @@ function AudiobookshelfTab({ settings, onSave }: { settings: AppSettings; onSave
             placeholder="http://audiobookshelf:13378"
           />
         </Field>
+        <ToggleField
+          label="Show link in navigation"
+          hint="Show an Audiobookshelf link in the bottom-left navigation menu."
+          checked={form.addMenuLink}
+          onChange={(v) => setForm((f) => ({ ...f, addMenuLink: v }))}
+        />
         <div className="flex items-center justify-between gap-3 pt-2 border-t border-outline-variant/15 flex-wrap">
           <div className="flex items-center gap-3 flex-wrap">
             <button
