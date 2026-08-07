@@ -181,6 +181,91 @@ test("legacy handover atomicity: a crash between DROP TABLE schema_version and t
   }
 });
 
+/** Replaces db.prepare so that a call with `sql === matchSql` throws once, then restores the original. */
+function injectPrepareFailureOnce(db: BetterSqlite3.Database, matchSql: string): () => void {
+  const originalPrepare = db.prepare.bind(db);
+  let injected = false;
+  (db as unknown as { prepare: typeof db.prepare }).prepare = ((sql: string) => {
+    if (!injected && sql === matchSql) {
+      injected = true;
+      throw new Error(`simulated crash before: ${matchSql}`);
+    }
+    return (originalPrepare as (sql: string) => unknown)(sql);
+  }) as typeof db.prepare;
+  return () => {
+    (db as unknown as { prepare: typeof db.prepare }).prepare = originalPrepare;
+  };
+}
+
+test("v7 migration atomicity: a crash before the version bump rolls back the whole book_sources/user_book_states rebuild", () => {
+  const { db, cleanup } = openRawDb();
+  try {
+    seedLegacyBooksSchema(db, 6);
+    db.exec(`
+      INSERT INTO books (id, title) VALUES (1, 'Book');
+      INSERT INTO book_sources (id, book_id, source_type, external_id, title) VALUES (1, 1, 'grimmory', 'grim-1', 'Book');
+    `);
+
+    // Without the fix, a crash here leaves book_sources_v7 populated by the
+    // INSERT...SELECT but the original book_sources not yet dropped — a state
+    // where retrying re-runs that INSERT...SELECT against rows already copied
+    // and fails with "UNIQUE constraint failed: book_sources_v7.id".
+    const restore = injectPrepareFailureOnce(db, "UPDATE schema_version SET version = 7");
+    assert.throws(() => initSchema(db), /simulated crash/);
+    restore();
+
+    // Rolled back: no leftover temp table, original book_sources untouched, version unchanged.
+    const tempTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='book_sources_v7'").get();
+    assert.equal(tempTable, undefined, "the transaction must roll back, leaving no book_sources_v7 temp table behind");
+    const row = db.prepare("SELECT version FROM schema_version").get() as { version: number };
+    assert.equal(row.version, 6, "schema_version must not advance if the transaction rolled back");
+    const source = db.prepare("SELECT title FROM book_sources WHERE external_id = 'grim-1'").get() as { title: string };
+    assert.equal(source.title, "Book", "the original book_sources row must survive the rollback");
+
+    // The next process start (a plain retry) must recover on its own, not throw again.
+    initSchema(db);
+    const userVersion = db.pragma("user_version", { simple: true }) as number;
+    assert.equal(userVersion, LATEST_MIGRATION_VERSION);
+    const survivingSource = db.prepare("SELECT title FROM book_sources WHERE external_id = 'grim-1'").get() as
+      { title: string } | undefined;
+    assert.equal(survivingSource?.title, "Book", "data must survive all the way through a successful retry");
+  } finally {
+    cleanup();
+  }
+});
+
+test("v8/v9 migration atomicity: a crash before the version bump rolls back the ALTER TABLE statements", () => {
+  const { db, cleanup } = openRawDb();
+  try {
+    seedLegacyBooksSchema(db, 7);
+    db.exec(`
+      INSERT INTO books (id, title) VALUES (1, 'Book');
+      INSERT INTO book_sources (id, book_id, source_type, external_id, title) VALUES (1, 1, 'grimmory', 'grim-1', 'Book');
+    `);
+
+    // Without the fix, a crash here leaves book_sources.hardcover_audio_seconds
+    // already added but the version still < 8 — retrying re-issues the same bare
+    // ALTER TABLE ADD COLUMN and fails with "duplicate column name".
+    const restore = injectPrepareFailureOnce(db, "UPDATE schema_version SET version = 8");
+    assert.throws(() => initSchema(db), /simulated crash/);
+    restore();
+
+    const cols = (db.prepare("PRAGMA table_info(book_sources)").all() as { name: string }[]).map((c) => c.name);
+    assert.ok(!cols.includes("hardcover_audio_seconds"), "the v8 ALTER must roll back along with the version bump");
+    const row = db.prepare("SELECT version FROM schema_version").get() as { version: number };
+    assert.equal(row.version, 7);
+
+    // The next process start must recover on its own and continue through v9 too.
+    initSchema(db);
+    const userVersion = db.pragma("user_version", { simple: true }) as number;
+    assert.equal(userVersion, LATEST_MIGRATION_VERSION);
+    const colsAfterRetry = (db.prepare("PRAGMA table_info(user_book_states)").all() as { name: string }[]).map((c) => c.name);
+    assert.ok(colsAfterRetry.includes("hardcover_edition_id"), "v9's columns must be present after a clean retry");
+  } finally {
+    cleanup();
+  }
+});
+
 test("backupBeforeMigrating retains only the 5 most recent backups", () => {
   const { db, dataDir, cleanup } = openRawDb();
   try {

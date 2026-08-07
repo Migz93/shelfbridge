@@ -132,6 +132,8 @@ so all tests start already authenticated.
 | Handover atomicity | Injecting a failure between `DROP TABLE schema_version` and the `user_version = 1` bump rolls back cleanly (table still present, `user_version` still `0`), and a subsequent `initSchema` call recovers on its own |
 | Handover is not re-run | A database already at `user_version >= 1` is left alone on a second `initSchema` call |
 | Legacy v3 migration | Orphan books (empty title, Chaptarr-only source) are deleted; books with a real source survive |
+| Legacy v7 migration atomicity | Injecting a failure before the version 7 bump rolls back the whole `book_sources`/`user_book_states` rebuild (no leftover `book_sources_v7` temp table, original data intact, version unchanged), and a subsequent `initSchema` call recovers on its own |
+| Legacy v8/v9 migration atomicity | Injecting a failure before the version 8 bump rolls back the `ALTER TABLE ADD COLUMN` statements (column not present, version unchanged), and a subsequent `initSchema` call recovers through v9 as well |
 | Legacy v13 migration | `book_sources` rows with the literal string `"datetime('now')"` as `last_sync_at` are repaired to `NULL` |
 | Pre-migration backup | `runMigrations` snapshots an already-populated database via `VACUUM INTO` into `<data dir>/backups/` before applying a pending migration, and skips the backup for a brand-new database with nothing to protect |
 | Backup retention | `backupBeforeMigrating` prunes `<data dir>/backups/` down to the 5 most recently created backups each time it runs |

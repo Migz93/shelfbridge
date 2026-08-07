@@ -131,10 +131,16 @@ this up: WAL/foreign-key pragmas, the backup, the legacy handover if needed,
 > sets `user_version = 1`. That step goes through the same backup-then-
 > `foreign_key_check` guard as `runMigrations()` (`runGuardedStep()`, shared by
 > both), so an existing install's handover gets the same crash-safety net as any
-> future migration. A brand-new install has no `schema_version` table and skips
-> straight to `runMigrations()`. Do not add new migrations to
-> `legacyMigrateToV14()`; new schema changes are a new entry in the `migrations`
-> array with `version > 1`.
+> future migration. Within `legacyMigrateToV14()` itself, every block whose
+> statements aren't independently idempotent (the v7 table rebuild, the bare
+> `ALTER TABLE ADD COLUMN`s in v8/v9) wraps its statements and its `schema_version`
+> bump in one `db.transaction()`, so a crash mid-block rolls back cleanly instead
+> of leaving a half-applied state a retry can't get past — the other blocks are
+> already naturally idempotent (guarded by an existence check, or built entirely
+> from `IF NOT EXISTS`/no-op-on-retry statements) and don't need the same wrapping.
+> A brand-new install has no `schema_version` table and skips straight to
+> `runMigrations()`. Do not add new migrations to `legacyMigrateToV14()`; new
+> schema changes are a new entry in the `migrations` array with `version > 1`.
 
 ### Tables
 

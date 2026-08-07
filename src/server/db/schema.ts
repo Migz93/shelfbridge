@@ -532,9 +532,20 @@ function legacyMigrateToV14(db: Database.Database): void {
   // v7: Rebuild book_sources to drop the CHECK constraint on source_type so
   // 'audiobookshelf' rows can be inserted. Also rebuild user_book_states to
   // drop its CHECK constraint for the same reason.
+  //
+  // The rebuild + version bump run as a single transaction (foreign_keys toggled
+  // outside it, since that pragma is a no-op inside a transaction — same pattern
+  // as the v14 block below). Without this, a crash mid-exec (multi-statement
+  // db.exec() is not itself atomic) could leave book_sources_v7 populated by the
+  // INSERT...SELECT but the original book_sources not yet dropped and the version
+  // still < 7; retrying would then re-run the INSERT...SELECT against rows that
+  // are already there and fail with a UNIQUE constraint violation on id, bricking
+  // startup with no automatic recovery.
   if (!row || row.version < 7) {
     db.pragma("foreign_keys = OFF");
-    db.exec(`
+    try {
+      const migrateV7 = db.transaction(() => {
+        db.exec(`
       CREATE TABLE IF NOT EXISTS book_sources_v7 (
         id               INTEGER PRIMARY KEY AUTOINCREMENT,
         book_id          INTEGER REFERENCES books(id) ON DELETE CASCADE,
@@ -656,20 +667,32 @@ function legacyMigrateToV14(db: Database.Database): void {
       CREATE INDEX IF NOT EXISTS idx_user_book_states_book ON user_book_states(book_id);
       CREATE INDEX IF NOT EXISTS idx_user_book_states_profile ON user_book_states(profile_id);
       CREATE INDEX IF NOT EXISTS idx_user_book_states_profile_source ON user_book_states(profile_id, source_type);
-    `);
-    db.pragma("foreign_keys = ON");
-    db.prepare("UPDATE schema_version SET version = 7").run();
+        `);
+        db.prepare("UPDATE schema_version SET version = 7").run();
+      });
+      migrateV7();
+    } finally {
+      db.pragma("foreign_keys = ON");
+    }
     logger.info("Schema migrated to version 7: removed source_type CHECK constraints to allow audiobookshelf rows");
   }
 
   // v8: Add hardcover_audio_seconds to book_sources and hardcover_user_book_id + progress_seconds to user_book_states
+  //
+  // Wrapped in a transaction with the version bump so a crash between the three
+  // ALTER statements (none of which check column existence first, unlike the
+  // guarded ALTERs above) can't leave one column added and the version still < 8
+  // — that state made a retry throw "duplicate column name" and brick startup.
   if (!row || row.version < 8) {
-    db.exec(`
-      ALTER TABLE book_sources ADD COLUMN hardcover_audio_seconds INTEGER;
-      ALTER TABLE user_book_states ADD COLUMN hardcover_user_book_id INTEGER;
-      ALTER TABLE user_book_states ADD COLUMN progress_seconds INTEGER;
-    `);
-    db.prepare("UPDATE schema_version SET version = 8").run();
+    const migrateV8 = db.transaction(() => {
+      db.exec(`
+        ALTER TABLE book_sources ADD COLUMN hardcover_audio_seconds INTEGER;
+        ALTER TABLE user_book_states ADD COLUMN hardcover_user_book_id INTEGER;
+        ALTER TABLE user_book_states ADD COLUMN progress_seconds INTEGER;
+      `);
+      db.prepare("UPDATE schema_version SET version = 8").run();
+    });
+    migrateV8();
     logger.info("Schema migrated to version 8: added hardcover_audio_seconds, hardcover_user_book_id, progress_seconds");
   }
 
@@ -677,12 +700,18 @@ function legacyMigrateToV14(db: Database.Database): void {
   // hardcover_edition_id: the edition we've matched and will pass in progress writes.
   // hardcover_edition_pages: the page count we matched against — if hcPages drifts from
   // this (e.g. user switches edition or file is replaced), we know to re-resolve.
+  //
+  // Same crash-safety reasoning as v8: wrap the ALTERs and the version bump in one
+  // transaction so a crash between them can't leave a half-applied, non-retriable state.
   if (!row || row.version < 9) {
-    db.exec(`
-      ALTER TABLE user_book_states ADD COLUMN hardcover_edition_id INTEGER;
-      ALTER TABLE user_book_states ADD COLUMN hardcover_edition_pages INTEGER;
-    `);
-    db.prepare("UPDATE schema_version SET version = 9").run();
+    const migrateV9 = db.transaction(() => {
+      db.exec(`
+        ALTER TABLE user_book_states ADD COLUMN hardcover_edition_id INTEGER;
+        ALTER TABLE user_book_states ADD COLUMN hardcover_edition_pages INTEGER;
+      `);
+      db.prepare("UPDATE schema_version SET version = 9").run();
+    });
+    migrateV9();
     logger.info("Schema migrated to version 9: added hardcover_edition_id, hardcover_edition_pages");
   }
 
