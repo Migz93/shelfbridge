@@ -129,6 +129,7 @@ so all tests start already authenticated.
 | Fresh database applies migration 1 | `initSchema` on an empty DB reaches `LATEST_MIGRATION_VERSION` via `PRAGMA user_version`, never creates a `schema_version` table, with no foreign-key violations |
 | Idempotent re-run | Running `initSchema` twice makes no further changes |
 | Legacy handover | A pre-existing `schema_version` database is migrated to v14 via the preserved sequential logic, then handed over to `user_version = 1`; verifies `source_instance_id` is added, existing rows survive, Chaptarr is backfilled to instance `0`, per-profile sources are left unscoped, the per-instance unique constraint is enforced, exactly one pre-migration backup was written (not one per step), and the stale `schema_version` table is dropped |
+| Handover atomicity | Injecting a failure between `DROP TABLE schema_version` and the `user_version = 1` bump rolls back cleanly (table still present, `user_version` still `0`), and a subsequent `initSchema` call recovers on its own |
 | Handover is not re-run | A database already at `user_version >= 1` is left alone on a second `initSchema` call |
 | Legacy v3 migration | Orphan books (empty title, Chaptarr-only source) are deleted; books with a real source survive |
 | Legacy v13 migration | `book_sources` rows with the literal string `"datetime('now')"` as `last_sync_at` are repaired to `NULL` |

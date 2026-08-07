@@ -140,6 +140,47 @@ test("legacy handover: a pre-existing schema_version database is migrated to v14
   }
 });
 
+test("legacy handover atomicity: a crash between DROP TABLE schema_version and the user_version bump rolls back cleanly", () => {
+  const { db, cleanup } = openRawDb();
+  try {
+    seedLegacyBooksSchema(db, 13);
+    db.exec("INSERT INTO books (id, title) VALUES (1, 'Book')");
+
+    // Simulate a process crash landing exactly between the DROP and the PRAGMA
+    // bump by making the PRAGMA call throw. If those two statements weren't
+    // atomic with each other, this would leave schema_version dropped but
+    // user_version still 0 — a state the next startup can't recover from (see
+    // the comment on handleLegacySchemaVersionHandover).
+    const originalPragma = db.pragma.bind(db);
+    let injected = false;
+    (db as unknown as { pragma: typeof db.pragma }).pragma = ((sql: string, options?: unknown) => {
+      if (!injected && sql === "user_version = 1") {
+        injected = true;
+        throw new Error("simulated crash between DROP TABLE and PRAGMA user_version");
+      }
+      return (originalPragma as (sql: string, options?: unknown) => unknown)(sql, options);
+    }) as typeof db.pragma;
+
+    assert.throws(() => initSchema(db), /simulated crash/);
+
+    (db as unknown as { pragma: typeof db.pragma }).pragma = originalPragma;
+
+    const legacyTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'").get();
+    assert.ok(legacyTable, "the transaction must roll back, leaving schema_version in place rather than dropped");
+    const userVersionAfterCrash = db.pragma("user_version", { simple: true }) as number;
+    assert.equal(userVersionAfterCrash, 0, "user_version must not advance if the transaction rolled back");
+
+    // The next process start must be able to recover on its own.
+    initSchema(db);
+    const userVersionAfterRetry = db.pragma("user_version", { simple: true }) as number;
+    assert.equal(userVersionAfterRetry, 1);
+    const legacyTableAfterRetry = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'").get();
+    assert.equal(legacyTableAfterRetry, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
 test("backupBeforeMigrating retains only the 5 most recent backups", () => {
   const { db, dataDir, cleanup } = openRawDb();
   try {

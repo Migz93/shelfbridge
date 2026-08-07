@@ -44,11 +44,22 @@ function legacyHandoverNeeded(db: Database.Database): boolean {
  * migrations.ts is exactly that v14 shape). A brand-new install has no
  * `schema_version` table and skips straight to runMigrations(), which applies
  * migration 1 directly.
+ *
+ * The drop and the version bump run in one transaction so a crash between them
+ * can't happen: without that, a crash after the drop but before the pragma would
+ * leave user_version at 0 with schema_version already gone, so the next startup
+ * would see the handover as still needed, re-run legacyMigrateToV14() (harmless,
+ * it's idempotent), then try to DROP a table that's already gone. Worse, once
+ * runMigrations() treated migration 1 as pending on that phantom retry, its bare
+ * `CREATE TABLE app_settings` (no IF NOT EXISTS) would fail against tables that
+ * already exist — a permanent boot failure, exactly what #32 exists to prevent.
  */
 function handleLegacySchemaVersionHandover(db: Database.Database, backupPath: string | undefined): void {
   runGuardedStep(db, "Legacy schema_version handover to v14", backupPath, () => legacyMigrateToV14(db));
-  db.exec("DROP TABLE schema_version");
-  db.pragma("user_version = 1");
+  db.transaction(() => {
+    db.exec("DROP TABLE schema_version");
+    db.pragma("user_version = 1");
+  })();
   logger.info("Handed database off from schema_version tracking to PRAGMA user_version (migration 1 = v14 baseline)");
 }
 
