@@ -464,10 +464,15 @@ export function backupBeforeMigrating(db: Database.Database): string | undefined
   return backupPath;
 }
 
-/** Thrown when a guarded step's `PRAGMA foreign_key_check` finds violations it introduced. */
+/**
+ * Thrown when a guarded step's `PRAGMA foreign_key_check` finds violations it
+ * introduced. `label` and `violations` are kept as structured fields (not
+ * baked into the message string) so callers that log this error can pass them
+ * as meta rather than parsing them back out of free text.
+ */
 export class ForeignKeyViolationError extends Error {
-  constructor(message: string, public readonly violations: unknown[]) {
-    super(message);
+  constructor(public readonly label: string, public readonly violations: ForeignKeyViolation[]) {
+    super("Guarded migration step introduced new foreign-key violation(s)");
     this.name = "ForeignKeyViolationError";
   }
 }
@@ -502,14 +507,23 @@ function newForeignKeyViolations(before: ForeignKeyViolation[], after: ForeignKe
 // propagates outward.
 const LOGGED_BY_GUARDED_STEP = Symbol("loggedByGuardedStep");
 
-function logGuardedFailure(label: string, backupPath: string | undefined, err: unknown): void {
+/**
+ * Logs a migration/handover failure with recovery guidance, deduplicating via
+ * LOGGED_BY_GUARDED_STEP so the same error isn't logged twice as it propagates
+ * through nested guarded steps. Exported so callers with a step that needs
+ * this same recovery-guidance logging, but doesn't need (or shouldn't get) a
+ * full foreign-key check of its own — e.g. schema.ts's drop-schema_version-
+ * and-bump-version step, which touches no foreign-key-bearing data — can use
+ * it directly instead of wrapping in another runGuardedStep()/runTransactionalStep().
+ */
+export function logGuardedFailure(label: string, backupPath: string | undefined, err: unknown): void {
   if (err && typeof err === "object" && LOGGED_BY_GUARDED_STEP in err) return;
 
   const recovery = backupPath
     ? `Restore from the pre-migration backup at ${backupPath} and investigate before retrying.`
     : "No pre-migration backup was available (fresh database) — investigate before retrying.";
   if (err instanceof ForeignKeyViolationError) {
-    logger.error(err.message, { violations: err.violations, recovery });
+    logger.error(err.message, { label: err.label, count: err.violations.length, violations: err.violations, recovery });
   } else {
     logger.error("Guarded migration step failed", { label, error: err instanceof Error ? err.message : String(err), recovery });
   }
@@ -551,7 +565,7 @@ export function runTransactionalStep(db: Database.Database, label: string, backu
     const after = db.pragma("foreign_key_check") as ForeignKeyViolation[];
     const introduced = newForeignKeyViolations(before, after);
     if (introduced.length > 0) {
-      throw new ForeignKeyViolationError(`${label} introduced ${introduced.length} new foreign-key violation(s)`, introduced);
+      throw new ForeignKeyViolationError(label, introduced);
     }
     logPreExistingViolationsIfAny(label, after);
   });
@@ -591,7 +605,7 @@ export function runGuardedStep(db: Database.Database, label: string, backupPath:
   const after = db.pragma("foreign_key_check") as ForeignKeyViolation[];
   const introduced = newForeignKeyViolations(before, after);
   if (introduced.length > 0) {
-    const err = new ForeignKeyViolationError(`${label} introduced ${introduced.length} new foreign-key violation(s)`, introduced);
+    const err = new ForeignKeyViolationError(label, introduced);
     logGuardedFailure(label, backupPath, err);
     throw err;
   }

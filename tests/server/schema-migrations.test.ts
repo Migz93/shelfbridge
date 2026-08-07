@@ -7,6 +7,7 @@ import test from "node:test";
 import { initSchema } from "../../src/server/db/schema.js";
 import {
   backupBeforeMigrating,
+  ForeignKeyViolationError,
   getPendingMigrations,
   LATEST_MIGRATION_VERSION,
   runGuardedStep,
@@ -178,7 +179,13 @@ test("runTransactionalStep still fails when a step introduces a new violation al
         runTransactionalStep(db, "test step", undefined, () => {
           db.prepare("INSERT INTO child (id, parent_id) VALUES (2, 888)").run(); // newly introduced
         });
-      }, /introduced 1 new foreign-key violation/);
+      }, (err: unknown) => {
+        assert.ok(err instanceof ForeignKeyViolationError);
+        // Exactly the one newly-introduced violation, not both — count and detail
+        // live as structured fields on the error, not baked into the message.
+        assert.equal(err.violations.length, 1);
+        return true;
+      });
     } finally {
       db.pragma("foreign_keys = ON");
     }
@@ -427,6 +434,49 @@ test("a v7 sub-step failure during the legacy handover is logged once, not twice
     }
 
     assert.equal(errorCallCount, 1, "the same failure must be logged exactly once, not once per guarding layer it propagates through");
+  } finally {
+    cleanup();
+  }
+});
+
+test("legacy handover: the outer foreign-key backstop check runs before the drop+bump commits, not after", () => {
+  const { db, cleanup } = openRawDb();
+  try {
+    // Seed already at v14 so every internal legacyMigrateToV14 sub-block is a
+    // no-op (all guarded by `row.version < N`) — the only foreign_key_check
+    // calls that happen come from the outer runGuardedStep wrapping the whole
+    // legacyMigrateToV14() call, isolating exactly the sequencing this test cares about.
+    seedLegacyBooksSchema(db, 14);
+    db.exec("INSERT INTO books (id, title) VALUES (1, 'Book')");
+
+    // If the drop+bump ran before (or as part of) the outer check, the check
+    // would observe user_version already at 1. Capturing user_version at every
+    // foreign_key_check call and keeping the last one tells us its value at the
+    // outer check's "after" call — the one immediately preceding the decision
+    // to commit the drop+bump or abort.
+    const originalPragma = db.pragma.bind(db);
+    let userVersionAtLastCheck: number | undefined;
+    (db as unknown as { pragma: typeof db.pragma }).pragma = ((arg: string, options?: unknown) => {
+      const result = (originalPragma as (a: string, o?: unknown) => unknown)(arg, options);
+      if (arg === "foreign_key_check") {
+        userVersionAtLastCheck = originalPragma("user_version", { simple: true }) as number;
+      }
+      return result;
+    }) as typeof db.pragma;
+
+    try {
+      initSchema(db);
+    } finally {
+      (db as unknown as { pragma: typeof db.pragma }).pragma = originalPragma;
+    }
+
+    assert.equal(
+      userVersionAtLastCheck,
+      0,
+      "the outer foreign-key check must observe user_version still at 0 — if it ran after the drop+bump instead, a " +
+      "violation it catches would abort this one boot but leave the handover looking already-complete on the next restart"
+    );
+    assert.equal(db.pragma("user_version", { simple: true }), 1, "the handover must still complete normally when the check passes");
   } finally {
     cleanup();
   }

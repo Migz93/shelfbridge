@@ -1,7 +1,14 @@
 import type Database from "better-sqlite3";
 import { reconcileBookIdentities } from "./bookIdentity.js";
 import { logger } from "../logger.js";
-import { backupBeforeMigrating, getPendingMigrations, runGuardedStep, runMigrations, runTransactionalStep } from "./migrations.js";
+import {
+  backupBeforeMigrating,
+  getPendingMigrations,
+  logGuardedFailure,
+  runGuardedStep,
+  runMigrations,
+  runTransactionalStep
+} from "./migrations.js";
 
 export function initSchema(db: Database.Database): void {
   db.pragma("journal_mode = WAL");
@@ -53,24 +60,41 @@ function legacyHandoverNeeded(db: Database.Database): boolean {
  *
  * Protection is layered: legacyMigrateToV14()'s own v7/v8/v9/v14 sub-steps each
  * run via runTransactionalStep(), so a foreign-key regression introduced by one
- * of them rolls back just that step. The runGuardedStep() wrapped around the
- * whole call (including the drop-and-bump below) is a backstop on top of that —
- * it cannot roll anything back (legacyMigrateToV14() is a sequence of
- * independently-committed statements, not one transaction; some of them must run
- * outside a transaction because they toggle `PRAGMA foreign_keys`, which is a
- * no-op once a transaction is open), but it still catches anything the per-step
- * checks didn't, and — critically — ensures a failure in the drop-and-bump step
- * itself goes through the same recovery-guidance logging as everything else,
- * instead of propagating as a bare, unlogged exception.
+ * of them rolls back just that step. The runGuardedStep() wrapped around
+ * legacyMigrateToV14() alone is a backstop on top of that — it cannot roll
+ * anything back (legacyMigrateToV14() is a sequence of independently-committed
+ * statements, not one transaction; some of them must run outside a transaction
+ * because they toggle `PRAGMA foreign_keys`, which is a no-op once a
+ * transaction is open), but it still catches anything the per-step checks
+ * didn't.
+ *
+ * The drop-and-bump deliberately runs *after* that backstop check, not inside
+ * it: if it ran first (or in the same guarded step), the check would run
+ * against a database where user_version is already 1 — so a violation would
+ * abort this one boot, but the handover would already be marked complete, and
+ * a plain restart would sail straight past it next time (legacyHandoverNeeded()
+ * sees user_version > 0 and never re-checks), silently running forever on the
+ * broken database the first abort was supposed to prevent. Gating the bump
+ * behind the check instead means a violation leaves user_version at 0, so
+ * every restart re-attempts the whole handover and re-hits the same abort
+ * until the underlying problem is fixed — genuine repeated protection, not a
+ * one-time speed bump. The drop-and-bump transaction still gets its own
+ * recovery-guidance logging on failure, via logGuardedFailure() directly
+ * rather than another full guarded-step FK check (schema_version carries no
+ * foreign keys, so there is nothing new for a second check to catch there).
  */
 function handleLegacySchemaVersionHandover(db: Database.Database, backupPath: string | undefined): void {
-  runGuardedStep(db, "Legacy schema_version handover to v14", backupPath, () => {
-    legacyMigrateToV14(db, backupPath);
+  runGuardedStep(db, "Legacy schema_version handover to v14", backupPath, () => legacyMigrateToV14(db, backupPath));
+
+  try {
     db.transaction(() => {
       db.exec("DROP TABLE schema_version");
       db.pragma("user_version = 1");
     })();
-  });
+  } catch (err) {
+    logGuardedFailure("Legacy schema_version handover to v14 (drop schema_version + version bump)", backupPath, err);
+    throw err;
+  }
   logger.info("Handed database off from schema_version tracking to PRAGMA user_version (migration 1 = v14 baseline)");
 }
 

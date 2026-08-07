@@ -134,16 +134,20 @@ migration:
 | Primitive | Behavior | Used by |
 |---|---|---|
 | `runTransactionalStep(db, label, backupPath, step)` | Wraps `step` and the check in one transaction — a violation rolls the whole step back | Every migration in `runMigrations()`; the legacy handover's v7/v8/v9/v14 sub-steps |
-| `runGuardedStep(db, label, backupPath, step)` | Runs `step`, checks after — a violation can only abort startup, not undo `step` | The legacy handover as a whole (can't be one transaction — see `schema.ts`) |
+| `runGuardedStep(db, label, backupPath, step)` | Runs `step`, checks after — a violation can only abort startup, not undo `step` | `legacyMigrateToV14()` as a whole (can't be one transaction — see `schema.ts`) |
 
 > **Handover from the old `schema_version` table.** Before this pattern, schema
 > version lived in a `schema_version` table with a sequential run of
 > version-guarded `ALTER TABLE` and table-rebuild blocks. Any database that still
 > has that table is pre-migrations-pattern: `initSchema()` runs that old sequential
 > logic once (preserved as `legacyMigrateToV14()` in `schema.ts`) to bring it to
-> the v14 shape — which is exactly migration 1 — then drops `schema_version` and
-> sets `user_version = 1`. A brand-new install has no `schema_version` table and
-> skips straight to `runMigrations()`. Do not add new migrations to
+> the v14 shape — which is exactly migration 1. Only once `runGuardedStep()`'s
+> backstop check on that has passed does it drop `schema_version` and set
+> `user_version = 1` — deliberately *after* the check, not inside the guarded
+> step, so a violation the backstop catches leaves `user_version` at 0 and the
+> next restart re-attempts the whole handover, rather than the handover looking
+> already-complete on retry. A brand-new install has no `schema_version` table
+> and skips straight to `runMigrations()`. Do not add new migrations to
 > `legacyMigrateToV14()`; new schema changes are a new entry in the `migrations`
 > array with `version > 1`.
 
