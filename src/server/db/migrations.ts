@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { logger } from "../logger.js";
 
@@ -343,6 +343,39 @@ export const migrations: Migration[] = [migration1];
 
 export const LATEST_MIGRATION_VERSION = migrations[migrations.length - 1]!.version;
 
+/** Returns every migration newer than the database's current PRAGMA user_version, ascending. */
+export function getPendingMigrations(db: Database.Database): Migration[] {
+  const currentVersion = db.pragma("user_version", { simple: true }) as number;
+  return migrations.filter((m) => m.version > currentVersion).sort((a, b) => a.version - b.version);
+}
+
+// How many pre-migration backups to keep per database. Migrations are rare
+// (one per shipped schema change), so this bounds disk use without needing a
+// time-based retention setting like sync_runs has.
+const MAX_RETAINED_BACKUPS = 5;
+
+function pruneOldBackups(backupDir: string, dbBaseName: string): void {
+  const prefix = `${dbBaseName}.pre-migration-`;
+  const backups = readdirSync(backupDir)
+    .filter((name) => name.startsWith(prefix) && name.endsWith(".bak"))
+    .sort(); // the ISO timestamp in the filename sorts chronologically
+  const stale = backups.slice(0, Math.max(0, backups.length - MAX_RETAINED_BACKUPS));
+  for (const name of stale) {
+    rmSync(path.join(backupDir, name), { force: true });
+  }
+  if (stale.length > 0) {
+    logger.info("Pruned old pre-migration database backups", { pruned: stale.length, retained: MAX_RETAINED_BACKUPS });
+  }
+}
+
+/**
+ * Snapshots the database via VACUUM INTO before schema changes, so a failed
+ * migration or handover has a restore point. Call this once per initSchema()
+ * run (schema.ts threads the resulting path into both the legacy handover and
+ * runMigrations() rather than each taking its own backup) — VACUUM INTO on an
+ * already-open database is not free, and one snapshot already covers whatever
+ * runs after it in the same startup.
+ */
 export function backupBeforeMigrating(db: Database.Database): string | undefined {
   const dbPath = db.name;
   if (!dbPath || dbPath === ":memory:") return undefined;
@@ -354,10 +387,12 @@ export function backupBeforeMigrating(db: Database.Database): string | undefined
 
   const backupDir = path.join(path.dirname(dbPath), "backups");
   mkdirSync(backupDir, { recursive: true });
+  const dbBaseName = path.basename(dbPath);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupPath = path.join(backupDir, `${path.basename(dbPath)}.pre-migration-${stamp}.bak`);
+  const backupPath = path.join(backupDir, `${dbBaseName}.pre-migration-${stamp}.bak`);
 
   db.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
+  pruneOldBackups(backupDir, dbBaseName);
   return backupPath;
 }
 
@@ -398,14 +433,19 @@ export function runGuardedStep(db: Database.Database, label: string, backupPath:
  * in ascending order, each inside its own transaction so a mid-migration failure
  * cannot leave the database partially migrated. Advances `user_version` only after
  * a migration's `up()` completes successfully.
+ *
+ * `precomputedBackupPath` lets a caller that already took a backup this startup
+ * (schema.ts's legacy handover, when both it and a pending migration 2+ run in
+ * the same initSchema() call) pass it through instead of this function taking a
+ * second, redundant VACUUM INTO snapshot. Pass `undefined` to have this function
+ * take its own backup if there's anything pending.
  */
-export function runMigrations(db: Database.Database): void {
-  const currentVersion = db.pragma("user_version", { simple: true }) as number;
-  const pending = migrations.filter((m) => m.version > currentVersion).sort((a, b) => a.version - b.version);
+export function runMigrations(db: Database.Database, precomputedBackupPath?: string): void {
+  const pending = getPendingMigrations(db);
   if (pending.length === 0) return;
 
-  const backupPath = backupBeforeMigrating(db);
-  if (backupPath && existsSync(backupPath)) {
+  const backupPath = precomputedBackupPath ?? backupBeforeMigrating(db);
+  if (backupPath && !precomputedBackupPath && existsSync(backupPath)) {
     logger.info("Created pre-migration database backup", { backupPath });
   }
 

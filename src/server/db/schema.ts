@@ -1,42 +1,53 @@
 import type Database from "better-sqlite3";
 import { reconcileBookIdentities } from "./bookIdentity.js";
 import { logger } from "../logger.js";
-import { backupBeforeMigrating, runGuardedStep, runMigrations } from "./migrations.js";
+import { backupBeforeMigrating, getPendingMigrations, runGuardedStep, runMigrations } from "./migrations.js";
 
 export function initSchema(db: Database.Database): void {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
 
-  handleLegacySchemaVersionHandover(db);
-  runMigrations(db);
+  const needsHandover = legacyHandoverNeeded(db);
+  // Take at most one backup per startup, even when the legacy handover and a
+  // pending migration 2+ both run in the same call — otherwise a laggard install
+  // upgrading straight into a future migration would pay for two VACUUM INTO
+  // snapshots of the same starting state.
+  const backupPath = (needsHandover || getPendingMigrations(db).length > 0) ? backupBeforeMigrating(db) : undefined;
+  if (backupPath) {
+    logger.info("Created pre-migration database backup", { backupPath });
+  }
+
+  if (needsHandover) {
+    handleLegacySchemaVersionHandover(db, backupPath);
+  }
+  runMigrations(db, backupPath);
 
   db.prepare("DELETE FROM auth_sessions WHERE expires_at <= unixepoch()").run();
   reconcileBookIdentities(db);
+}
+
+function legacyHandoverNeeded(db: Database.Database): boolean {
+  const userVersion = db.pragma("user_version", { simple: true }) as number;
+  if (userVersion > 0) return false; // already migrated under the new pattern
+
+  const legacyTable = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
+    .get();
+  return legacyTable !== undefined;
 }
 
 /**
  * Any database that still has a `schema_version` table predates the `PRAGMA
  * user_version` + `Migration[]` pattern in migrations.ts. Bring it up to the v14
  * shape using the same sequential logic ShelfBridge always used for that, then
- * hand it over: set `user_version = 1` (migration 1 in migrations.ts is exactly
- * that v14 shape) and never consult `schema_version` again. A brand-new install
- * has no `schema_version` table and skips straight to runMigrations(), which
- * applies migration 1 directly.
+ * hand it over: drop `schema_version` and set `user_version = 1` (migration 1 in
+ * migrations.ts is exactly that v14 shape). A brand-new install has no
+ * `schema_version` table and skips straight to runMigrations(), which applies
+ * migration 1 directly.
  */
-function handleLegacySchemaVersionHandover(db: Database.Database): void {
-  const userVersion = db.pragma("user_version", { simple: true }) as number;
-  if (userVersion > 0) return; // already migrated under the new pattern
-
-  const legacyTable = db
-    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
-    .get();
-  if (!legacyTable) return; // fresh install; runMigrations() below establishes the baseline
-
-  const backupPath = backupBeforeMigrating(db);
-  if (backupPath) {
-    logger.info("Created pre-migration database backup", { backupPath });
-  }
+function handleLegacySchemaVersionHandover(db: Database.Database, backupPath: string | undefined): void {
   runGuardedStep(db, "Legacy schema_version handover to v14", backupPath, () => legacyMigrateToV14(db));
+  db.exec("DROP TABLE schema_version");
   db.pragma("user_version = 1");
   logger.info("Handed database off from schema_version tracking to PRAGMA user_version (migration 1 = v14 baseline)");
 }

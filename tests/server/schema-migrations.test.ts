@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import BetterSqlite3 from "better-sqlite3";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { initSchema } from "../../src/server/db/schema.js";
-import { LATEST_MIGRATION_VERSION, runMigrations } from "../../src/server/db/migrations.js";
+import { backupBeforeMigrating, LATEST_MIGRATION_VERSION, runMigrations } from "../../src/server/db/migrations.js";
 import { createTestDatabase } from "./test-db.js";
 
 function openRawDb(): { db: BetterSqlite3.Database; dataDir: string; cleanup: () => void } {
@@ -131,7 +131,39 @@ test("legacy handover: a pre-existing schema_version database is migrated to v14
 
     const backupDir = path.join(dataDir, "backups");
     assert.ok(existsSync(backupDir), "the legacy handover must be backed up before it rebuilds book_sources");
-    assert.ok(readdirSync(backupDir).length > 0, "a backup file should exist from the legacy handover");
+    assert.equal(readdirSync(backupDir).length, 1, "exactly one backup should be taken per initSchema() run, not one per step");
+
+    const legacyTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'").get();
+    assert.equal(legacyTable, undefined, "the stale schema_version table should be dropped after handover");
+  } finally {
+    cleanup();
+  }
+});
+
+test("backupBeforeMigrating retains only the 5 most recent backups", () => {
+  const { db, dataDir, cleanup } = openRawDb();
+  try {
+    db.exec("CREATE TABLE pre_existing (id INTEGER PRIMARY KEY)");
+    const backupDir = path.join(dataDir, "backups");
+    mkdirSync(backupDir, { recursive: true });
+
+    // Seed 6 pre-existing backups with names that sort strictly before any real
+    // timestamp (real stamps start with the current year), so the real backup
+    // taken below pushes the total to 7 and pruning must drop the oldest 2 to
+    // land back at the 5-backup retention limit.
+    const dbBaseName = "test.db";
+    for (let i = 0; i < 6; i++) {
+      writeFileSync(path.join(backupDir, `${dbBaseName}.pre-migration-0000-00-0${i}T00-00-00-000Z.bak`), "");
+    }
+
+    const newBackupPath = backupBeforeMigrating(db);
+    assert.ok(newBackupPath, "a backup should be created when the database already has tables");
+
+    const remaining = readdirSync(backupDir);
+    assert.equal(remaining.length, 5, "only the 5 most recently created backups should be retained");
+    assert.ok(remaining.includes(path.basename(newBackupPath!)), "the just-created backup must survive pruning");
+    assert.ok(!remaining.includes(`${dbBaseName}.pre-migration-0000-00-00T00-00-00-000Z.bak`), "the oldest seeded backup should be pruned");
+    assert.ok(!remaining.includes(`${dbBaseName}.pre-migration-0000-00-01T00-00-00-000Z.bak`), "the second-oldest seeded backup should be pruned");
   } finally {
     cleanup();
   }

@@ -107,27 +107,32 @@ a `Migration[]` array in `src/server/db/migrations.ts` — the same pattern Huba
 and Pacearr use. Each migration is a `{ version, description, up(db) }` entry;
 `runMigrations()` applies every migration newer than the database's current
 `user_version`, in ascending order, each inside its own transaction so a
-mid-migration failure cannot leave the database partially migrated. Before
-applying any pending migration to a database that already has tables,
-`runMigrations()` snapshots it with `VACUUM INTO` into `<data dir>/backups/`, and
-after each migration commits it runs `PRAGMA foreign_key_check` and aborts
-startup on any violation — pointing at the backup for recovery. Migration 1 is a
-single flattened `CREATE TABLE` block, so a fresh install reaches a correct
-schema in one migration. `initSchema()` (in `src/server/db/schema.ts`) just wires
-this up: WAL/foreign-key pragmas, then `runMigrations()`, then
-`reconcileBookIdentities()`.
+mid-migration failure cannot leave the database partially migrated. Migration 1
+is a single flattened `CREATE TABLE` block, so a fresh install reaches a correct
+schema in one migration.
+
+Before applying any pending migration to a database that already has tables,
+`initSchema()` snapshots it once with `VACUUM INTO` into `<data dir>/backups/`
+and threads that path into both the legacy handover (below) and
+`runMigrations()`, so a startup that needs both only pays for one snapshot.
+`backupBeforeMigrating()` also prunes that directory down to the 5 most recent
+backups each time it runs. After each migration commits, `runGuardedStep()` runs
+`PRAGMA foreign_key_check` and aborts startup on any violation — pointing at the
+backup for recovery. `initSchema()` (in `src/server/db/schema.ts`) wires all of
+this up: WAL/foreign-key pragmas, the backup, the legacy handover if needed,
+`runMigrations()`, then `reconcileBookIdentities()`.
 
 > **Handover from the old `schema_version` table.** Before this pattern, schema
 > version lived in a `schema_version` table with a sequential run of
 > version-guarded `ALTER TABLE` and table-rebuild blocks. Any database that still
 > has that table is pre-migrations-pattern: `initSchema()` runs that old sequential
 > logic once (preserved as `legacyMigrateToV14()` in `schema.ts`) to bring it to
-> the v14 shape — which is exactly migration 1 — then sets `user_version = 1` and
-> never looks at `schema_version` again. That step is wrapped in the same
-> backup-then-`foreign_key_check` guard as `runMigrations()` (`runGuardedStep()`,
-> shared by both), so an existing install's handover gets the same crash-safety
-> net as any future migration. A brand-new install has no `schema_version` table
-> and skips straight to `runMigrations()`. Do not add new migrations to
+> the v14 shape — which is exactly migration 1 — then drops `schema_version` and
+> sets `user_version = 1`. That step goes through the same backup-then-
+> `foreign_key_check` guard as `runMigrations()` (`runGuardedStep()`, shared by
+> both), so an existing install's handover gets the same crash-safety net as any
+> future migration. A brand-new install has no `schema_version` table and skips
+> straight to `runMigrations()`. Do not add new migrations to
 > `legacyMigrateToV14()`; new schema changes are a new entry in the `migrations`
 > array with `version > 1`.
 

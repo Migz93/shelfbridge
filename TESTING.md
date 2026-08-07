@@ -128,11 +128,12 @@ so all tests start already authenticated.
 |---|---|
 | Fresh database applies migration 1 | `initSchema` on an empty DB reaches `LATEST_MIGRATION_VERSION` via `PRAGMA user_version`, never creates a `schema_version` table, with no foreign-key violations |
 | Idempotent re-run | Running `initSchema` twice makes no further changes |
-| Legacy handover | A pre-existing `schema_version` database is migrated to v14 via the preserved sequential logic, then handed over to `user_version = 1`; verifies `source_instance_id` is added, existing rows survive, Chaptarr is backfilled to instance `0`, per-profile sources are left unscoped, the per-instance unique constraint is enforced, and a pre-migration backup was written before the rebuild ran |
+| Legacy handover | A pre-existing `schema_version` database is migrated to v14 via the preserved sequential logic, then handed over to `user_version = 1`; verifies `source_instance_id` is added, existing rows survive, Chaptarr is backfilled to instance `0`, per-profile sources are left unscoped, the per-instance unique constraint is enforced, exactly one pre-migration backup was written (not one per step), and the stale `schema_version` table is dropped |
 | Handover is not re-run | A database already at `user_version >= 1` is left alone on a second `initSchema` call |
 | Legacy v3 migration | Orphan books (empty title, Chaptarr-only source) are deleted; books with a real source survive |
 | Legacy v13 migration | `book_sources` rows with the literal string `"datetime('now')"` as `last_sync_at` are repaired to `NULL` |
 | Pre-migration backup | `runMigrations` snapshots an already-populated database via `VACUUM INTO` into `<data dir>/backups/` before applying a pending migration, and skips the backup for a brand-new database with nothing to protect |
+| Backup retention | `backupBeforeMigrating` prunes `<data dir>/backups/` down to the 5 most recently created backups each time it runs |
 
 ### `tests/server/book-identity.test.ts` — Identity reconciliation
 
