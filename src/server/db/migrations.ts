@@ -341,7 +341,15 @@ const migration1: Migration = {
 
 export const migrations: Migration[] = [migration1];
 
-export const LATEST_MIGRATION_VERSION = migrations[migrations.length - 1]!.version;
+const seenVersions = new Set<number>();
+for (const migration of migrations) {
+  if (seenVersions.has(migration.version)) {
+    throw new Error(`Duplicate migration version ${migration.version} in the migrations registry`);
+  }
+  seenVersions.add(migration.version);
+}
+
+export const LATEST_MIGRATION_VERSION = Math.max(...migrations.map((m) => m.version));
 
 /** Returns every migration newer than the database's current PRAGMA user_version, ascending. */
 export function getPendingMigrations(db: Database.Database): Migration[] {
@@ -407,7 +415,10 @@ export function backupBeforeMigrating(db: Database.Database): string | undefined
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const backupPath = path.join(backupDir, `${dbBaseName}.pre-migration-${stamp}.bak`);
 
-  db.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
+  db.prepare("VACUUM INTO ?").run(backupPath);
+  // The directory is already owner-only, but lock the file down too — defense
+  // in depth in case it's ever copied or the directory permissions loosen.
+  chmodSync(backupPath, 0o600);
   pruneOldBackups(backupDir, dbBaseName);
   return backupPath;
 }

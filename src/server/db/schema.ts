@@ -57,19 +57,23 @@ function legacyHandoverNeeded(db: Database.Database): boolean {
  * Protection is layered: legacyMigrateToV14()'s own v7/v8/v9/v14 sub-steps each
  * run via runTransactionalStep(), so a foreign-key regression introduced by one
  * of them rolls back just that step. The runGuardedStep() wrapped around the
- * whole call here is a backstop on top of that — it cannot roll anything back
- * (legacyMigrateToV14() is a sequence of independently-committed statements, not
- * one transaction; some of them must run outside a transaction because they
- * toggle `PRAGMA foreign_keys`, which is a no-op once a transaction is open), but
- * it still catches anything the per-step checks didn't, aborting startup with
- * recovery guidance instead of leaving a silently broken database running.
+ * whole call (including the drop-and-bump below) is a backstop on top of that —
+ * it cannot roll anything back (legacyMigrateToV14() is a sequence of
+ * independently-committed statements, not one transaction; some of them must run
+ * outside a transaction because they toggle `PRAGMA foreign_keys`, which is a
+ * no-op once a transaction is open), but it still catches anything the per-step
+ * checks didn't, and — critically — ensures a failure in the drop-and-bump step
+ * itself goes through the same recovery-guidance logging as everything else,
+ * instead of propagating as a bare, unlogged exception.
  */
 function handleLegacySchemaVersionHandover(db: Database.Database, backupPath: string | undefined): void {
-  runGuardedStep(db, "Legacy schema_version handover to v14", backupPath, () => legacyMigrateToV14(db, backupPath));
-  db.transaction(() => {
-    db.exec("DROP TABLE schema_version");
-    db.pragma("user_version = 1");
-  })();
+  runGuardedStep(db, "Legacy schema_version handover to v14", backupPath, () => {
+    legacyMigrateToV14(db, backupPath);
+    db.transaction(() => {
+      db.exec("DROP TABLE schema_version");
+      db.pragma("user_version = 1");
+    })();
+  });
   logger.info("Handed database off from schema_version tracking to PRAGMA user_version (migration 1 = v14 baseline)");
 }
 

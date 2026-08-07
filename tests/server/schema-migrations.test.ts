@@ -220,19 +220,12 @@ test("legacy handover atomicity: a crash between DROP TABLE schema_version and t
     // atomic with each other, this would leave schema_version dropped but
     // user_version still 0 — a state the next startup can't recover from (see
     // the comment on handleLegacySchemaVersionHandover).
-    const originalPragma = db.pragma.bind(db);
-    let injected = false;
-    (db as unknown as { pragma: typeof db.pragma }).pragma = ((sql: string, options?: unknown) => {
-      if (!injected && sql === "user_version = 1") {
-        injected = true;
-        throw new Error("simulated crash between DROP TABLE and PRAGMA user_version");
-      }
-      return (originalPragma as (sql: string, options?: unknown) => unknown)(sql, options);
-    }) as typeof db.pragma;
-
-    assert.throws(() => initSchema(db), /simulated crash/);
-
-    (db as unknown as { pragma: typeof db.pragma }).pragma = originalPragma;
+    const restore = injectFailureOnce(db, "pragma", "user_version = 1");
+    try {
+      assert.throws(() => initSchema(db), /simulated crash/);
+    } finally {
+      restore();
+    }
 
     const legacyTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'").get();
     assert.ok(legacyTable, "the transaction must roll back, leaving schema_version in place rather than dropped");
@@ -250,19 +243,25 @@ test("legacy handover atomicity: a crash between DROP TABLE schema_version and t
   }
 });
 
-/** Replaces db.prepare so that a call with `sql === matchSql` throws once, then restores the original. */
-function injectPrepareFailureOnce(db: BetterSqlite3.Database, matchSql: string): () => void {
-  const originalPrepare = db.prepare.bind(db);
+/**
+ * Replaces `db[method]` so a call whose first argument === `matchArg` throws
+ * once (simulating a process crash at that exact point), then falls through to
+ * the real implementation on every other call. Returns a restore callback —
+ * callers must invoke it (typically in a `finally`) even after the injected
+ * throw, since the patched method stays installed until then.
+ */
+function injectFailureOnce<M extends "prepare" | "pragma">(db: BetterSqlite3.Database, method: M, matchArg: string): () => void {
+  const original = db[method].bind(db) as (...args: unknown[]) => unknown;
   let injected = false;
-  (db as unknown as { prepare: typeof db.prepare }).prepare = ((sql: string) => {
-    if (!injected && sql === matchSql) {
+  (db as unknown as Record<M, unknown>)[method] = ((arg: string, ...rest: unknown[]) => {
+    if (!injected && arg === matchArg) {
       injected = true;
-      throw new Error(`simulated crash before: ${matchSql}`);
+      throw new Error(`simulated crash before: ${method}(${JSON.stringify(matchArg)})`);
     }
-    return (originalPrepare as (sql: string) => unknown)(sql);
-  }) as typeof db.prepare;
+    return original(arg, ...rest);
+  }) as unknown as BetterSqlite3.Database[M];
   return () => {
-    (db as unknown as { prepare: typeof db.prepare }).prepare = originalPrepare;
+    (db as unknown as Record<M, unknown>)[method] = original;
   };
 }
 
@@ -279,9 +278,12 @@ test("v7 migration atomicity: a crash before the version bump rolls back the who
     // INSERT...SELECT but the original book_sources not yet dropped — a state
     // where retrying re-runs that INSERT...SELECT against rows already copied
     // and fails with "UNIQUE constraint failed: book_sources_v7.id".
-    const restore = injectPrepareFailureOnce(db, "UPDATE schema_version SET version = 7");
-    assert.throws(() => initSchema(db), /simulated crash/);
-    restore();
+    const restore = injectFailureOnce(db, "prepare", "UPDATE schema_version SET version = 7");
+    try {
+      assert.throws(() => initSchema(db), /simulated crash/);
+    } finally {
+      restore();
+    }
 
     // Rolled back: no leftover temp table, original book_sources untouched, version unchanged.
     const tempTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='book_sources_v7'").get();
@@ -315,9 +317,12 @@ test("v8/v9 migration atomicity: a crash before the version bump rolls back the 
     // Without the fix, a crash here leaves book_sources.hardcover_audio_seconds
     // already added but the version still < 8 — retrying re-issues the same bare
     // ALTER TABLE ADD COLUMN and fails with "duplicate column name".
-    const restore = injectPrepareFailureOnce(db, "UPDATE schema_version SET version = 8");
-    assert.throws(() => initSchema(db), /simulated crash/);
-    restore();
+    const restore = injectFailureOnce(db, "prepare", "UPDATE schema_version SET version = 8");
+    try {
+      assert.throws(() => initSchema(db), /simulated crash/);
+    } finally {
+      restore();
+    }
 
     const cols = (db.prepare("PRAGMA table_info(book_sources)").all() as { name: string }[]).map((c) => c.name);
     assert.ok(!cols.includes("hardcover_audio_seconds"), "the v8 ALTER must roll back along with the version bump");
@@ -388,19 +393,29 @@ test("backupBeforeMigrating locks down the backups directory even if it already 
 });
 
 test("legacy handover is not re-run: a database already at user_version >= 1 is left alone", () => {
-  const { db, cleanup } = openRawDb();
+  const { db, dataDir, cleanup } = openRawDb();
   try {
     // Simulate a database that already went through the handover in a prior run.
     seedLegacyBooksSchema(db, 13);
     db.exec("INSERT INTO books (id, title) VALUES (1, 'Book')");
     initSchema(db);
+    // The handover always targets user_version 1 (the v14 baseline) specifically,
+    // not "whatever the latest migration is" — that's a distinct concept and the
+    // two only happen to match today because there's a single migration so far.
     const versionAfterFirstRun = db.pragma("user_version", { simple: true }) as number;
     assert.equal(versionAfterFirstRun, 1);
+    const backupDir = path.join(dataDir, "backups");
+    assert.equal(readdirSync(backupDir).length, 1, "the first run should have taken exactly one backup");
 
     // Re-running must not touch schema_version again or re-apply migration 1.
     initSchema(db);
     const versionAfterSecondRun = db.pragma("user_version", { simple: true }) as number;
     assert.equal(versionAfterSecondRun, LATEST_MIGRATION_VERSION);
+    assert.equal(
+      readdirSync(backupDir).length,
+      1,
+      "a no-op second run must not take another backup — proof nothing was re-applied, not just that the version looks right"
+    );
   } finally {
     cleanup();
   }
@@ -478,5 +493,75 @@ test("runMigrations backs up an already-populated database before applying a pen
     } finally {
       cleanup();
     }
+  }
+});
+
+/**
+ * Order-independent per-table {columns, indexes} snapshot, so two databases
+ * built by different code paths can be compared for equivalence without
+ * caring about column declaration order or the order sqlite_master lists
+ * indexes in.
+ */
+function introspectSchema(db: BetterSqlite3.Database): Record<string, { columns: string[]; indexes: string[] }> {
+  const tables = (
+    db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name != 'sqlite_sequence'").all() as
+      { name: string }[]
+  ).map((t) => t.name);
+
+  const schema: Record<string, { columns: string[]; indexes: string[] }> = {};
+  for (const table of tables) {
+    const columns = (
+      db.prepare(`PRAGMA table_info("${table}")`).all() as
+        { name: string; type: string; notnull: number; dflt_value: string | null }[]
+    )
+      .map((c) => `${c.name}:${c.type}:${c.notnull}:${c.dflt_value ?? ""}`)
+      .sort();
+    // sqlite_autoindex_* entries are implicit, generated from inline UNIQUE/PK
+    // constraints already captured by the column list above and the presence of
+    // the same UNIQUE columns — comparing them by name would fail spuriously
+    // since SQLite numbers them by creation order, which legitimately differs
+    // between the two code paths here.
+    const indexes = (db.prepare(`PRAGMA index_list("${table}")`).all() as { name: string }[])
+      .map((i) => i.name)
+      .filter((name) => !name.startsWith("sqlite_autoindex_"))
+      .sort();
+    schema[table] = { columns, indexes };
+  }
+  return schema;
+}
+
+test("schema equivalence: a fresh install (migration 1) and a full legacy v3-v14 chain produce the same schema", () => {
+  const fresh = createTestDatabase();
+  const legacy = openRawDb();
+  try {
+    // Start from the earliest realistic historical shape (pre-v3) so the legacy
+    // chain actually exercises every version block, not just the later ones.
+    seedLegacyBooksSchema(legacy.db, 2);
+    legacy.db.exec("INSERT INTO books (id, title) VALUES (1, 'Book')");
+    initSchema(legacy.db);
+
+    const freshSchema = introspectSchema(fresh.db);
+    const legacySchema = introspectSchema(legacy.db);
+
+    assert.deepEqual(
+      Object.keys(legacySchema).sort(),
+      Object.keys(freshSchema).sort(),
+      "both code paths must produce the same set of tables"
+    );
+    for (const table of Object.keys(freshSchema)) {
+      assert.deepEqual(
+        legacySchema[table]!.columns,
+        freshSchema[table]!.columns,
+        `columns for "${table}" must match between a fresh install and a full legacy chain + handover`
+      );
+      assert.deepEqual(
+        legacySchema[table]!.indexes,
+        freshSchema[table]!.indexes,
+        `indexes for "${table}" must match between a fresh install and a full legacy chain + handover`
+      );
+    }
+  } finally {
+    fresh.cleanup();
+    legacy.cleanup();
   }
 });

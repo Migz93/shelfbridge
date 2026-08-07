@@ -132,14 +132,15 @@ so all tests start already authenticated.
 | Idempotent re-run | Running `initSchema` twice makes no further changes |
 | Legacy handover | A pre-existing `schema_version` database is migrated to v14 via the preserved sequential logic, then handed over to `user_version = 1`; verifies `source_instance_id` is added, existing rows survive, Chaptarr is backfilled to instance `0`, per-profile sources are left unscoped, the per-instance unique constraint is enforced, exactly one pre-migration backup was written (not one per step), and the stale `schema_version` table is dropped |
 | Handover atomicity | Injecting a failure between `DROP TABLE schema_version` and the `user_version = 1` bump rolls back cleanly (table still present, `user_version` still `0`), and a subsequent `initSchema` call recovers on its own |
-| Handover is not re-run | A database already at `user_version >= 1` is left alone on a second `initSchema` call |
+| Handover is not re-run | A database already at `user_version >= 1` is left alone on a second `initSchema` call, and takes no redundant backup |
 | Legacy v3 migration | Orphan books (empty title, Chaptarr-only source) are deleted; books with a real source survive |
 | Legacy v7 migration atomicity | Injecting a failure before the version 7 bump rolls back the whole `book_sources`/`user_book_states` rebuild (no leftover `book_sources_v7` temp table, original data intact, version unchanged), and a subsequent `initSchema` call recovers on its own |
 | Legacy v8/v9 migration atomicity | Injecting a failure before the version 8 bump rolls back the `ALTER TABLE ADD COLUMN` statements (column not present, version unchanged), and a subsequent `initSchema` call recovers through v9 as well |
 | Legacy v13 migration | `book_sources` rows with the literal string `"datetime('now')"` as `last_sync_at` are repaired to `NULL` |
-| Pre-migration backup | `runMigrations` snapshots an already-populated database via `VACUUM INTO` into `<data dir>/backups/` before applying a pending migration, and skips the backup for a brand-new database with nothing to protect |
+| Pre-migration backup | `backupBeforeMigrating` snapshots an already-populated database via `VACUUM INTO` into `<data dir>/backups/` before `runMigrations` applies a pending migration, and skips the backup for a brand-new database with nothing to protect |
 | Backup retention | `backupBeforeMigrating` prunes `<data dir>/backups/` down to the 5 most recently created backups each time it runs |
 | Backup directory permissions | `backupBeforeMigrating` locks `<data dir>/backups/` down to owner-only (`0o700`) even when the directory already existed with looser permissions from before this hardening shipped — `mkdirSync`'s `mode` alone is a no-op on an existing directory, so this is only correct if it's backed by an explicit `chmodSync` |
+| Schema equivalence | The flattened baseline (migration 1, a fresh install) and a full legacy `v3`→`v14` chain plus handover produce the same set of tables, columns, and named indexes — order-independent, so this catches the baseline silently drifting from what the legacy chain actually produces |
 
 ### `tests/server/book-identity.test.ts` — Identity reconciliation
 

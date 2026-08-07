@@ -108,40 +108,25 @@ and Pacearr use. Each migration is a `{ version, description, up(db) }` entry;
 `runMigrations()` applies every migration newer than the database's current
 `user_version`, in ascending order. Migration 1 is a single flattened
 `CREATE TABLE` block, so a fresh install reaches a correct schema in one migration.
+Implementation rationale (transaction boundaries, pragma-timing constraints,
+backup permissions) lives in code comments in `migrations.ts` and `schema.ts`,
+not here.
 
 Before applying any pending migration to a database that already has tables,
-`initSchema()` snapshots it once with `VACUUM INTO` into `<data dir>/backups/`
-and threads that path into both the legacy handover (below) and
-`runMigrations()`, so a startup that needs both only pays for one snapshot. A
-snapshot is a full copy of the database, API tokens and passwords included, so
-`backupBeforeMigrating()` locks that directory to owner-only (`chmod 0o700`) on
-every call — not just when it creates the directory. `mkdirSync`'s `mode` option
-is a no-op on a directory that already exists, so an explicit `chmodSync` is
-what makes this apply retroactively to installs that had the directory before
-this hardening shipped, not just fresh ones. `backupBeforeMigrating()` also
-prunes that directory down to the 5 most recent backups each time it runs
-(best-effort — a prune failure is logged and swallowed, never allowed to block
-startup over a successfully-taken backup).
-`initSchema()` (in `src/server/db/schema.ts`) wires all of this up: WAL/foreign-key
-pragmas, the backup, the legacy handover if needed, `runMigrations()`, then
-`reconcileBookIdentities()`.
+`initSchema()` takes one `VACUUM INTO` snapshot into `<data dir>/backups/`
+(owner-only permissions, retained: 5 most recent) and shares that path with
+both the legacy handover and `runMigrations()`. `initSchema()` (in
+`src/server/db/schema.ts`) wires the whole startup sequence together:
+WAL/foreign-key pragmas, the backup, the legacy handover if needed,
+`runMigrations()`, then `reconcileBookIdentities()`.
 
-**Two guard primitives, chosen by whether a step can be one transaction:**
+Two guard primitives apply a migration step and verify it with
+`PRAGMA foreign_key_check`, raising a `ForeignKeyViolationError` on a violation:
 
-- `runTransactionalStep(db, label, backupPath, step)` — wraps `step` and a
-  `PRAGMA foreign_key_check` in one transaction, so a violation (or any thrown
-  error) rolls the whole step back atomically. This is the default: every
-  `Migration.up()` applied by `runMigrations()` runs through it, one transaction
-  per migration covering the schema/data changes and the `user_version` bump
-  together.
-- `runGuardedStep(db, label, backupPath, step)` — runs `step`, then checks
-  `PRAGMA foreign_key_check` afterward. Because `step` has already committed by
-  the time the check runs, a violation here can only abort startup with recovery
-  guidance pointing at the backup — it cannot undo anything. Use this only when
-  `step` genuinely cannot be one transaction.
-
-Both log the same way (`logGuardedFailure()`) and both raise a
-`ForeignKeyViolationError` carrying the raw violation rows.
+| Primitive | Behavior | Used by |
+|---|---|---|
+| `runTransactionalStep(db, label, backupPath, step)` | Wraps `step` and the check in one transaction — a violation rolls the whole step back | Every migration in `runMigrations()`; the legacy handover's v7/v8/v9/v14 sub-steps |
+| `runGuardedStep(db, label, backupPath, step)` | Runs `step`, checks after — a violation can only abort startup, not undo `step` | The legacy handover as a whole (can't be one transaction — see `schema.ts`) |
 
 > **Handover from the old `schema_version` table.** Before this pattern, schema
 > version lived in a `schema_version` table with a sequential run of
@@ -149,23 +134,10 @@ Both log the same way (`logGuardedFailure()`) and both raise a
 > has that table is pre-migrations-pattern: `initSchema()` runs that old sequential
 > logic once (preserved as `legacyMigrateToV14()` in `schema.ts`) to bring it to
 > the v14 shape — which is exactly migration 1 — then drops `schema_version` and
-> sets `user_version = 1`.
->
-> Protection there is layered, because `legacyMigrateToV14()` is a sequence of
-> independently-committed statements, not one transaction (some of it must run
-> outside a transaction, since it toggles `PRAGMA foreign_keys`, which is a no-op
-> once a transaction is open). Its v7/v8/v9/v14 sub-steps — the ones that rebuild
-> tables or add columns without an existence check — each run through
-> `runTransactionalStep()` individually, so a crash or FK regression in one of
-> them rolls back just that step. The other sub-steps (v3, v5, v6, v10–v13) are
-> already naturally idempotent (existence-check guarded, or built from statements
-> that are no-ops on retry) and don't need it. The whole `legacyMigrateToV14()`
-> call is additionally wrapped in `runGuardedStep()` as a backstop, catching
-> anything the per-step checks didn't — it can only abort, not roll back, but
-> that's still better than continuing on a silently broken database. A brand-new
-> install has no `schema_version` table and skips straight to
-> `runMigrations()`. Do not add new migrations to `legacyMigrateToV14()`; new
-> schema changes are a new entry in the `migrations` array with `version > 1`.
+> sets `user_version = 1`. A brand-new install has no `schema_version` table and
+> skips straight to `runMigrations()`. Do not add new migrations to
+> `legacyMigrateToV14()`; new schema changes are a new entry in the `migrations`
+> array with `version > 1`.
 
 ### Tables
 
