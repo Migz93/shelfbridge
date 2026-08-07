@@ -993,7 +993,7 @@ function AboutTab() {
       <InfoRow label="Timezone">
         <code className="text-sm text-on-surface bg-background-container-high px-2 py-0.5 rounded">{info?.tz ?? placeholder}</code>
       </InfoRow>
-      <InfoRow label="DB Schema Version">
+      <InfoRow label="DB Migration Version">
         <span className="text-sm text-on-surface">{info?.dbVersion ?? placeholder}</span>
       </InfoRow>
     </SectionCard>
