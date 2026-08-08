@@ -26,10 +26,22 @@ Most tests should use `createTestDatabase()` from `test-db.ts`, which spins up a
 fresh temp-dir SQLite database with the current schema applied — no shared state
 between tests.
 
-`sync-engine.test.ts` is the one exception: `runSyncImpl` always operates on the
-`db/index.ts` singleton rather than an injected database, so that file points
-`DATA_DIR` at its own private temp dir before importing the engine, and every
-test in it seeds its own profile and scopes assertions to that profile's id.
+`sync-engine.test.ts`, `auth.test.ts`, and `settings.test.ts` are the exceptions:
+each operates on the `db/index.ts` singleton rather than an injected database,
+so each points `DATA_DIR` at its own private temp dir (via a dynamic `import()`
+of the singleton after setting the env var — a static `import` would evaluate
+the singleton too early, since ESM hoists imports ahead of the rest of the
+importing module) instead of sharing `./.test-data` with each other. Node's test
+runner runs each file in its own process, so two files racing to initialize the
+same fresh `./.test-data/shelfbridge.db` — both seeing no pending migrations, both
+running migration 1's non-`IF NOT EXISTS` `CREATE TABLE` statements — could
+otherwise intermittently fail with `table already exists`; isolating each of
+these three files removes the shared state the race depends on. `sync-engine.test.ts`
+additionally seeds its own profile per test and scopes assertions to that
+profile's id, since it shares one database across many tests within the file.
+Each of the three waits for the logger to flush (`logger.end()` + `"finish"`
+event) before deleting its temp dir in `test.after`, since the logger also
+writes into `DATA_DIR`.
 
 ## Playwright End-To-End Tests
 
@@ -126,11 +138,27 @@ so all tests start already authenticated.
 
 | Test | What it checks |
 |---|---|
-| Fresh database lands on the current schema version | `initSchema` on an empty DB reaches `CURRENT_SCHEMA_VERSION` with no foreign-key violations |
-| Idempotent re-run | Running `initSchema` twice makes no further changes and never duplicates the `schema_version` row |
-| v14 migration | Rebuilding `book_sources` with the per-instance unique constraint preserves existing rows, adds `source_instance_id`, and backfills Chaptarr's single global instance to `0` |
-| v3 migration | Orphan books (empty title, Chaptarr-only source) are deleted; books with a real source survive |
-| v13 migration | `book_sources` rows with the literal string `"datetime('now')"` as `last_sync_at` are repaired to `NULL` |
+| `runTransactionalStep` rollback | A newly-introduced `PRAGMA foreign_key_check` violation rolls back the entire step atomically — the violating row and everything else written in the same step, not just the violation itself |
+| `runGuardedStep` abort-without-rollback | A newly-introduced violation is still detected and thrown, but since `step()` already committed on its own (no transaction), the violating row survives — the documented behavior for steps that can't be one transaction |
+| Pre-existing violations don't block | A `runTransactionalStep` step that introduces no *new* foreign-key violations still commits even if pre-existing ones (unrelated historical data debt) remain — only newly-introduced violations are fatal |
+| New violation alongside a pre-existing one | A step that introduces one new violation on top of a pre-existing, unrelated one still rolls back — the pre-existing violation doesn't mask a real new one, and survives the rollback untouched |
+| `user_version` rollback | A violation introduced after `db.pragma('user_version = N')` inside a `runTransactionalStep` rolls back the pragma write too, not just table rows — proving the whole transaction is atomic, not just data changes |
+| Fresh database applies migration 1 | `initSchema` on an empty DB reaches `LATEST_MIGRATION_VERSION` via `PRAGMA user_version`, never creates a `schema_version` table, with no foreign-key violations |
+| Idempotent re-run | Running `initSchema` twice makes no further changes |
+| Legacy handover | A pre-existing `schema_version` database is migrated to v14 via the preserved sequential logic, then handed over to `user_version = 1`; verifies `source_instance_id` is added, existing rows survive, Chaptarr is backfilled to instance `0`, per-profile sources are left unscoped, the per-instance unique constraint is enforced, exactly one pre-migration backup was written (not one per step), and the stale `schema_version` table is dropped |
+| Handover atomicity | Injecting a failure between `DROP TABLE schema_version` and the `user_version = 1` bump rolls back cleanly (table still present, `user_version` still `0`), and a subsequent `initSchema` call recovers on its own |
+| Handover is not re-run | A database already at `user_version >= 1` is left alone on a second `initSchema` call, and takes no redundant backup |
+| Legacy v3 migration | Orphan books (empty title, Chaptarr-only source) are deleted; books with a real source survive |
+| Legacy v7 migration atomicity | Injecting a failure before the version 7 bump rolls back the whole `book_sources`/`user_book_states` rebuild (no leftover `book_sources_v7` temp table, original data intact, version unchanged), and a subsequent `initSchema` call recovers on its own |
+| Single failure log per handover error | A v7 sub-step failure during the legacy handover is logged exactly once, not once per guarding layer (`runTransactionalStep` around v7 itself, then `runGuardedStep` around the whole handover) it propagates through |
+| Backstop check precedes the version bump | The legacy handover's outer `foreign_key_check` runs while `user_version` is still `0`, before the `DROP TABLE schema_version` + version bump commits — proving a caught violation leaves the handover retriable on the next restart instead of looking already-complete |
+| Legacy v8/v9 migration atomicity | Injecting a failure before the version 8 bump rolls back the `ALTER TABLE ADD COLUMN` statements (column not present, version unchanged), and a subsequent `initSchema` call recovers through v9 as well |
+| Legacy v13 migration | `book_sources` rows with the literal string `"datetime('now')"` as `last_sync_at` are repaired to `NULL` |
+| Pre-migration backup | `backupBeforeMigrating` snapshots an already-populated database via `VACUUM INTO` into `<data dir>/backups/` before `runMigrations` applies a pending migration, and skips the backup for a brand-new database with nothing to protect |
+| Backup retention | `backupBeforeMigrating` prunes `<data dir>/backups/` down to the 5 most recently created backups each time it runs |
+| Backup directory permissions | `backupBeforeMigrating` locks `<data dir>/backups/` down to owner-only (`0o700`) even when the directory already existed with looser permissions from before this hardening shipped — `mkdirSync`'s `mode` alone is a no-op on an existing directory, so this is only correct if it's backed by an explicit `chmodSync` |
+| Downgrade guard | `getPendingMigrations`/`runMigrations` reject a database whose `user_version` is newer than this build's `LATEST_MIGRATION_VERSION`, instead of silently seeing nothing pending and booting into an unknown schema |
+| Schema equivalence | The flattened baseline (migration 1, a fresh install) and a full legacy `v3`→`v14` chain plus handover produce the same set of tables, columns (including primary-key ordinal), indexes (including implicit ones from inline `UNIQUE`/PK constraints, compared by shape rather than their creation-order-dependent name), foreign keys, and views/triggers — order-independent, so this catches the baseline silently drifting from what the legacy chain actually produces |
 
 ### `tests/server/book-identity.test.ts` — Identity reconciliation
 

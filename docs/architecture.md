@@ -102,19 +102,54 @@ WAL mode matters here because the background sync worker writes concurrently wit
 the web server serving API reads. WAL prevents the sync worker from blocking HTTP
 responses by allowing concurrent readers and a single writer.
 
-Schema version is tracked in the `schema_version` table, with the current version
-defined in `src/server/db/schema.ts` as `CURRENT_SCHEMA_VERSION`. `initSchema()`
-creates every table, then applies a sequential run of version-guarded
-`ALTER TABLE` and table-rebuild blocks in the same file.
+Schema version is tracked with SQLite's built-in `PRAGMA user_version`, driven by
+a `Migration[]` array in `src/server/db/migrations.ts` — the same pattern Hubarr
+and Pacearr use. Each migration is a `{ version, description, up(db) }` entry;
+`runMigrations()` applies every migration newer than the database's current
+`user_version`, in ascending order, and rejects a database whose `user_version`
+is *newer* than this build's `LATEST_MIGRATION_VERSION` (a downgrade to an older
+image) rather than silently booting into a schema it doesn't understand.
+Migration 1 is a single flattened `CREATE TABLE` block, so a fresh install
+reaches a correct schema in one migration. Implementation rationale (transaction
+boundaries, pragma-timing constraints, backup permissions) lives in code
+comments in `migrations.ts` and `schema.ts`, not here.
 
-> **This diverges from the sibling projects.** Hubarr and Pacearr use SQLite's
-> built-in `PRAGMA user_version` with a `Migration[]` array in
-> `src/server/db/migrations.ts`, where each migration runs inside its own
-> transaction. Moving ShelfBridge onto that pattern is tracked in
-> [#58](https://github.com/Migz93/shelfbridge/issues/58), together with
-> [#32](https://github.com/Migz93/shelfbridge/issues/32) for the crash-safety
-> properties it should deliver. Do not hardcode the current version number in
-> this doc — it goes stale.
+Before applying any pending migration to a database that already has tables,
+`initSchema()` takes one `VACUUM INTO` snapshot into `<data dir>/backups/`,
+attempts to restrict it to owner-only permissions (best-effort — a permissions
+failure is logged and does not block the backup or startup), and shares the
+resulting path with both the legacy handover and `runMigrations()`. Old backups
+beyond the 5 most recent are pruned, also best-effort. `initSchema()` (in
+`src/server/db/schema.ts`) wires the whole startup sequence together:
+WAL/foreign-key pragmas, the backup, the legacy handover if needed,
+`runMigrations()`, an expired-`auth_sessions` cleanup, then
+`reconcileBookIdentities()`.
+
+Two guard primitives apply a migration step and verify it with
+`PRAGMA foreign_key_check`, raising a `ForeignKeyViolationError` only for
+violations the step itself introduced — a database can carry pre-existing,
+unrelated foreign-key inconsistencies that must not block every future
+migration:
+
+| Primitive | Behavior | Used by |
+|---|---|---|
+| `runTransactionalStep(db, label, backupPath, step)` | Wraps `step` and the check in one transaction — a violation rolls the whole step back | Every migration in `runMigrations()`; the legacy handover's v7/v8/v9/v14 sub-steps |
+| `runGuardedStep(db, label, backupPath, step)` | Runs `step`, checks after — a violation can only abort startup, not undo `step` | `legacyMigrateToV14()` as a whole (can't be one transaction — see `schema.ts`) |
+
+> **Handover from the old `schema_version` table.** Before this pattern, schema
+> version lived in a `schema_version` table with a sequential run of
+> version-guarded `ALTER TABLE` and table-rebuild blocks. Any database that still
+> has that table is pre-migrations-pattern: `initSchema()` runs that old sequential
+> logic once (preserved as `legacyMigrateToV14()` in `schema.ts`) to bring it to
+> the v14 shape — which is exactly migration 1. Only once `runGuardedStep()`'s
+> backstop check on that has passed does it drop `schema_version` and set
+> `user_version = 1` — deliberately *after* the check, not inside the guarded
+> step, so a violation the backstop catches leaves `user_version` at 0 and the
+> next restart re-attempts the whole handover, rather than the handover looking
+> already-complete on retry. A brand-new install has no `schema_version` table
+> and skips straight to `runMigrations()`. Do not add new migrations to
+> `legacyMigrateToV14()`; new schema changes are a new entry in the `migrations`
+> array with `version > 1`.
 
 ### Tables
 
@@ -355,8 +390,6 @@ running sync completes.
   `goodreads` sources only. `chaptarr` and `audiobookshelf` sources are joined as
   supplemental metadata so unmatched artifacts from those sources do not appear as
   blank catalog books.
-- Schema version is tracked in `schema_version`; the current version is
-  `CURRENT_SCHEMA_VERSION = 9` in `src/server/db/schema.ts`
 - `coverUrl` in all API book responses is always a local `/images/<uuid>.jpg`
   path from `book_sources.cover_cache_path` or `null` — external cover URLs from
   Hardcover, Grimmory, or Goodreads are never forwarded to the browser

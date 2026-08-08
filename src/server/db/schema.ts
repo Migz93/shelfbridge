@@ -1,13 +1,109 @@
 import type Database from "better-sqlite3";
 import { reconcileBookIdentities } from "./bookIdentity.js";
 import { logger } from "../logger.js";
-
-export const CURRENT_SCHEMA_VERSION = 14;
+import {
+  backupBeforeMigrating,
+  getPendingMigrations,
+  logGuardedFailure,
+  runGuardedStep,
+  runMigrations,
+  runTransactionalStep
+} from "./migrations.js";
 
 export function initSchema(db: Database.Database): void {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
 
+  const needsHandover = legacyHandoverNeeded(db);
+  // Take at most one backup per startup, even when the legacy handover and a
+  // pending migration 2+ both run in the same call — otherwise a laggard install
+  // upgrading straight into a future migration would pay for two VACUUM INTO
+  // snapshots of the same starting state.
+  const backupPath = (needsHandover || getPendingMigrations(db).length > 0) ? backupBeforeMigrating(db) : undefined;
+
+  if (needsHandover) {
+    handleLegacySchemaVersionHandover(db, backupPath);
+  }
+  runMigrations(db, backupPath);
+
+  db.prepare("DELETE FROM auth_sessions WHERE expires_at <= unixepoch()").run();
+  reconcileBookIdentities(db);
+}
+
+function legacyHandoverNeeded(db: Database.Database): boolean {
+  const userVersion = db.pragma("user_version", { simple: true }) as number;
+  if (userVersion > 0) return false; // already migrated under the new pattern
+
+  const legacyTable = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
+    .get();
+  return legacyTable !== undefined;
+}
+
+/**
+ * Any database that still has a `schema_version` table predates the `PRAGMA
+ * user_version` + `Migration[]` pattern in migrations.ts. Bring it up to the v14
+ * shape using the same sequential logic ShelfBridge always used for that, then
+ * hand it over: drop `schema_version` and set `user_version = 1` (migration 1 in
+ * migrations.ts is exactly that v14 shape). A brand-new install has no
+ * `schema_version` table and skips straight to runMigrations(), which applies
+ * migration 1 directly.
+ *
+ * The drop and the version bump run in one transaction so a crash between them
+ * can't happen: without that, a crash after the drop but before the pragma would
+ * leave user_version at 0 with schema_version already gone, so the next startup
+ * would see the handover as still needed, re-run legacyMigrateToV14() (harmless,
+ * it's idempotent), then try to DROP a table that's already gone. Worse, once
+ * runMigrations() treated migration 1 as pending on that phantom retry, its bare
+ * `CREATE TABLE app_settings` (no IF NOT EXISTS) would fail against tables that
+ * already exist — a permanent boot failure, exactly what #32 exists to prevent.
+ *
+ * Protection is layered: legacyMigrateToV14()'s own v7/v8/v9/v14 sub-steps each
+ * run via runTransactionalStep(), so a foreign-key regression introduced by one
+ * of them rolls back just that step. The runGuardedStep() wrapped around
+ * legacyMigrateToV14() alone is a backstop on top of that — it cannot roll
+ * anything back (legacyMigrateToV14() is a sequence of independently-committed
+ * statements, not one transaction; some of them must run outside a transaction
+ * because they toggle `PRAGMA foreign_keys`, which is a no-op once a
+ * transaction is open), but it still catches anything the per-step checks
+ * didn't.
+ *
+ * The drop-and-bump deliberately runs *after* that backstop check, not inside
+ * it: if it ran first (or in the same guarded step), the check would run
+ * against a database where user_version is already 1 — so a violation would
+ * abort this one boot, but the handover would already be marked complete, and
+ * a plain restart would sail straight past it next time (legacyHandoverNeeded()
+ * sees user_version > 0 and never re-checks), silently running forever on the
+ * broken database the first abort was supposed to prevent. Gating the bump
+ * behind the check instead means a violation leaves user_version at 0, so
+ * every restart re-attempts the whole handover and re-hits the same abort
+ * until the underlying problem is fixed — genuine repeated protection, not a
+ * one-time speed bump. The drop-and-bump transaction still gets its own
+ * recovery-guidance logging on failure, via logGuardedFailure() directly
+ * rather than another full guarded-step FK check (schema_version carries no
+ * foreign keys, so there is nothing new for a second check to catch there).
+ */
+function handleLegacySchemaVersionHandover(db: Database.Database, backupPath: string | undefined): void {
+  runGuardedStep(db, "Legacy schema_version handover to v14", backupPath, () => legacyMigrateToV14(db, backupPath));
+
+  try {
+    db.transaction(() => {
+      db.exec("DROP TABLE schema_version");
+      db.pragma("user_version = 1");
+    })();
+  } catch (err) {
+    logGuardedFailure("Legacy schema_version handover to v14 (drop schema_version + version bump)", backupPath, err);
+    throw err;
+  }
+  logger.info("Handed database off from schema_version tracking to PRAGMA user_version (migration 1 = v14 baseline)");
+}
+
+/**
+ * The pre-migrations-pattern upgrade path, preserved verbatim for the handover
+ * above. Do not add new migrations here — new schema changes belong in
+ * migrations.ts as a migration with version > 1.
+ */
+function legacyMigrateToV14(db: Database.Database, backupPath: string | undefined): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_version (
       version INTEGER NOT NULL
@@ -103,7 +199,6 @@ export function initSchema(db: Database.Database): void {
       UNIQUE(profile_id)
     );
 
-    -- Master book record. Canonical title/author/ISBNs/cover aggregated from all sources.
     CREATE TABLE IF NOT EXISTS books (
       id               INTEGER PRIMARY KEY AUTOINCREMENT,
       media_type       TEXT NOT NULL DEFAULT 'unknown',
@@ -120,14 +215,6 @@ export function initSchema(db: Database.Database): void {
       created_at       TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
-    -- One row per (book × source system × source instance). external_id is the
-    -- source's own ID for this book, scoped by source_instance_id since two
-    -- configured instances of the same integration (e.g. two Grimmory servers) can
-    -- reuse the same local ID for different books — see the v14 migration below,
-    -- which is what actually reshapes this table on upgrade. This declared shape
-    -- only takes effect directly on a brand-new install; existing installs always
-    -- go through the sequential migrations, including v14.
-    -- book_id is nullable until reconcileBookIdentities() assigns it.
     CREATE TABLE IF NOT EXISTS book_sources (
       id               INTEGER PRIMARY KEY AUTOINCREMENT,
       book_id          INTEGER REFERENCES books(id) ON DELETE CASCADE,
@@ -142,8 +229,6 @@ export function initSchema(db: Database.Database): void {
       isbn10           TEXT,
       series_name      TEXT,
       series_number    TEXT,
-      -- Cross-source identifiers observed on this source row. These preserve
-      -- source-provided IDs even when they are not this row's own external_id.
       source_hardcover_book_id   TEXT,
       source_hardcover_slug      TEXT,
       source_goodreads_book_id   TEXT,
@@ -155,21 +240,16 @@ export function initSchema(db: Database.Database): void {
       source_narrator           TEXT,
       source_asin                TEXT,
       source_audible_asin        TEXT,
-      -- Hardcover-specific
       hardcover_slug   TEXT,
-      -- Grimmory cross-references stored inside Grimmory metadata
       grimmory_hardcover_book_id   TEXT,
       grimmory_goodreads_id        TEXT,
       grimmory_hardcover_id        TEXT,
       grimmory_primary_file_path   TEXT,
-      -- Goodreads-specific
       goodreads_book_link TEXT,
-      -- Chaptarr-specific
       chaptarr_monitored         INTEGER,
       chaptarr_has_file          INTEGER,
       chaptarr_id_mismatch       INTEGER,
       chaptarr_primary_file_path TEXT,
-      -- Sync metadata
       last_sync_at     TEXT,
       last_sync_decision TEXT,
       last_modified_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -177,38 +257,32 @@ export function initSchema(db: Database.Database): void {
       UNIQUE(source_type, source_instance_id, external_id)
     );
 
-    -- One row per (book × profile × source) where the profile has user activity.
     CREATE TABLE IF NOT EXISTS user_book_states (
       id               INTEGER PRIMARY KEY AUTOINCREMENT,
       book_id          INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
       profile_id       INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
       source_type      TEXT NOT NULL CHECK(source_type IN ('hardcover','goodreads','grimmory')),
-      -- Generic reading state (mapped from source-specific values)
       status           TEXT,
       rating           REAL,
       progress         REAL,
       progress_pages   INTEGER,
       last_read_date   TEXT,
       date_finished    TEXT,
-      -- Sync metadata
       sync_health      TEXT NOT NULL DEFAULT 'pending',
       has_superseded   INTEGER NOT NULL DEFAULT 0,
       match_confidence TEXT NOT NULL DEFAULT 'none',
       match_type       TEXT,
       last_sync_decision TEXT,
-      -- Hardcover-specific
       hardcover_status_id  INTEGER,
       hardcover_read_id    INTEGER,
       hardcover_updated_at TEXT,
       hardcover_list_id    INTEGER,
       hardcover_pages      INTEGER,
-      -- Goodreads-specific
       goodreads_shelf      TEXT,
       goodreads_read_at    TEXT,
       goodreads_updated_at TEXT,
       goodreads_match_type TEXT,
       goodreads_book_link  TEXT,
-      -- Grimmory-specific
       grimmory_book_id        INTEGER,
       grimmory_last_read_time TEXT,
       grimmory_primary_file_id INTEGER,
@@ -317,11 +391,9 @@ export function initSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
   `);
 
-  db.prepare("DELETE FROM auth_sessions WHERE expires_at <= unixepoch()").run();
-
   const row = db.prepare("SELECT version FROM schema_version").get() as { version: number } | undefined;
   if (!row) {
-    db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(CURRENT_SCHEMA_VERSION);
+    db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(14);
   }
 
   // Add file-path columns to book_sources if they don't exist yet
@@ -495,9 +567,23 @@ export function initSchema(db: Database.Database): void {
   // v7: Rebuild book_sources to drop the CHECK constraint on source_type so
   // 'audiobookshelf' rows can be inserted. Also rebuild user_book_states to
   // drop its CHECK constraint for the same reason.
+  //
+  // The rebuild + version bump run via runTransactionalStep() — one transaction
+  // covering both, with a foreign_key_check before commit — so a mid-rebuild
+  // crash or a foreign-key regression rolls back the whole step atomically.
+  // foreign_keys is toggled outside the transaction, since that pragma is a
+  // no-op once a transaction is already open (same pattern as the v14 block
+  // below). Without the transaction wrapping, a crash mid-exec (multi-statement
+  // db.exec() is not itself atomic) could leave book_sources_v7 populated by the
+  // INSERT...SELECT but the original book_sources not yet dropped and the version
+  // still < 7; retrying would then re-run the INSERT...SELECT against rows that
+  // are already there and fail with a UNIQUE constraint violation on id, bricking
+  // startup with no automatic recovery.
   if (!row || row.version < 7) {
     db.pragma("foreign_keys = OFF");
-    db.exec(`
+    try {
+      runTransactionalStep(db, "Legacy schema migration to version 7", backupPath, () => {
+        db.exec(`
       CREATE TABLE IF NOT EXISTS book_sources_v7 (
         id               INTEGER PRIMARY KEY AUTOINCREMENT,
         book_id          INTEGER REFERENCES books(id) ON DELETE CASCADE,
@@ -619,20 +705,31 @@ export function initSchema(db: Database.Database): void {
       CREATE INDEX IF NOT EXISTS idx_user_book_states_book ON user_book_states(book_id);
       CREATE INDEX IF NOT EXISTS idx_user_book_states_profile ON user_book_states(profile_id);
       CREATE INDEX IF NOT EXISTS idx_user_book_states_profile_source ON user_book_states(profile_id, source_type);
-    `);
-    db.pragma("foreign_keys = ON");
-    db.prepare("UPDATE schema_version SET version = 7").run();
+        `);
+        db.prepare("UPDATE schema_version SET version = 7").run();
+      });
+    } finally {
+      db.pragma("foreign_keys = ON");
+    }
     logger.info("Schema migrated to version 7: removed source_type CHECK constraints to allow audiobookshelf rows");
   }
 
   // v8: Add hardcover_audio_seconds to book_sources and hardcover_user_book_id + progress_seconds to user_book_states
+  //
+  // Runs via runTransactionalStep() so a crash between the three ALTER
+  // statements (none of which check column existence first, unlike the guarded
+  // ALTERs above) — or a foreign-key regression from them — rolls back instead
+  // of leaving one column added and the version still < 8, which made a retry
+  // throw "duplicate column name" and brick startup.
   if (!row || row.version < 8) {
-    db.exec(`
-      ALTER TABLE book_sources ADD COLUMN hardcover_audio_seconds INTEGER;
-      ALTER TABLE user_book_states ADD COLUMN hardcover_user_book_id INTEGER;
-      ALTER TABLE user_book_states ADD COLUMN progress_seconds INTEGER;
-    `);
-    db.prepare("UPDATE schema_version SET version = 8").run();
+    runTransactionalStep(db, "Legacy schema migration to version 8", backupPath, () => {
+      db.exec(`
+        ALTER TABLE book_sources ADD COLUMN hardcover_audio_seconds INTEGER;
+        ALTER TABLE user_book_states ADD COLUMN hardcover_user_book_id INTEGER;
+        ALTER TABLE user_book_states ADD COLUMN progress_seconds INTEGER;
+      `);
+      db.prepare("UPDATE schema_version SET version = 8").run();
+    });
     logger.info("Schema migrated to version 8: added hardcover_audio_seconds, hardcover_user_book_id, progress_seconds");
   }
 
@@ -640,12 +737,18 @@ export function initSchema(db: Database.Database): void {
   // hardcover_edition_id: the edition we've matched and will pass in progress writes.
   // hardcover_edition_pages: the page count we matched against — if hcPages drifts from
   // this (e.g. user switches edition or file is replaced), we know to re-resolve.
+  //
+  // Same crash-safety reasoning as v8: runTransactionalStep() covers the ALTERs,
+  // the version bump, and a foreign_key_check in one transaction, so a crash or
+  // an FK regression between them can't leave a half-applied, non-retriable state.
   if (!row || row.version < 9) {
-    db.exec(`
-      ALTER TABLE user_book_states ADD COLUMN hardcover_edition_id INTEGER;
-      ALTER TABLE user_book_states ADD COLUMN hardcover_edition_pages INTEGER;
-    `);
-    db.prepare("UPDATE schema_version SET version = 9").run();
+    runTransactionalStep(db, "Legacy schema migration to version 9", backupPath, () => {
+      db.exec(`
+        ALTER TABLE user_book_states ADD COLUMN hardcover_edition_id INTEGER;
+        ALTER TABLE user_book_states ADD COLUMN hardcover_edition_pages INTEGER;
+      `);
+      db.prepare("UPDATE schema_version SET version = 9").run();
+    });
     logger.info("Schema migrated to version 9: added hardcover_edition_id, hardcover_edition_pages");
   }
 
@@ -720,11 +823,12 @@ export function initSchema(db: Database.Database): void {
     });
 
     // foreign_keys is a no-op inside a transaction, so it must be toggled outside the
-    // BEGIN/COMMIT below. The rebuild + backfill + version bump run as a single
-    // transaction so a mid-migration failure can't leave book_sources half-rebuilt.
+    // BEGIN/COMMIT below. The rebuild + backfill + version bump + foreign_key_check
+    // run as a single transaction (via runTransactionalStep) so a mid-migration
+    // failure or an FK regression can't leave book_sources half-rebuilt.
     db.pragma("foreign_keys = OFF");
     try {
-      const migrateV14 = db.transaction(() => {
+      runTransactionalStep(db, "Legacy schema migration to version 14", backupPath, () => {
         db.exec(`
           CREATE TABLE book_sources_v14 (
             ${colDefs.join(",\n            ")},
@@ -774,12 +878,9 @@ export function initSchema(db: Database.Database): void {
 
         db.prepare("UPDATE schema_version SET version = 14").run();
       });
-      migrateV14();
     } finally {
       db.pragma("foreign_keys = ON");
     }
     logger.info("Schema migrated to version 14: scoped book_sources uniqueness to (source_type, source_instance_id, external_id)");
   }
-
-  reconcileBookIdentities(db);
 }
