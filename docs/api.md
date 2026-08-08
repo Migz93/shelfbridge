@@ -213,7 +213,7 @@ Returns build and runtime information.
 **Response**
 ```json
 {
-  "version": "0.1.0",
+  "version": "1.0.0",
   "buildChannel": "local",
   "commitSha": "local",
   "dataDir": "/config",
