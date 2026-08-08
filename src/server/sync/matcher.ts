@@ -53,7 +53,11 @@ function seriesCompatible(hcBook: HardcoverUserBook, grBook: GrimmoryBook): bool
 
 // Build lookup indexes for fast matching
 interface MatchIndex {
-  byHardcoverBookId: Map<string, GrimmoryBook>;
+  // Grimmory can hold separate physical/ebook and audiobook records that both
+  // point at the same Hardcover book (e.g. a print copy and an audiobook file
+  // for the same title), so this index keeps every candidate per Hardcover ID
+  // rather than only the last one seen.
+  byHardcoverBookId: Map<string, GrimmoryBook[]>;
   byHardcoverSlug: Map<string, GrimmoryBook>;
   byGoodreadsId: Map<string, GrimmoryBook>;
   byIsbn: Map<string, GrimmoryBook>;
@@ -68,7 +72,7 @@ function pushIndex(index: Map<string, GrimmoryBook[]>, key: string, book: Grimmo
 }
 
 export function buildGrimmoryIndex(books: GrimmoryBook[]): MatchIndex {
-  const byHardcoverBookId = new Map<string, GrimmoryBook>();
+  const byHardcoverBookId = new Map<string, GrimmoryBook[]>();
   const byHardcoverSlug = new Map<string, GrimmoryBook>();
   const byGoodreadsId = new Map<string, GrimmoryBook>();
   const byIsbn = new Map<string, GrimmoryBook>();
@@ -76,7 +80,7 @@ export function buildGrimmoryIndex(books: GrimmoryBook[]): MatchIndex {
   const byRelaxedTitleAuthor = new Map<string, GrimmoryBook[]>();
 
   for (const book of books) {
-    for (const id of identifierVariants(book.hardcoverBookId)) byHardcoverBookId.set(id, book);
+    for (const id of identifierVariants(book.hardcoverBookId)) pushIndex(byHardcoverBookId, id, book);
     if (book.hardcoverId) byHardcoverSlug.set(book.hardcoverId.trim(), book);
     for (const id of identifierVariants(book.goodreadsId)) byGoodreadsId.set(id, book);
     if (book.isbn13) byIsbn.set(book.isbn13.trim(), book);
@@ -96,11 +100,25 @@ export function buildGrimmoryIndex(books: GrimmoryBook[]): MatchIndex {
   return { byHardcoverBookId, byHardcoverSlug, byGoodreadsId, byIsbn, byTitleAuthor, byRelaxedTitleAuthor };
 }
 
-export function matchHardcoverBook(hcBook: HardcoverUserBook, index: MatchIndex, opts: { goodreadsId?: string | null } = {}): MatchResult | null {
+export function matchHardcoverBook(
+  hcBook: HardcoverUserBook,
+  index: MatchIndex,
+  opts: { goodreadsId?: string | null; mediaTypeHint?: "physical" | "ebook" | "audiobook" | null } = {}
+): MatchResult | null {
   // 1. Hardcover book ID match (exact external ID stored in Grimmory — highest confidence)
+  // Grimmory can have more than one book pointing at the same Hardcover book
+  // (e.g. a print/ebook copy and a separate audiobook file). Prefer the
+  // candidate whose own media type matches this Hardcover row's media type so
+  // an audiobook user_book doesn't get paired with the print Grimmory record
+  // (or vice versa); fall back to the first candidate otherwise.
   const hcBookIdStr = String(hcBook.book.id);
-  const byId = index.byHardcoverBookId.get(hcBookIdStr);
-  if (byId) return { grimmoryBook: byId, confidence: "high", matchType: "hardcover_book_id" };
+  const byIdCandidates = index.byHardcoverBookId.get(hcBookIdStr);
+  if (byIdCandidates && byIdCandidates.length > 0) {
+    const byId = (opts.mediaTypeHint
+      ? byIdCandidates.find((book) => book.mediaType === opts.mediaTypeHint)
+      : undefined) ?? byIdCandidates[0]!;
+    return { grimmoryBook: byId, confidence: "high", matchType: "hardcover_book_id" };
+  }
 
   // 2. Goodreads ID match (trusted external ID when Hardcover has already been enriched)
   if (opts.goodreadsId) {

@@ -55,8 +55,8 @@ Returns the full application settings object.
   "general": {
     "trustProxy": false
   },
-  "grimmory": { "baseUrl": "http://grimmory:8080", "addMenuLink": false },
-  "download": { "baseUrl": "", "addMenuLink": false },
+  "grimmory": { "baseUrl": "http://grimmory:8080", "addMenuLink": true },
+  "download": { "baseUrl": "", "addMenuLink": true },
   "sync": {
     "startupSyncEnabled": false,
     "historyRetentionDays": 7,
@@ -64,18 +64,20 @@ Returns the full application settings object.
   },
   "chaptarr": {
     "baseUrl": "http://chaptarr:8787",
-    "apiKeyConfigured": true
+    "apiKeyConfigured": true,
+    "addMenuLink": true
   },
   "audiobookshelf": {
-    "baseUrl": "http://abs:13378"
+    "baseUrl": "http://abs:13378",
+    "addMenuLink": true
   }
 }
 ```
 
-The sidebar automatically shows links for Grimmory, Shelfmark, and Chaptarr
-whenever their `baseUrl` values are set. The legacy `addMenuLink` fields may
-still appear in the settings payload for compatibility, but the UI no longer
-uses them to decide whether those links render.
+The sidebar shows a link for Grimmory, Shelfmark, Chaptarr, or Audiobookshelf
+whenever that integration's `baseUrl` is set **and** its `addMenuLink` is
+`true`. Each `addMenuLink` field defaults to `true` so existing installs keep
+their current appearance until a user opts out in Settings.
 
 ### `PATCH /api/settings`
 
@@ -88,8 +90,8 @@ are updated; others are untouched.
   "general": {
     "trustProxy": false
   },
-  "grimmory": { "baseUrl": "string", "addMenuLink": false },
-  "download": { "baseUrl": "string", "addMenuLink": false },
+  "grimmory": { "baseUrl": "string", "addMenuLink": true },
+  "download": { "baseUrl": "string", "addMenuLink": true },
   "sync": {
     "startupSyncEnabled": false,
     "historyRetentionDays": 7,
@@ -97,10 +99,12 @@ are updated; others are untouched.
   },
   "chaptarr": {
     "baseUrl": "string",
-    "apiKey": "string"
+    "apiKey": "string",
+    "addMenuLink": true
   },
   "audiobookshelf": {
-    "baseUrl": "string"
+    "baseUrl": "string",
+    "addMenuLink": true
   }
 }
 ```
@@ -209,7 +213,7 @@ Returns build and runtime information.
 **Response**
 ```json
 {
-  "version": "0.1.0",
+  "version": "1.0.0",
   "buildChannel": "local",
   "commitSha": "local",
   "dataDir": "/config",
@@ -457,7 +461,7 @@ matching the selected criteria.
 | `source` | comma-separated strings | — | Include sources: `hardcover`, `goodreads`, `on-disk` |
 | `excludeSource` | comma-separated strings | — | Exclude sources: `hardcover`, `goodreads`, `on-disk` |
 | `chaptarr` | string | — | Chaptarr presence filter: `in` or `out` |
-| `action` | string | — | Shortcut filter: `add-to-chaptarr`, `grab-in-chaptarr`, `review-in-grimmory`, `fix-chaptarr-id`, `id-review`, `probable-duplicates`, `abs-runtime-mismatch` |
+| `action` | string | — | Shortcut filter: `add-to-chaptarr`, `grab-in-chaptarr`, `review-in-grimmory`, `fix-chaptarr-id`, `id-review`, `possible-duplicates`, `abs-runtime-mismatch` |
 | `mediaType` | string | `book` | Canonical media bucket: `book`, `audiobook`, or `all` |
 | `q` | string | — | Free-text search: case-insensitive substring match against `title` and `author` |
 | `sortBy` | string | `updated-desc` | Sort order: `updated-desc`, `updated-asc`, `title-asc`, `title-desc` |
@@ -609,6 +613,15 @@ without `clearFlags`, Grimmory returns a 500. Sync never calls this endpoint
 automatically; it is intended for explicit user review actions from the book
 detail page.
 
+### `POST /api/books/:bookId/duplicates/:duplicateId/merge`
+
+Repairs an eligible probable-duplicate pair after user confirmation. The endpoint
+only accepts a split where one canonical record is Goodreads and/or Hardcover
+metadata and the other is a Grimmory-only local record for the same profile. It
+also requires the pair to remain a live, undismissed probable-duplicate suggestion.
+It writes just the Goodreads and Hardcover identifiers to Grimmory, then reconciles
+the local identities. ISBN, ASIN, and Chaptarr identifiers are never written.
+
 ## Dashboard
 
 ### `GET /api/dashboard`
@@ -682,7 +695,7 @@ Triggers a sync run in the background. Returns immediately with the run ID(s).
 
 Sync runs are started in the background and the response returns immediately with
 the created run IDs. When multiple profile syncs overlap, Grimmory source-tag
-writes are serialized per Grimmory book inside the ShelfBridge process so
+writes are serialised per Grimmory book inside the ShelfBridge process so
 read-merge-write tag updates do not drop another user's tag.
 
 **Response**

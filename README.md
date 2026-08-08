@@ -18,11 +18,20 @@ It connects Grimmory, Hardcover, Goodreads, Chaptarr, and Audiobookshelf through
 - Matches books across services using IDs, ISBNs, ASINs, file paths, titles, authors, and stored cross-references
 - Highlights missing matches, ID mismatches, probable duplicates, and download/review actions
 - Writes selected status, progress, shelf, tag, and external ID updates back to supported services
-- Stores third-party credentials encrypted at rest in the app data directory
 
 ## Preview
 
-ShelfBridge is still early in development. Preview screenshots will be added once the UI settles.
+### Dashboard
+
+Books tracked, missing items, pending downloads, and items needing review, with recent sync results and newly added books.
+
+![ShelfBridge preview](./public/shelfbridge-preview.png)
+
+### Books
+
+Filter by source, profile, and reading status. Each book shows which services it was found in and whether it needs review.
+
+![Books preview](./public/books-preview.png)
 
 ## Key Features
 
@@ -34,7 +43,6 @@ ShelfBridge is still early in development. Preview screenshots will be added onc
 - Goodreads shelf import into Grimmory shelves
 - Hardcover list import into Grimmory shelves
 - Manual sync runs, scheduled sync jobs, sync history, and log viewer
-- AES-256-GCM credential storage for API keys, tokens, and passwords
 - Reverse proxy support with a Trust Proxy setting for forwarded client IPs
 
 ## How It Works
@@ -85,8 +93,6 @@ services:
     volumes:
       - /opt/shelfbridge:/config
     environment:
-      - NODE_ENV=production
-      - DATA_DIR=/config
       - TZ=UTC
 ```
 
@@ -99,7 +105,7 @@ docker compose up -d
 ShelfBridge is configured through its web UI after first run. The main things you may want to adjust in your Docker setup before starting:
 
 - **Port** — change the left side of `9303:9303` to expose ShelfBridge on a different host port (e.g. `8080:9303`)
-- **Data directory** — change the left side of `/opt/shelfbridge:/config` to store ShelfBridge's database, logs, credential key, and image cache wherever you prefer on your host
+- **Data directory** — change the left side of `/opt/shelfbridge:/config` to store ShelfBridge's database, logs, and image cache wherever you prefer on your host
 - **Timezone** — set `TZ` to your preferred timezone if you do not want UTC
 
 If ShelfBridge is served through a reverse proxy such as Nginx, Traefik, or Caddy, enable **Settings → General → Network → Trust Proxy** and restart the container so rate limiting uses the real client IP from forwarded headers.
@@ -124,21 +130,13 @@ ShelfBridge is deliberately conservative about writes:
 
 ### Early Development
 
-ShelfBridge is still early in development. Database schema, sync behavior, UI layout, and supported integrations may change before a stable release.
-
-## Security Notes
-
-ShelfBridge requires a local password before the UI can be used. Sessions are stored server-side and sent to the browser as signed, HTTP-only cookies.
-
-Stored third-party credentials are encrypted with AES-256-GCM using `SHELFBRIDGE_CREDENTIAL_KEY` or the generated `/config/credential-key` file. Back up this key with the database; losing it means stored credentials must be re-entered.
-
-Do not expose `/config`, database backups, logs, `.env` files, `.claude/`, or the generated credential key publicly.
+ShelfBridge is still early in development. Database schema, sync behaviour, UI layout, and supported integrations may change before a stable release.
 
 ## AI Transparency
 
 ShelfBridge was created with heavy AI assistance.
 
-Claude, Codex, and related tools have been used throughout the project for design exploration, implementation help, refactoring, explanation, and iteration. The intent is not to hide that. ShelfBridge has been built by combining hands-on product direction with a lot of AI-assisted development work.
+Claude, Codex, Leonardo.ai, and CodeRabbit were all used throughout the project for design exploration, implementation help, refactoring, review, explanation, and iteration. The intent is not to hide that. ShelfBridge has been built by combining hands-on product direction with a lot of AI-assisted development work.
 
 ## Credits And Inspiration
 
@@ -166,12 +164,12 @@ Those projects and services were helpful references for thinking about user expe
     </td>
     <td align="center">
       <a href="https://hardcover.app">
-        <img src="https://assets.hardcover.app/static/android-chrome-512x512.png" alt="Hardcover logo" width="72" height="72" />
+        <img src="https://avatars.githubusercontent.com/u/83609541?s=200&v=4" alt="Hardcover logo" width="72" height="72" />
       </a>
     </td>
     <td align="center">
       <a href="https://www.audiobookshelf.org">
-        <img src="https://www.audiobookshelf.org/Logo.png" alt="Audiobookshelf logo" width="72" height="72" />
+        <img src="https://raw.githubusercontent.com/advplyr/audiobookshelf/master/client/static/Logo.png" alt="Audiobookshelf logo" width="72" height="72" />
       </a>
     </td>
   </tr>

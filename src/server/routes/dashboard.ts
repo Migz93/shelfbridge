@@ -1,6 +1,5 @@
 import { Router } from "express";
 import { getDb } from "../db/index.js";
-import { reconcileBookIdentities } from "../db/bookIdentity.js";
 import type { DashboardResponse, BookSummary, SyncRun, ReadStatus, SyncHealth, MatchConfidence, MediaType } from "../../shared/types.js";
 import { normalizeExternalId } from "../identifiers.js";
 
@@ -8,7 +7,6 @@ const router = Router();
 
 router.get("/", (_req, res) => {
   const db = getDb();
-  reconcileBookIdentities(db);
 
   // One row per (book × profile) using the same CTE pattern as the books route
   const allRows = db.prepare(`
@@ -54,9 +52,9 @@ router.get("/", (_req, res) => {
       CASE WHEN hc_ubs.id IS NOT NULL OR grim_ubs.id IS NOT NULL OR gr_ubs.id IS NOT NULL THEN 1 ELSE 0 END AS has_any_ubs
     FROM book_profile bp
     JOIN books b ON b.id = bp.book_id
-    LEFT JOIN book_sources hc_src   ON hc_src.book_id   = bp.book_id AND hc_src.source_type   = 'hardcover'
-    LEFT JOIN book_sources gr_src   ON gr_src.book_id   = bp.book_id AND gr_src.source_type   = 'goodreads'
-    LEFT JOIN book_sources grim_src ON grim_src.book_id = bp.book_id AND grim_src.source_type = 'grimmory'
+    LEFT JOIN book_sources hc_src   ON hc_src.book_id   = bp.book_id AND hc_src.source_type   = 'hardcover' AND hc_src.source_instance_id = bp.profile_id
+    LEFT JOIN book_sources gr_src   ON gr_src.book_id   = bp.book_id AND gr_src.source_type   = 'goodreads' AND gr_src.source_instance_id = bp.profile_id
+    LEFT JOIN book_sources grim_src ON grim_src.book_id = bp.book_id AND grim_src.source_type = 'grimmory' AND grim_src.source_instance_id = bp.profile_id
     LEFT JOIN book_sources chap_src ON chap_src.book_id = bp.book_id AND chap_src.source_type = 'chaptarr'
     LEFT JOIN user_book_states hc_ubs   ON hc_ubs.book_id   = bp.book_id AND hc_ubs.profile_id   = bp.profile_id AND hc_ubs.source_type   = 'hardcover'
     LEFT JOIN user_book_states gr_ubs   ON gr_ubs.book_id   = bp.book_id AND gr_ubs.profile_id   = bp.profile_id AND gr_ubs.source_type   = 'goodreads'
@@ -261,9 +259,22 @@ function hasAggregateSourceReviewConflict(
   return grimmoryId !== undefined && sourceIds.length > 0 && !sourceIds.includes(grimmoryId);
 }
 
+// book_sources rows for Grimmory/Hardcover/Goodreads are now scoped per profile
+// instance (see schema v14), so the same book can legitimately carry different
+// cross-reference IDs on different profiles' own servers — that's not a conflict.
+// Evaluate each profile's own rows independently rather than aggregating IDs
+// across every profile sharing this book.
 function hasIdentityReviewConflict(rows: DbBook[]): boolean {
-  return hasAggregateSourceReviewConflict(rows, "goodreads")
-    || hasAggregateSourceReviewConflict(rows, "hardcover");
+  const byProfile = new Map<number, DbBook[]>();
+  for (const row of rows) {
+    const group = byProfile.get(row.profile_id) ?? [];
+    group.push(row);
+    byProfile.set(row.profile_id, group);
+  }
+  return Array.from(byProfile.values()).some((profileRows) =>
+    hasAggregateSourceReviewConflict(profileRows, "goodreads")
+      || hasAggregateSourceReviewConflict(profileRows, "hardcover")
+  );
 }
 
 function hasBookNeedsIdReview(rows: DbBook[]): boolean {

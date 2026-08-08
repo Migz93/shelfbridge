@@ -1,11 +1,22 @@
 import { getDb, getSetting } from "../db/index.js";
 import { logger } from "../logger.js";
 import { identifierVariants, normalizeExternalId } from "../identifiers.js";
-import { decryptCredential } from "../security/credentials.js";
+import { mapWithConcurrency } from "./concurrency.js";
+import { fetchIntegration } from "../security/outbound.js";
+
+const DEFAULT_BOOKFILE_CONCURRENCY = 5;
+const MAX_BOOKFILE_CONCURRENCY = 10;
+
+function bookfileConcurrency(): number {
+  const configured = Number(process.env["CHAPTARR_BOOKFILE_CONCURRENCY"] ?? DEFAULT_BOOKFILE_CONCURRENCY);
+  return Number.isInteger(configured) && configured > 0
+    ? Math.min(configured, MAX_BOOKFILE_CONCURRENCY)
+    : DEFAULT_BOOKFILE_CONCURRENCY;
+}
 
 async function chaptarrGet<T>(baseUrl: string, apiKey: string, path: string): Promise<T> {
   const url = `${baseUrl.replace(/\/$/, "")}${path}`;
-  const res = await fetch(url, {
+  const res = await fetchIntegration(url, {
     headers: { "X-Api-Key": apiKey },
     signal: AbortSignal.timeout(20_000),
   });
@@ -111,6 +122,13 @@ function chaptarrSeries(book: Record<string, unknown>): { name: string | null; n
   };
 }
 
+function chaptarrBookHasFile(book: Record<string, unknown>, filePaths: string[] = []): boolean {
+  const stats = book["statistics"] as Record<string, unknown> | undefined;
+  return book["hasFiles"] === true
+    || Number(stats?.["bookFileCount"] ?? 0) > 0
+    || filePaths.length > 0;
+}
+
 // ── Live sync pass ────────────────────────────────────────────────────────────
 
 /**
@@ -126,7 +144,7 @@ function chaptarrSeries(book: Record<string, unknown>): { name: string | null; n
  */
 export async function syncChaptarrStatus(profileId: number): Promise<void> {
   const baseUrl = getSetting("chaptarr.baseUrl", "");
-  const apiKey = decryptCredential(getSetting("chaptarr.apiKey", ""));
+  const apiKey = getSetting("chaptarr.apiKey", "");
 
   if (!baseUrl || !apiKey) {
     logger.info("Chaptarr not configured, skipping status pass", { profileId });
@@ -137,11 +155,11 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
 
   logger.info("Chaptarr status pass started", { profileId });
 
-  let books: Record<string, unknown>[] = [];
+  let allBooks: Record<string, unknown>[] = [];
   try {
-    const all = await chaptarrGet<Record<string, unknown>[]>(baseUrl, apiKey, "/api/v1/book");
-    books = all.filter((b) => b["monitored"] === true);
-    logger.info("Chaptarr books fetched", { profileId, total: all.length, monitored: books.length });
+    allBooks = await chaptarrGet<Record<string, unknown>[]>(baseUrl, apiKey, "/api/v1/book");
+    const monitored = allBooks.filter((book) => book["monitored"] === true).length;
+    logger.info("Chaptarr books fetched", { profileId, total: allBooks.length, monitored });
   } catch (err) {
     logger.warn("Chaptarr books fetch failed; skipping status pass", { profileId, error: err });
     return;
@@ -150,23 +168,38 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
   const authorNameById = new Map<number, string>();
   // chaptarrBookId → on-disk file paths (from /api/v1/bookfile, fetched per author in parallel)
   const chaptarrFilePathsByBookId = new Map<number, string[]>();
+  // authors whose /api/v1/bookfile request failed: their books' file-path inventory is
+  // incomplete, not empty, so a missing entry there must not be read as "no file".
+  const uncertainFileInventoryAuthorIds = new Set<number>();
   try {
     const authors = await chaptarrGet<Record<string, unknown>[]>(baseUrl, apiKey, "/api/v1/author");
+    const returnedAuthorIds = new Set<number>();
     for (const a of authors) {
       const id = typeof a["id"] === "number" ? a["id"] : Number(a["id"]);
       const name = String(a["authorName"] ?? a["name"] ?? "");
-      if (id && name) authorNameById.set(id, name);
+      if (!Number.isInteger(id) || id <= 0) continue;
+      returnedAuthorIds.add(id);
+      if (name) authorNameById.set(id, name);
     }
 
-    // Fetch all book file paths in parallel (one request per author).
+    // Fetch book file paths with a bounded pool (one request per author).
     // Both Chaptarr and Grimmory point at the same NAS share, so matching paths
     // are an unambiguous identity signal for books that failed ID/ISBN/title matching.
-    const authorIds = [...authorNameById.keys()];
-    const bookfileResults = await Promise.all(
-      authorIds.map((authorId) =>
+    const authorIds = [...returnedAuthorIds];
+    for (const book of allBooks) {
+      const authorId = typeof book["authorId"] === "number" ? book["authorId"] : Number(book["authorId"] ?? 0);
+      if (authorId && !returnedAuthorIds.has(authorId)) uncertainFileInventoryAuthorIds.add(authorId);
+    }
+    const bookfileResults = await mapWithConcurrency(
+      authorIds,
+      bookfileConcurrency(),
+      async (authorId) =>
         chaptarrGet<Record<string, unknown>[]>(baseUrl, apiKey, `/api/v1/bookfile?authorId=${authorId}`)
-          .catch(() => [] as Record<string, unknown>[])
-      )
+          .catch((error) => {
+            uncertainFileInventoryAuthorIds.add(authorId);
+            logger.warn("Chaptarr bookfile fetch failed; preserving prior file state", { profileId, authorId, error });
+            return [] as Record<string, unknown>[];
+          })
     );
     for (const files of bookfileResults) {
       for (const f of files) {
@@ -181,7 +214,49 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
     }
     const filePathCount = Array.from(chaptarrFilePathsByBookId.values()).reduce((total, paths) => total + paths.length, 0);
     logger.info("Chaptarr book file paths fetched", { profileId, count: filePathCount, booksWithFiles: chaptarrFilePathsByBookId.size });
-  } catch { /* non-fatal; author names and file-path matching degrade gracefully */ }
+  } catch (error) {
+    logger.warn("Chaptarr file inventory discovery failed; preserving prior file state", { profileId, error });
+    for (const book of allBooks) {
+      const authorId = typeof book["authorId"] === "number" ? book["authorId"] : Number(book["authorId"] ?? 0);
+      if (authorId) uncertainFileInventoryAuthorIds.add(authorId);
+    }
+  }
+
+  // Previously recorded hasFile state, keyed by Chaptarr book id. Used to avoid
+  // downgrading a book to "no file" when this run's file-path inventory for its
+  // author is incomplete rather than genuinely empty.
+  const previousHasFileByChaptarrId = new Map<string, boolean>();
+  for (const row of db.prepare(
+    "SELECT external_id, chaptarr_has_file FROM book_sources WHERE source_type = 'chaptarr'"
+  ).all() as { external_id: string; chaptarr_has_file: number }[]) {
+    previousHasFileByChaptarrId.set(row.external_id, row.chaptarr_has_file === 1);
+  }
+
+  function resolveChaptarrHasFile(book: Record<string, unknown>, filePaths: string[]): boolean {
+    if (chaptarrBookHasFile(book, filePaths)) return true;
+    const authorId = typeof book["authorId"] === "number" ? book["authorId"] : Number(book["authorId"] ?? 0);
+    if (!uncertainFileInventoryAuthorIds.has(authorId)) return false;
+    const chaptarrId = typeof book["id"] === "number" ? book["id"] : Number(book["id"]);
+    return previousHasFileByChaptarrId.get(String(chaptarrId)) ?? false;
+  }
+
+  // Chaptarr exposes unmonitored catalogue entries for known authors. Ignore
+  // those unless they own an imported file: a downloaded book remains present
+  // in Chaptarr even if an automation or metadata refresh unmonitors it.
+  const books = allBooks.filter((book) => {
+    const chaptarrId = typeof book["id"] === "number" ? book["id"] : Number(book["id"]);
+    return book["monitored"] === true
+      || resolveChaptarrHasFile(book, chaptarrFilePathsByBookId.get(chaptarrId) ?? []);
+  });
+  logger.info("Chaptarr active books selected", {
+    profileId,
+    count: books.length,
+    monitored: books.filter((book) => book["monitored"] === true).length,
+    fileBacked: books.filter((book) => {
+      const chaptarrId = typeof book["id"] === "number" ? book["id"] : Number(book["id"]);
+      return resolveChaptarrHasFile(book, chaptarrFilePathsByBookId.get(chaptarrId) ?? []);
+    }).length
+  });
 
   // Load book_sources rows to build lookup indexes (book-level, not per-profile)
   type SourceRow = {
@@ -233,7 +308,7 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
   const byIsbn10 = new Map<string, number>();
   const byTitleAuthor = new Map<string, number>();
   const byRelaxedTitle = new Map<string, number>();
-  const byGrimmoryFilePath = new Map<string, number>();
+  const byGrimmoryFilePath = new Map<string, number | null>();
   const titleByBookId = new Map<number, string>();
 
   for (const row of rows) {
@@ -250,7 +325,11 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
     setIdentifierLookup(byGoodreadsId, row.source_goodreads_edition_id, row.book_id);
     if (row.isbn13) byIsbn13.set(row.isbn13.replace(/[^0-9X]/g, ""), row.book_id);
     if (row.isbn10) byIsbn10.set(row.isbn10.replace(/[^0-9X]/g, ""), row.book_id);
-    if (row.grimmory_primary_file_path) byGrimmoryFilePath.set(row.grimmory_primary_file_path.trim(), row.book_id);
+    if (row.grimmory_primary_file_path) {
+      const filePath = row.grimmory_primary_file_path.trim();
+      const existing = byGrimmoryFilePath.get(filePath);
+      byGrimmoryFilePath.set(filePath, existing === undefined || existing === row.book_id ? row.book_id : null);
+    }
     if (row.title && row.author) {
       byTitleAuthor.set(`${normalise(row.title)}|${normalise(row.author)}`, row.book_id);
       byRelaxedTitle.set(`${normalise(stripSubtitle(row.title))}|${normalise(row.author)}`, row.book_id);
@@ -268,17 +347,19 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
     return normChaptarr === normDb || normChaptarr.includes(normDb) || normDb.includes(normChaptarr);
   }
 
+  // Chaptarr is a single global connection (not configured per profile), so it always
+  // uses a fixed source_instance_id of 0 — see schema.ts v14 migration.
   const upsertChaptarrSource = db.prepare(`
     INSERT INTO book_sources (
-      book_id, source_type, external_id, title, author, series_name, series_number,
+      book_id, source_type, source_instance_id, external_id, title, author, series_name, series_number,
       source_hardcover_book_id, source_goodreads_book_id, source_goodreads_work_id,
       source_goodreads_edition_id, source_edition_id, source_media_type, source_edition_format,
       source_narrator, source_asin, source_audible_asin,
       chaptarr_monitored, chaptarr_has_file, chaptarr_id_mismatch, chaptarr_primary_file_path,
       last_modified_at
     )
-    VALUES (?, 'chaptarr', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-    ON CONFLICT(source_type, external_id) DO UPDATE SET
+    VALUES (?, 'chaptarr', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(source_type, source_instance_id, external_id) DO UPDATE SET
       book_id                    = excluded.book_id,
       title                      = excluded.title,
       author                     = excluded.author,
@@ -308,8 +389,8 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
   for (const book of books) {
     const chaptarrId = typeof book["id"] === "number" ? book["id"] : Number(book["id"]);
     const monitored = book["monitored"] === true ? 1 : 0;
-    const stats = book["statistics"] as Record<string, unknown> | undefined;
-    const hasFile = (book["hasFiles"] === true || Number(stats?.["bookFileCount"] ?? 0) > 0) ? 1 : 0;
+    const chaptarrFilePaths = chaptarrFilePathsByBookId.get(chaptarrId) ?? [];
+    const hasFile = resolveChaptarrHasFile(book, chaptarrFilePaths) ? 1 : 0;
 
     const hardcoverBookIdRaw = cleanIdentifier(book["hardcoverBookId"] ?? book["baseBookId"]);
     const hardcoverBookId = hardcoverBookIdRaw?.startsWith("gr:") ? "" : stripPrefix(hardcoverBookIdRaw, "hc:") ?? "";
@@ -337,13 +418,60 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
 
     let bookId: number | undefined;
     let rejectedIdCandidate: number | undefined;
+    const titleValidatedIdCandidates = new Set<number>();
+
+    // Preserve the mismatch signal even when the local path wins matching. The
+    // path is authoritative for canonical assignment, but a stale Chaptarr
+    // Hardcover ID still needs to be surfaced for review.
+    for (const [label, candidateId] of [["hardcoverBookId", hardcoverBookId], ["foreignBookId", foreignBookId]] as const) {
+      if (!candidateId) continue;
+      const candidate = getIdentifierLookup(byHardcoverId, candidateId);
+      if (candidate !== undefined && titleMatchesBook(title, candidate)) {
+        titleValidatedIdCandidates.add(candidate);
+      } else if (candidate !== undefined) {
+        rejectedIdCandidate ??= candidate;
+        logger.info("Chaptarr upstream ID match rejected: title mismatch", {
+          profileId, chaptarrId, label, chaptarrTitle: title, candidateId,
+          matchedTitle: titleByBookId.get(candidate) ?? null,
+        });
+      }
+    }
+
+    // An exact NAS path identifies the actual local file and therefore takes
+    // precedence over Chaptarr's upstream IDs. Those IDs can point at a shared
+    // work whose ebook and audiobook canonicals are distinct.
+    const filePathCandidates = new Set(
+      chaptarrFilePaths.map((path) => byGrimmoryFilePath.get(path)).filter((id): id is number => id !== undefined && id !== null)
+    );
+    const matchedFilePath = filePathCandidates.size === 1
+      ? chaptarrFilePaths.find((path) => byGrimmoryFilePath.get(path) === [...filePathCandidates][0])
+      : undefined;
+    bookId = filePathCandidates.size === 1 ? [...filePathCandidates][0] : undefined;
+    if (filePathCandidates.size > 1) {
+      logger.warn("Chaptarr book has file paths mapped to conflicting canonicals; falling back to identifiers", {
+        profileId, chaptarrId, title, candidateBookIds: [...filePathCandidates]
+      });
+    }
+    if (bookId !== undefined) {
+      logger.info("Chaptarr book matched via file path", { profileId, chaptarrId, title, filePath: matchedFilePath });
+      const conflictingIdCandidate = [...titleValidatedIdCandidates].find((candidate) => candidate !== bookId);
+      if (conflictingIdCandidate !== undefined) {
+        // Path remains the assignment authority: it distinguishes local ebook
+        // and audiobook siblings. Mark any independently title-validated ID
+        // disagreement so a stale path or stale upstream metadata is reviewable.
+        rejectedIdCandidate ??= conflictingIdCandidate;
+        logger.warn("Chaptarr file-path match conflicts with a title-validated upstream ID", {
+          profileId, chaptarrId, bookId, idCandidateBookId: conflictingIdCandidate, filePath: matchedFilePath
+        });
+      }
+    }
 
     if (!bookId && hardcoverBookId) {
       const candidate = getIdentifierLookup(byHardcoverId, hardcoverBookId);
       if (candidate !== undefined && titleMatchesBook(title, candidate)) {
         bookId = candidate;
       } else if (candidate !== undefined) {
-        rejectedIdCandidate = candidate;
+        rejectedIdCandidate ??= candidate;
         logger.info("Chaptarr hardcoverBookId match rejected: title mismatch", {
           profileId, chaptarrId, chaptarrTitle: title, hardcoverBookId,
           matchedTitle: titleByBookId.get(candidate) ?? null,
@@ -362,21 +490,10 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
     if (!bookId && goodreadsWorkId) bookId = getIdentifierLookup(byGoodreadsId, goodreadsWorkId);
     if (!bookId && goodreadsEditionId) bookId = getIdentifierLookup(byGoodreadsId, goodreadsEditionId);
     if (!bookId && foreignBookIdAsGoodreads) bookId = getIdentifierLookup(byGoodreadsId, foreignBookIdAsGoodreads);
-    const chaptarrFilePaths = chaptarrFilePathsByBookId.get(chaptarrId) ?? [];
     if (!bookId && titleSlug) bookId = byHardcoverSlug.get(titleSlug.toLowerCase());
     for (const isbn of isbn13s) { if (!bookId) bookId = byIsbn13.get(isbn); }
     for (const isbn of isbn10s) { if (!bookId) bookId = byIsbn10.get(isbn); }
 
-    // Exact NAS path is a stronger signal than fuzzy title matching. Chaptarr can
-    // collapse multiple books in a series down to a generic title like "Diddly Squat",
-    // but if the on-disk file path matches Grimmory exactly we should trust that first.
-    if (!bookId) {
-      const matchedFilePath = chaptarrFilePaths.find((path) => byGrimmoryFilePath.has(path));
-      bookId = matchedFilePath ? byGrimmoryFilePath.get(matchedFilePath) : undefined;
-      if (bookId !== undefined) {
-        logger.info("Chaptarr book matched via file path", { profileId, chaptarrId, title, filePath: matchedFilePath });
-      }
-    }
     if (!bookId && title && authorName) bookId = byTitleAuthor.get(`${normalise(title)}|${normalise(authorName)}`);
     if (!bookId && title && authorName) bookId = byRelaxedTitle.get(`${normalise(stripSubtitle(title))}|${normalise(authorName)}`);
     // titleSlug is derived from the book's canonical title before Chaptarr overwrites the display

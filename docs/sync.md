@@ -79,12 +79,12 @@ profile's configured source scope:
 - matched Hardcover books after the optional Hardcover `Sync List` filter
 - matched Goodreads books after the optional Goodreads `Sync Shelf` filter
 
-The username segment is based on the profile's Grimmory username, normalized to a
+The username segment is based on the profile's Grimmory username, normalised to a
 lowercase tag-safe value. Existing Grimmory tags are preserved; ShelfBridge reads
 the current Grimmory metadata for each book and writes the merged tag list back.
 Dry runs report the tag writes without changing Grimmory.
 
-Tag writes are serialized per Grimmory base URL and book ID inside the ShelfBridge
+Tag writes are serialised per Grimmory base URL and book ID inside the ShelfBridge
 process. This prevents concurrent profile syncs from racing on the same
 read-merge-write metadata update and dropping another user's tag.
 
@@ -368,7 +368,7 @@ and auto-loaded on mount if the profile has a Goodreads connection.
 Configured Goodreads custom shelf mappings are mirrored into Grimmory shelves.
 For each mapping, ShelfBridge
 fetches the Goodreads RSS shelf, matches those books to existing Grimmory-linked
-`book_sources` rows by Goodreads ID, ISBN, or normalized title, resolves the mapped
+`book_sources` rows by Goodreads ID, ISBN, or normalised title, resolves the mapped
 Grimmory shelf by name, and creates it via `POST /api/v1/shelves` if it does not
 already exist. The shelf is resolved or created even when no Goodreads books can
 currently be matched to Grimmory books, so an empty mapped Grimmory shelf can be
@@ -448,7 +448,7 @@ decorated Goodreads or Hardcover IDs still match their plain numeric source IDs.
    `source_type='hardcover'` row per fetched Hardcover book, one
    `source_type='grimmory'` row per Grimmory book. These are book-level writes
    with no profile attached. Hardcover, Grimmory, Goodreads, and Chaptarr source
-   rows store normalized identity metadata when the upstream source provides it:
+   rows store normalised identity metadata when the upstream source provides it:
    title, author, ISBNs, cover, and series fields. Rows that share identity keys
    will be clustered in Phase D.
 6. **Reconciles book identities** (Phase D): `reconcileBookIdentities` runs
@@ -494,8 +494,8 @@ decorated Goodreads or Hardcover IDs still match their plain numeric source IDs.
     resolves mapped Grimmory shelves, then additively syncs missing matched books
     in both directions — see [Shelf Sync](#shelf-sync) below
 13. **Chaptarr status pass** (if Chaptarr is configured in Settings): fetches
-    monitored books from Chaptarr, fetches all book file paths per author in
-    parallel, matches books via the eight-step chain (IDs → ISBNs → title+author
+    monitored books from Chaptarr, fetches book file paths per author through a
+    bounded request pool, matches books via the eight-step chain (IDs → ISBNs → title+author
     → file-path fallback), upserts `book_sources(source_type='chaptarr')` rows
     with `chaptarr_monitored / chaptarr_has_file / chaptarr_primary_file_path`,
     and promotes `'missing'` → `'pending_download'` on `user_book_states` rows
@@ -561,6 +561,9 @@ current API status for "Currently Reading":
 | `PAUSED` | 4 — Paused |
 | `ABANDONED` | 5 — Did Not Finish |
 | `WONT_READ` | 6 — Ignored |
+
+`PAUSED` and `WONT_READ` are both supported by the Hardcover API even though the
+Hardcover website UI may not surface them.
 
 `UNSET` and `UNREAD` are intentionally ignored as Grimmory → Hardcover sources.
 Grimmory often stores newly added books as `UNREAD`, and ShelfBridge should not
@@ -761,7 +764,9 @@ Grimmory/Hardcover/Goodreads passes complete.
 2. Fetches `/api/v1/book` and filters to `monitored = true`.
 3. Fetches `/api/v1/author` to build an `authorId → name` map (books carry only
    `authorId`, not a name, so this is required for title+author matching). Then
-   fetches `/api/v1/bookfile?authorId=<id>` for every author **in parallel** to
+   fetches `/api/v1/bookfile?authorId=<id>` for every author with at most five
+   concurrent requests (set `CHAPTARR_BOOKFILE_CONCURRENCY`, capped at 10, to
+   adjust this) to
    build a `chaptarrBookId → filePath` map used for file-path matching (step 8).
 4. Matches each monitored Chaptarr book to a canonical `book_id` using this chain
    against `book_sources` rows:
@@ -909,3 +914,79 @@ you actually have — go to Hardcover and switch to the correct audio edition.
 The `hardcover_audio_seconds` field is stored per book in `book_sources` during
 Phase C and populated from the user's selected `edition_id` when that edition
 has `audio_seconds > 0`.
+
+### Shared Hardcover Books (Print + Audiobook Editions)
+
+Hardcover gives one `user_books` row per (user, book) pair, not per edition —
+so when a title exists in both a print/ebook Grimmory record and a separate
+audiobook Grimmory record, both point at the **same** Hardcover book ID and
+the same underlying `user_books` row, even though they are two distinct
+canonical ShelfBridge books.
+
+**Routing.** ShelfBridge decides which Grimmory sibling "owns" that shared
+Hardcover book using a signal it controls, not Hardcover's own live data:
+
+- If the audiobook sibling has a runtime-validated Audiobookshelf link
+  (`book_sources.audiobookshelf_runtime_validated = 1`), the shared Hardcover
+  book is always routed to the audiobook sibling — regardless of which
+  edition Hardcover's API currently reports as the book's "current" edition
+  for that user. This matters because editing *any* read record on a shared
+  Hardcover book appears to retarget that pointer on Hardcover's side, which
+  would otherwise cause the routing to flip between audiobook and print from
+  one sync to the next depending on unrelated activity (e.g. a manually
+  edited print read date).
+- This ABS-ownership signal is computed once at the start of each sync run,
+  anchored via the Grimmory audiobook row's own `grimmory_hardcover_book_id`
+  field joined to its Audiobookshelf sibling's `book_id` — not via the
+  `hardcover` source row's own `book_id`, because that is the value that
+  drifts when the routing goes wrong; anchoring off it would prevent the
+  signal from ever self-correcting after a bad run.
+- If both the print/ebook sibling and the audiobook sibling are simultaneously
+  `READING`/`RE_READING`/`PARTIALLY_READ` in Grimmory (i.e. the user is
+  actively reading and listening to the same book at once), the shared
+  Hardcover book is instead routed to the print/ebook sibling for that run
+  (`book_progress_wins_shared_hardcover`). Audiobookshelf progress and status
+  still sync normally to Grimmory and to ShelfBridge's own state in this case
+  — only the Hardcover-side write is deferred to the print side, to avoid the
+  two editions fighting over the one shared Hardcover progress/status field.
+
+**Non-owning sibling writes are suppressed.** Whichever Grimmory sibling does
+*not* currently own the shared Hardcover book must not push its own
+status/progress into it — this applies both to the main Hardcover↔Grimmory
+sync loop and to the fallback path that pushes unmatched Grimmory books into
+Hardcover (Phase G). Without this, the non-owning sibling would be treated as
+"a Grimmory book with no Hardcover match yet" and insert/overwrite the shared
+`user_books` row on every run.
+
+**Read record selection.** When ShelfBridge writes audiobook progress to
+Hardcover, it targets a specific `user_book_reads` row. Two related pitfalls:
+
+- A cached `hardcover_read_id` can go stale (Hardcover can delete or
+  supersede a read independently of ShelfBridge). ShelfBridge verifies the
+  cached ID is still present in the freshly fetched read list before reusing
+  it, falling back to an existing open read on the target edition, then to
+  inserting a new one.
+- Hardcover returns each book's most recent reads ordered by database ID, not
+  by which edition they belong to. On a shared book, a read that was simply
+  edited more recently (e.g. a manually corrected print read date) can have a
+  higher ID than the actively-tracked audiobook read despite being for an
+  unrelated, already-finished period. ShelfBridge's own read/progress
+  selection logic (`latestHardcoverRead`) is edition-aware for this reason:
+  when a persisted target edition ID is known for the book, it prefers a read
+  on that specific edition over whichever read merely has the highest ID.
+- Hardcover also tracks a single "current edition" pointer on the shared
+  `user_books` row itself, independent of which reads exist. This pointer can
+  drift on its own (edited by Hardcover in response to read edits) even when
+  the underlying read data is untouched. ShelfBridge checks this pointer
+  against the persisted target edition on every sync — independently of
+  whether progress or status also need a write — and re-patches it back when
+  it has drifted, so a stale "current edition" doesn't get stuck permanently
+  correct data underneath it.
+- Hardcover's own website appears to feature whichever read was edited most
+  recently in its "Currently Reading" widget, independent of `finished_at` or
+  the `user_books.edition_id` pointer. A one-off manual edit to an older
+  finished read (e.g. correcting its date) can therefore make Hardcover's own
+  UI feature that read instead of the actively-progressing one, even though
+  all underlying data is otherwise correct. This is a Hardcover-side display
+  behaviour, not something ShelfBridge's sync state controls; it resolves
+  itself once the actively-tracked read is written to again.

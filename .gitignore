@@ -27,5 +27,6 @@ tests/playwright-report/
 .debug/
 plans/
 
-# Reference-only clone of another repo, not part of this project
-hubarr/
+# node:test run artifacts (logger writes here when DATA_DIR is unset)
+.test-data/
+__pycache__/

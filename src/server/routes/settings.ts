@@ -1,14 +1,14 @@
-import fs from "node:fs";
 import { Router } from "express";
-import { getSetting, setSetting } from "../db/index.js";
-import type { AboutInfo, AppSettings, JobInfo, LogsPageResponse } from "../../shared/types.js";
-import { CURRENT_SCHEMA_VERSION } from "../db/schema.js";
+import { getDb, getSetting, setSetting } from "../db/index.js";
+import { LOG_LEVELS, type AboutInfo, type AppSettings, type JobInfo, type LogsPageResponse } from "../../shared/types.js";
 import { testGrimmoryServer } from "../sync/grimmory.js";
 import { testChaptarrConnection } from "../sync/chaptarr.js";
 import { testAudiobookshelfServer } from "../sync/audiobookshelf.js";
 import { scheduler } from "../scheduler.js";
-import { getRecentLogs, MACHINE_LOG_PATH } from "../logger.js";
-import { decryptCredential, encryptCredential } from "../security/credentials.js";
+import { getRecentLogs, readRecentMachineLogs } from "../logger.js";
+import { APP_VERSION, BUILD_CHANNEL, BUILD_COMMIT } from "../version.js";
+import { logger } from "../logger.js";
+import { UnsafeIntegrationUrlError, validateIntegrationUrl } from "../security/outbound.js";
 
 const router = Router();
 
@@ -19,11 +19,11 @@ function readSettings(): AppSettings {
     },
     grimmory: {
       baseUrl: getSetting("grimmory.baseUrl", ""),
-      addMenuLink: getSetting("grimmory.addMenuLink", "false") === "true"
+      addMenuLink: getSetting("grimmory.addMenuLink", "true") === "true"
     },
     download: {
       baseUrl: getSetting("download.baseUrl", ""),
-      addMenuLink: getSetting("download.addMenuLink", "false") === "true",
+      addMenuLink: getSetting("download.addMenuLink", "true") === "true",
     },
     sync: {
       startupSyncEnabled: getSetting("sync.startupSyncEnabled", "false") === "true",
@@ -32,10 +32,12 @@ function readSettings(): AppSettings {
     },
     chaptarr: {
       baseUrl: getSetting("chaptarr.baseUrl", ""),
-      apiKeyConfigured: Boolean(decryptCredential(getSetting("chaptarr.apiKey", "")).trim()),
+      apiKeyConfigured: Boolean(getSetting("chaptarr.apiKey", "").trim()),
+      addMenuLink: getSetting("chaptarr.addMenuLink", "true") === "true",
     },
     audiobookshelf: {
       baseUrl: getSetting("audiobookshelf.baseUrl", ""),
+      addMenuLink: getSetting("audiobookshelf.addMenuLink", "true") === "true",
     },
   };
 }
@@ -52,22 +54,38 @@ router.patch("/", (req, res) => {
     chaptarr?: {
       baseUrl?: string;
       apiKey?: string;
+      addMenuLink?: boolean;
     };
     audiobookshelf?: {
       baseUrl?: string;
+      addMenuLink?: boolean;
     };
   };
+
+  try {
+    if (body.grimmory?.baseUrl !== undefined) validateIntegrationUrl(body.grimmory.baseUrl);
+    if (body.download?.baseUrl !== undefined) validateIntegrationUrl(body.download.baseUrl);
+    if (body.chaptarr?.baseUrl !== undefined) validateIntegrationUrl(body.chaptarr.baseUrl);
+    if (body.audiobookshelf?.baseUrl !== undefined) validateIntegrationUrl(body.audiobookshelf.baseUrl);
+  } catch (error) {
+    if (error instanceof UnsafeIntegrationUrlError) {
+      logger.warn("Rejected unsafe integration URL update", { error: error.message });
+      res.status(400).json({ error: error.message });
+      return;
+    }
+    throw error;
+  }
 
   if (body.general) {
     if (body.general.trustProxy !== undefined) setSetting("app.trustProxy", String(body.general.trustProxy));
   }
   if (body.grimmory) {
-    if (body.grimmory.baseUrl !== undefined) setSetting("grimmory.baseUrl", body.grimmory.baseUrl);
+    if (body.grimmory.baseUrl !== undefined) setSetting("grimmory.baseUrl", validateIntegrationUrl(body.grimmory.baseUrl));
     if (body.grimmory.addMenuLink !== undefined)
       setSetting("grimmory.addMenuLink", String(body.grimmory.addMenuLink));
   }
   if (body.download) {
-    if (body.download.baseUrl !== undefined) setSetting("download.baseUrl", body.download.baseUrl);
+    if (body.download.baseUrl !== undefined) setSetting("download.baseUrl", validateIntegrationUrl(body.download.baseUrl));
     if (body.download.addMenuLink !== undefined)
       setSetting("download.addMenuLink", String(body.download.addMenuLink));
   }
@@ -79,11 +97,15 @@ router.patch("/", (req, res) => {
     if (body.sync.conflictStrategy !== undefined) setSetting("sync.conflictStrategy", body.sync.conflictStrategy);
   }
   if (body.chaptarr) {
-    if (body.chaptarr.baseUrl !== undefined) setSetting("chaptarr.baseUrl", body.chaptarr.baseUrl);
-    if (body.chaptarr.apiKey !== undefined) setSetting("chaptarr.apiKey", encryptCredential(body.chaptarr.apiKey));
+    if (body.chaptarr.baseUrl !== undefined) setSetting("chaptarr.baseUrl", validateIntegrationUrl(body.chaptarr.baseUrl));
+    if (body.chaptarr.apiKey !== undefined) setSetting("chaptarr.apiKey", body.chaptarr.apiKey);
+    if (body.chaptarr.addMenuLink !== undefined)
+      setSetting("chaptarr.addMenuLink", String(body.chaptarr.addMenuLink));
   }
   if (body.audiobookshelf) {
-    if (body.audiobookshelf.baseUrl !== undefined) setSetting("audiobookshelf.baseUrl", body.audiobookshelf.baseUrl);
+    if (body.audiobookshelf.baseUrl !== undefined) setSetting("audiobookshelf.baseUrl", validateIntegrationUrl(body.audiobookshelf.baseUrl));
+    if (body.audiobookshelf.addMenuLink !== undefined)
+      setSetting("audiobookshelf.addMenuLink", String(body.audiobookshelf.addMenuLink));
   }
   res.json(readSettings());
 });
@@ -102,7 +124,7 @@ router.post("/grimmory/test", async (req, res) => {
 router.post("/chaptarr/test", async (req, res) => {
   const { baseUrl, apiKey } = req.body as { baseUrl?: string; apiKey?: string };
   const url = baseUrl ?? getSetting("chaptarr.baseUrl", "");
-  const key = apiKey?.trim() ? apiKey : decryptCredential(getSetting("chaptarr.apiKey", ""));
+  const key = apiKey?.trim() ? apiKey : getSetting("chaptarr.apiKey", "");
   if (!url || !key) {
     res.json({ ok: false, message: "Base URL and API key are required" });
     return;
@@ -210,12 +232,12 @@ router.patch("/jobs/:id", (req, res) => {
 
 // ─── Log viewer ───────────────────────────────────────────────────────────────
 
-const LEVEL_ORDER = ["debug", "info", "warn", "error"] as const;
+const LEVEL_ORDER = LOG_LEVELS;
 type LogLevel = (typeof LEVEL_ORDER)[number];
 const isLogLevel = (v: unknown): v is LogLevel =>
   typeof v === "string" && (LEVEL_ORDER as readonly string[]).includes(v);
 
-router.get("/logs", (req, res) => {
+router.get("/logs", async (req, res) => {
   const rawPage = typeof req.query["page"] === "string" ? Number(req.query["page"]) : 1;
   const page = Math.max(1, Number.isFinite(rawPage) ? rawPage : 1);
   const rawPageSize = typeof req.query["pageSize"] === "string" ? Number(req.query["pageSize"]) : 25;
@@ -228,52 +250,24 @@ router.get("/logs", (req, res) => {
   const rawSearch = req.query["search"];
   const search: string = typeof rawSearch === "string" ? rawSearch.slice(0, 200) : "";
 
-  const LOG_FIELDS = new Set(["timestamp", "level", "message"]);
   let entries: LogsPageResponse["results"] = [];
 
   try {
-    const raw = fs.readFileSync(MACHINE_LOG_PATH, "utf-8");
-    for (const line of raw.split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        const parsed = JSON.parse(line) as Record<string, unknown>;
-        if (!allowed.has(parsed["level"] as string)) continue;
-
-        const meta: Record<string, unknown> = {};
-        for (const [k, v] of Object.entries(parsed)) {
-          if (!LOG_FIELDS.has(k)) meta[k] = v;
-        }
-
-        const entry = {
-          timestamp: parsed["timestamp"] as string,
-          level: parsed["level"] as LogLevel,
-          message: parsed["message"] as string,
-          ...(Object.keys(meta).length > 0 ? { meta } : {})
-        };
-
-        if (search) {
-          const needle = search.toLowerCase();
-          const inMessage = entry.message.toLowerCase().includes(needle);
-          const inMeta = entry.meta !== undefined && JSON.stringify(entry.meta).toLowerCase().includes(needle);
-          if (!inMessage && !inMeta) continue;
-        }
-
-        entries.push(entry);
-      } catch {
-        // skip malformed lines
-      }
+    entries = await readRecentMachineLogs();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      logger.warn("Failed to read machine log file, falling back to in-memory ring buffer", { error: err });
     }
-  } catch {
-    // File not yet available — fall back to in-memory ring buffer
-    entries = getRecentLogs(500).filter((e) => allowed.has(e.level));
-    if (search) {
-      const needle = search.toLowerCase();
-      entries = entries.filter(
-        (e) => e.message.toLowerCase().includes(needle) ||
-               (e.meta !== undefined && JSON.stringify(e.meta).toLowerCase().includes(needle))
-      );
-    }
+    entries = getRecentLogs(500);
   }
+
+  entries = entries.filter((entry) => {
+    if (!allowed.has(entry.level)) return false;
+    if (!search) return true;
+    const needle = search.toLowerCase();
+    return entry.message.toLowerCase().includes(needle)
+      || (entry.meta !== undefined && JSON.stringify(entry.meta).toLowerCase().includes(needle));
+  });
 
   // Newest first, then paginate
   entries.reverse();
@@ -284,19 +278,25 @@ router.get("/logs", (req, res) => {
 
   const response: LogsPageResponse = {
     results,
+    windowed: true,
     pageInfo: { page, pageSize, pages, total }
   };
   res.json(response);
 });
 
 router.get("/about", (_req, res) => {
+  // Read the database's actual PRAGMA user_version rather than the code's
+  // LATEST_MIGRATION_VERSION constant — this is the last migration version
+  // successfully applied during database initialization, which is what
+  // actually matters for troubleshooting a specific running instance.
+  const dbVersion = getDb().pragma("user_version", { simple: true }) as number;
   const info: AboutInfo = {
-    version: "0.1.0",
-    buildChannel: process.env["BUILD_CHANNEL"] ?? "develop",
-    commitSha: process.env["COMMIT_SHA"] ?? "local",
+    version: APP_VERSION,
+    buildChannel: BUILD_CHANNEL,
+    commitSha: BUILD_COMMIT,
     dataDir: process.env["DATA_DIR"] ?? "./data",
     tz: process.env["TZ"] ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
-    dbVersion: CURRENT_SCHEMA_VERSION
+    dbVersion
   };
   res.json(info);
 });

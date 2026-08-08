@@ -1,14 +1,391 @@
+<!-- shared: structure — headings kept in sync across Migz93 self-hosted apps, content is app-specific -->
+
 # Testing
 
-ShelfBridge currently has build and type-check verification, with room for Playwright or server tests as the app settles.
+ShelfBridge uses Node's built-in [test runner](https://nodejs.org/api/test.html)
+(`node:test` + `node:assert/strict`, run through `tsx`) for server-side tests —
+no Jest/Vitest, no mocking library. Tests either exercise a real, isolated SQLite
+database (via `tests/server/test-db.ts`) or run the sync engine with hand-rolled
+fake adapters standing in for Hardcover/Grimmory/Goodreads/Chaptarr HTTP calls.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
+| `npm test` | Runs the automated test suite (`tests/server/`). Also what CI runs. |
 | `npm run check` | Runs TypeScript checks for client and server projects |
 | `npm run build` | Builds the Vite client and TypeScript server |
 | `npm audit --omit=dev` | Checks production dependency advisories |
+
+## Server Tests
+
+`npm test` sets `DATA_DIR=./.test-data` so tests never touch your real `./data`
+directory; `.test-data/` is gitignored.
+
+Most tests should use `createTestDatabase()` from `test-db.ts`, which spins up a
+fresh temp-dir SQLite database with the current schema applied — no shared state
+between tests.
+
+`sync-engine.test.ts`, `auth.test.ts`, and `settings.test.ts` are the exceptions:
+each operates on the `db/index.ts` singleton rather than an injected database,
+so each points `DATA_DIR` at its own private temp dir (via a dynamic `import()`
+of the singleton after setting the env var — a static `import` would evaluate
+the singleton too early, since ESM hoists imports ahead of the rest of the
+importing module) instead of sharing `./.test-data` with each other. Node's test
+runner runs each file in its own process, so two files racing to initialize the
+same fresh `./.test-data/shelfbridge.db` — both seeing no pending migrations, both
+running migration 1's non-`IF NOT EXISTS` `CREATE TABLE` statements — could
+otherwise intermittently fail with `table already exists`; isolating each of
+these three files removes the shared state the race depends on. `sync-engine.test.ts`
+additionally seeds its own profile per test and scopes assertions to that
+profile's id, since it shares one database across many tests within the file.
+Each of the three waits for the logger to flush (`logger.end()` + `"finish"`
+event) before deleting its temp dir in `test.after`, since the logger also
+writes into `DATA_DIR`.
+
+## Playwright End-To-End Tests
+
+ShelfBridge uses [Playwright](https://playwright.dev/) for end-to-end tests, mirroring
+[hubarr](https://github.com/Migz93/hubarr)'s setup. Tests run against a **live, fully
+set-up ShelfBridge instance** — there is no mocking or test database.
+
+Tests are read-only unless a spec file's own doc comment says otherwise. The one
+exception is `jobs.spec.ts`, which triggers the Maintenance job — safe because it
+only prunes rows already past the retention window, with no external side
+effects. Sync and Image Cache Refresh are never triggered this way, since they
+write real data back to Hardcover/Audiobookshelf/Grimmory and to those services'
+APIs respectively.
+
+### First-time setup
+
+1. Have a running instance. Docker serves on port `9303`. For a bare local run:
+   ```bash
+   npm run build
+   NODE_ENV=production npm start   # serves on port 3000
+   ```
+
+2. Copy the env template:
+   ```bash
+   cp .env.playwright.example .env.playwright
+   ```
+
+3. Edit `.env.playwright` and set `BASE_URL` to your running instance.
+
+4. Grab your session cookie from the browser:
+   - Open your ShelfBridge instance in Chrome or Firefox and log in
+   - DevTools → Application → Cookies → find `shelfbridge_session`
+   - Copy the **Value** and paste it into `.env.playwright` as `SESSION_COOKIE`
+
+5. Run the tests:
+   ```bash
+   npm run test:e2e
+   ```
+
+   The first run validates the cookie and saves the session to
+   `tests/playwright/.auth/storageState.json` (gitignored). All subsequent runs
+   reuse the saved session automatically.
+
+### Re-authenticating
+
+When your session expires, the auth setup will tell you. Clear the saved session
+and re-run with a fresh cookie:
+
+```bash
+rm tests/playwright/.auth/storageState.json
+# Update SESSION_COOKIE in .env.playwright with a fresh value, then:
+npm run test:e2e
+```
+
+### Generated test files
+
+Playwright-generated files are kept under `tests/` so the repo root stays tidy.
+All are gitignored:
+
+- `tests/playwright/.auth/storageState.json` — saved authenticated session state
+- `tests/test-results/` — Playwright run artifacts
+- `tests/playwright-report/` — Playwright HTML report output
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `npm run test:e2e` | Run all tests (auth check + full suite) |
+| `npm run test:e2e:auth` | Run the auth setup step only |
+
+If you rerun the suite again immediately after a previous run, you can trip
+ShelfBridge's own rate limiter (600 requests/min globally, 300/min on `/api`) —
+page loads and polling from both runs count against the same rolling window. If
+several unrelated pages suddenly fail to render together, wait about 60 seconds
+and rerun rather than assuming the tests themselves are broken.
+
+### Auth note
+
+ShelfBridge uses a local password login, so the cookie-paste step is simpler than
+hubarr's Plex OAuth — but the mechanism is kept identical (`SESSION_COOKIE` env var
+plus saved `storageState.json`) so the config stays comparable across the three apps.
+
+### Adding new tests
+
+Create a `*.spec.ts` file in `tests/playwright/` and it will be picked up
+automatically. The saved session in `storageState.json` is loaded for every test,
+so all tests start already authenticated.
+
+---
+
+## Test Suite
+
+### `tests/server/schema-migrations.test.ts` — Schema & migrations
+
+| Test | What it checks |
+|---|---|
+| `runTransactionalStep` rollback | A newly-introduced `PRAGMA foreign_key_check` violation rolls back the entire step atomically — the violating row and everything else written in the same step, not just the violation itself |
+| `runGuardedStep` abort-without-rollback | A newly-introduced violation is still detected and thrown, but since `step()` already committed on its own (no transaction), the violating row survives — the documented behavior for steps that can't be one transaction |
+| Pre-existing violations don't block | A `runTransactionalStep` step that introduces no *new* foreign-key violations still commits even if pre-existing ones (unrelated historical data debt) remain — only newly-introduced violations are fatal |
+| New violation alongside a pre-existing one | A step that introduces one new violation on top of a pre-existing, unrelated one still rolls back — the pre-existing violation doesn't mask a real new one, and survives the rollback untouched |
+| `user_version` rollback | A violation introduced after `db.pragma('user_version = N')` inside a `runTransactionalStep` rolls back the pragma write too, not just table rows — proving the whole transaction is atomic, not just data changes |
+| Fresh database applies migration 1 | `initSchema` on an empty DB reaches `LATEST_MIGRATION_VERSION` via `PRAGMA user_version`, never creates a `schema_version` table, with no foreign-key violations |
+| Idempotent re-run | Running `initSchema` twice makes no further changes |
+| Legacy handover | A pre-existing `schema_version` database is migrated to v14 via the preserved sequential logic, then handed over to `user_version = 1`; verifies `source_instance_id` is added, existing rows survive, Chaptarr is backfilled to instance `0`, per-profile sources are left unscoped, the per-instance unique constraint is enforced, exactly one pre-migration backup was written (not one per step), and the stale `schema_version` table is dropped |
+| Handover atomicity | Injecting a failure between `DROP TABLE schema_version` and the `user_version = 1` bump rolls back cleanly (table still present, `user_version` still `0`), and a subsequent `initSchema` call recovers on its own |
+| Handover is not re-run | A database already at `user_version >= 1` is left alone on a second `initSchema` call, and takes no redundant backup |
+| Legacy v3 migration | Orphan books (empty title, Chaptarr-only source) are deleted; books with a real source survive |
+| Legacy v7 migration atomicity | Injecting a failure before the version 7 bump rolls back the whole `book_sources`/`user_book_states` rebuild (no leftover `book_sources_v7` temp table, original data intact, version unchanged), and a subsequent `initSchema` call recovers on its own |
+| Single failure log per handover error | A v7 sub-step failure during the legacy handover is logged exactly once, not once per guarding layer (`runTransactionalStep` around v7 itself, then `runGuardedStep` around the whole handover) it propagates through |
+| Backstop check precedes the version bump | The legacy handover's outer `foreign_key_check` runs while `user_version` is still `0`, before the `DROP TABLE schema_version` + version bump commits — proving a caught violation leaves the handover retriable on the next restart instead of looking already-complete |
+| Legacy v8/v9 migration atomicity | Injecting a failure before the version 8 bump rolls back the `ALTER TABLE ADD COLUMN` statements (column not present, version unchanged), and a subsequent `initSchema` call recovers through v9 as well |
+| Legacy v13 migration | `book_sources` rows with the literal string `"datetime('now')"` as `last_sync_at` are repaired to `NULL` |
+| Pre-migration backup | `backupBeforeMigrating` snapshots an already-populated database via `VACUUM INTO` into `<data dir>/backups/` before `runMigrations` applies a pending migration, and skips the backup for a brand-new database with nothing to protect |
+| Backup retention | `backupBeforeMigrating` prunes `<data dir>/backups/` down to the 5 most recently created backups each time it runs |
+| Backup directory permissions | `backupBeforeMigrating` locks `<data dir>/backups/` down to owner-only (`0o700`) even when the directory already existed with looser permissions from before this hardening shipped — `mkdirSync`'s `mode` alone is a no-op on an existing directory, so this is only correct if it's backed by an explicit `chmodSync` |
+| Downgrade guard | `getPendingMigrations`/`runMigrations` reject a database whose `user_version` is newer than this build's `LATEST_MIGRATION_VERSION`, instead of silently seeing nothing pending and booting into an unknown schema |
+| Schema equivalence | The flattened baseline (migration 1, a fresh install) and a full legacy `v3`→`v14` chain plus handover produce the same set of tables, columns (including primary-key ordinal), indexes (including implicit ones from inline `UNIQUE`/PK constraints, compared by shape rather than their creation-order-dependent name), foreign keys, and views/triggers — order-independent, so this catches the baseline silently drifting from what the legacy chain actually produces |
+
+### `tests/server/book-identity.test.ts` — Identity reconciliation
+
+| Test | What it checks |
+|---|---|
+| ISBN13 match | Two sources sharing an ISBN13 merge into one canonical book |
+| Conflicting Hardcover book id | Two sources with the same title but different authoritative Hardcover ids stay separate books |
+| Idempotency | Running `reconcileBookIdentities` twice doesn't duplicate books |
+| Orphan cleanup | A book left with zero `book_sources` rows is deleted on the next reconcile pass |
+| Corroborated Chaptarr bridge | A Goodreads edition joins a Chaptarr/Grimmory cluster only with matching edition-ID and same-format file-path evidence; a stale Chaptarr Hardcover ID cannot merge an unrelated book |
+| File-path media separation | Ebook and audiobook Chaptarr path matches join only their matching format canonical |
+| File-path ID precedence | An exact Grimmory/Chaptarr path keeps local records together after a Goodreads edition ID is repaired |
+| Cross-profile path isolation | A shared global Chaptarr path cannot merge unrelated Grimmory instances from different profiles |
+| Cross-profile Goodreads bridge isolation | Corroborated Chaptarr/Goodreads bridging is skipped when the same path belongs to multiple Grimmory instances |
+| Cross-profile Chaptarr reassignment isolation | A global Chaptarr path cannot reassign to a canonical record when multiple Grimmory instances share that path |
+| Cross-profile ABS reassignment isolation | A global Chaptarr path cannot reassign to a canonical record when multiple Audiobookshelf profiles share that path |
+| Chaptarr reassignment state preservation | User state is retained when a cross-profile Chaptarr path makes reassignment unsafe |
+
+### `tests/server/settings.test.ts` — App settings
+
+`getSetting`/`setSetting` fallback and round-trip behaviour.
+
+### `tests/server/auth.test.ts` — Authentication sessions
+
+| Test | What it checks |
+|---|---|
+| Malformed cookie | Invalid percent-encoding is treated as unauthenticated input rather than throwing |
+| Hashed session storage | The database contains only a SHA-256 session-token hash with a numeric expiry |
+| Secure cookie | HTTPS requests receive a `Secure` session cookie |
+
+### `tests/server/outbound.test.ts` — Outbound integration requests
+
+| Test | What it checks |
+|---|---|
+| URL validation | HTTP/HTTPS LAN URLs work; relative URLs, non-HTTP schemes, and embedded credentials are rejected |
+| Redirect handling | Integration requests disable automatic redirects |
+
+### `tests/server/sync-decision.test.ts` — Sync decision table
+
+Table-driven coverage of `computeSyncDecision` for every `conflict_strategy` (`latest_wins`, `grimmory_wins`, `hardcover_wins`) across: no Grimmory match, status sync disabled, already synced, one side changed, both sides changed, steady-state conflicts with and without timestamps, and one-sided statuses with/without a valid cross-source mapping.
+
+### `tests/server/pruning.test.ts` — Pruning
+
+Each `prune*UserStatesMissingFromFetch` / `prune*SourcesMissingFromFetch` helper, checked for: only pruning the calling profile's own rows (never another profile's), preserving state while a book still has another live source row, never pruning a source with live user state, pruning a complete empty snapshot, and preserving all rows for partial or failed snapshots.
+
+### `tests/server/normalization.test.ts` — Title/date helpers
+
+`normalizeTitle`, `normalizeSeriesNumber`, strict ISBN-10/ISBN-13 normalization, `newerSource`, selected-read Hardcover progress calculation, `shouldGoodreadsOverwriteGrimmory`.
+
+### `tests/server/concurrency.test.ts` — Bounded work queues
+
+| Test | What it checks |
+|---|---|
+| Large author list | The Chaptarr book-file request queue preserves all results while never exceeding its configured concurrency cap. |
+
+### `tests/server/duplicate-review.test.ts` — Duplicate merge eligibility
+
+| Test | What it checks |
+|---|---|
+| Live probable-duplicate guard | Only an undismissed title-and-author probable-duplicate pair is eligible for the destructive merge route; unrelated or dismissed pairs are rejected. |
+| Partial duplicate-merge failure | A remote failure in a later merge plan retains each earlier plan already persisted locally. |
+
+### `tests/server/logger.test.ts` — Recent log tail
+
+| Test | What it checks |
+|---|---|
+| Oversized machine log | Only the recent bounded tail is parsed, malformed lines are skipped, and the requested newest entries are returned. |
+
+### `tests/server/shelves.test.ts` — Shelf synchronization
+
+| Test | What it checks |
+|---|---|
+| Large reverse shelf lookup | A 500-book Grimmory shelf is processed in SQLite-safe batches while preserving all membership and Hardcover-list updates. |
+
+### `tests/server/sync-engine.test.ts` — Sync engine integration
+
+Runs `runSyncImpl` end-to-end against a real (isolated) SQLite database with fake source adapters (`SyncAdapters` — see `src/server/sync/engine.ts`) instead of real HTTP calls.
+
+| Test | What it checks |
+|---|---|
+| No connections configured | Completes successfully, writes nothing, never calls an adapter |
+| Hardcover fetch failure | Skips book and library-data writes, records a `source_unavailable` sync event, and marks the run `error` |
+| Hardcover-only sync | Writes `book_sources` + `user_book_states`; re-running with the same fetched data is idempotent (no duplicate rows) |
+| Dry run | Computes and caches the resolved decision locally but never calls the Grimmory write adapter |
+| Real run | Calls the Grimmory write adapter with the resolved status once conflict resolution picks a winner |
+| Two profiles | Each profile's `book_sources` stay scoped to its own `source_instance_id` — no cross-profile leakage |
+| Negative edition cache | An unchanged Hardcover page count with no matching edition only fetches editions once across syncs. |
+
+Adapters not relevant to a given test are left unimplemented via `createFakeAdapters` (`test-helpers.ts`), which makes any unexpected call throw immediately instead of failing confusingly deep inside `runSyncImpl`.
+
+### `tests/server/source-snapshots.test.ts` — Source snapshot isolation
+
+| Test | What it checks |
+|---|---|
+| ABS ownership scope | Runtime-validated Audiobookshelf ownership and its Grimmory Hardcover IDs never leak between profiles. |
+| Hardcover list editions | Partial edition-detail fetches preserve metadata already obtained for list-only books. |
+| Selected Hardcover list snapshot | A list-filtered Hardcover fetch is marked partial, so it cannot prune records outside the list. |
+| Large ABS ownership snapshot | Runtime ownership lookup batches a 500-book ABS library below SQLite's parameter limit. |
+| ABS without Hardcover | An ABS audiobook linked to Grimmory remains runtime-validated when the optional Hardcover integration is absent. |
+
+### `tests/server/goodreads-phase.test.ts` — Goodreads status sync
+
+| Test | What it checks |
+|---|---|
+| Changed Goodreads shelf | A changed Goodreads shelf writes its mapped status to the matched Grimmory book and persists local state. |
+
+### Known gaps
+
+- No coverage yet for Goodreads/Chaptarr/Audiobookshelf sync paths or shelf/list syncing.
+- The Grimmory cover-caching path (`cacheGrimmoryCover` in `engine.ts`) makes a real `fetch()` call outside the adapter seam — `sync-engine.test.ts` stubs `globalThis.fetch` globally so it never hits the network, but the cover-caching logic itself has no dedicated test coverage.
+- No forced mid-transaction failure test for `reconcileBookIdentities`'s rollback behaviour.
+- No expired-session cleanup or expiry-boundary coverage.
+
+---
+
+### `tests/playwright/pages.spec.ts` — Page smoke tests
+
+Read-only. Safe to run against a live instance.
+
+| Test | What it checks |
+|---|---|
+| Dashboard loads | Navigates to `/dashboard`, asserts the "Dashboard" heading is visible |
+| Books loads | Navigates to `/books`, asserts the "Books" heading is visible |
+| Audiobooks loads | Navigates to `/audiobooks`, asserts the "Audiobooks" heading is visible |
+| Users loads | Navigates to `/users`, asserts the "Users" heading is visible |
+| Sync History loads | Navigates to `/history`, asserts the "Sync History" heading is visible |
+| Settings loads | Navigates to `/settings`, asserts the "Settings" heading is visible |
+| Sidebar navigation links are present | On the dashboard, checks all five nav links exist inside `<nav>` |
+| Sidebar navigation works | Clicks each sidebar link in turn and verifies the URL and page heading update correctly |
+| Unauthenticated request redirects to login | Opens a fresh browser context with no session cookies, navigates to `/dashboard`, expects a redirect to `/login` |
+
+### `tests/playwright/dashboard.spec.ts` — Dashboard UI
+
+Read-only. Safe to run against a live instance.
+
+| Test | What it checks |
+|---|---|
+| Stat chips are visible after load | Asserts the "Books Tracked", "Missing", "Pending Download", and "Needs Review" stat chips render |
+| Books Tracked stat chip links to the books page | Asserts a link to `/books` is present |
+| Missing stat chip links to the filtered books view | Asserts a link to `/books?health=missing` is present |
+| Recently Added section heading is visible | Asserts the "Recently Added" heading renders |
+| Recent Syncs panel is visible and links to history | Asserts the Recent Syncs panel (an `<a>` to `/history`) renders |
+| Run Sync button is present | Asserts the button renders (not clicked — a real click would trigger a live sync) |
+
+### `tests/playwright/books.spec.ts` — Books & Audiobooks filters
+
+Read-only. Safe to run against a live instance.
+
+| Test | What it checks |
+|---|---|
+| Status filter chips are all visible | Verifies the Books status row shows All, To Read, Reading, Read, and DNF |
+| Reading status filter updates the URL | Clicks the Reading chip and verifies `?status=READING` appears in the URL |
+| All status filter clears the status param | Clicks Reading then All, verifies the `status` param is removed |
+| Audiobooks page shows its own status labels | Verifies the Audiobooks status row shows To Listen, Listening, Listened, and DNF |
+
+### `tests/playwright/history.spec.ts` — Sync History filters
+
+Read-only. Safe to run against a live instance.
+
+| Test | What it checks |
+|---|---|
+| Status filter buttons are all visible | Verifies All, Running, Success, and Error render |
+| Page size select is visible | Verifies the page-size selector renders |
+| Success status filter updates the URL | Clicks Success and verifies `?status=success` appears in the URL |
+| All status filter resets the status param to all | Clicks Success then All, verifies `?status=all` |
+
+### `tests/playwright/settings.spec.ts` — Settings sections
+
+Read-only. Safe to run against a live instance.
+
+| Test | What it checks |
+|---|---|
+| Network section shows the Trust Proxy control and its save button | Asserts the section, control, and Save Network button render |
+| Sync Behaviour section shows Startup Sync and conflict strategy controls | Asserts the section and both controls render |
+| History Retention section shows the retention period field | Asserts the section, field, and Save History button render |
+
+### `tests/playwright/api.spec.ts` — API smoke tests
+
+Read-only. Safe to run against a live instance. Uses the `request` fixture (no
+browser) with the stored session cookie applied automatically via
+`storageState`.
+
+| Test | What it checks |
+|---|---|
+| GET /api/health returns 200 | Asserts `{ ok: true }` |
+| GET /api/auth/session returns authenticated session | Asserts `authenticated: true` |
+| GET /api/dashboard returns expected shape | Asserts the response has `stats`, `recentlyAdded`, and `recentActivity`, and that `stats` has the four dashboard counters |
+
+### `tests/playwright/images.spec.ts` — Image cache
+
+Read-only. Safe to run against a live instance. Images are cached at sync time —
+tests log and skip gracefully if nothing has been cached yet.
+
+| Test | What it checks |
+|---|---|
+| /images/ route requires authentication | Opens a fresh context with no session and requests `/images/test.jpg` — expects `401` |
+| Dashboard recently added covers all load | Checks every `img.object-cover[src*='/images/']` on the dashboard has loaded successfully |
+| Books page covers all load | Same check on the Books grid |
+
+### `tests/playwright/jobs.spec.ts` — Live refresh (Jobs)
+
+**Not read-only.** Triggers the real Maintenance job via the API and verifies the
+open Settings page reflects its completion without a reload. See the note at the
+top of the Playwright section for why Maintenance specifically is safe to
+trigger this way.
+
+| Test | What it checks |
+|---|---|
+| Maintenance job runs via Run Now and the Jobs table updates without reload | Clicks Run Now for Maintenance, polls the API until the job completes, then asserts the Jobs table shows the updated status without a page reload |
+
+---
+
+## Adding New Tests
+
+Which layer to reach for — server test or Playwright — is covered in `AGENTS.md`
+under Tests. Mechanically:
+
+- **Server tests:** create a `*.test.ts` file under `tests/server/` and it is
+  picked up automatically by `npm test`. Use `createTestDatabase()` from
+  `test-db.ts` so each test gets a fresh isolated database.
+- **Playwright:** create a `*.spec.ts` file in `tests/playwright/` and it is picked
+  up automatically. The saved session in `storageState.json` is loaded for every
+  test, so all tests start already authenticated. Keep new tests read-only unless
+  there's a specific, agreed reason not to — see the note at the top of the
+  Playwright section.
+
+When a test is agreed and written, add a row for it in the relevant table above.
 
 ## Manual Smoke Test
 
@@ -33,7 +410,8 @@ Expected log line:
 ShelfBridge listening on port 9303
 ```
 
-Then open `http://localhost:9303`, create or enter the ShelfBridge admin password, and smoke-test:
+Then open `http://localhost:9303`, create or enter the ShelfBridge admin
+password, and smoke-test:
 
 - Dashboard loads after authentication
 - Settings loads and the About tab reports version/build info
@@ -42,6 +420,5 @@ Then open `http://localhost:9303`, create or enter the ShelfBridge admin passwor
 - `/api/settings` returns `401` from an unauthenticated browser/session
 - `/images/...` returns `401` without a valid session
 
-## Adding Automated Tests
-
-When adding automated tests, keep generated artifacts under `tests/` and ensure `.gitignore` excludes auth state, reports, and test results.
+This section needs Docker. See "Where You're Running" in `AGENTS.md` — where it
+is unavailable, say so rather than substituting a workspace check.

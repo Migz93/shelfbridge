@@ -1,5 +1,6 @@
 import type { TestResult } from "../../shared/types.js";
 import { logger } from "../logger.js";
+import { fetchIntegration } from "../security/outbound.js";
 
 // ─── ABS API response shapes (partial — extended as we confirm what the key exposes) ──
 
@@ -59,10 +60,13 @@ export interface AbsLibraryItem {
       seriesName: string | null;
       asin: string | null;
       isbn: string | null;
-      narrator: string | null;
-      duration: number;   // seconds
+      narrator?: string | null;
+      narratorName?: string | null;
+      duration?: number | null;   // seconds
     };
+    duration?: number | null;
   };
+  path?: string | null;
   libraryFiles?: {
     ino: string;
     metadata: {
@@ -77,7 +81,7 @@ export interface AbsLibraryItem {
 
 async function absGet<T>(baseUrl: string, apiKey: string, path: string): Promise<T> {
   const url = `${baseUrl.replace(/\/$/, "")}${path}`;
-  const res = await fetch(url, {
+  const res = await fetchIntegration(url, {
     headers: { Authorization: `Bearer ${apiKey}` },
     signal: AbortSignal.timeout(10_000),
   });
@@ -90,7 +94,7 @@ async function absGet<T>(baseUrl: string, apiKey: string, path: string): Promise
 export async function testAudiobookshelfServer(baseUrl: string): Promise<TestResult> {
   try {
     const url = `${baseUrl.replace(/\/$/, "")}/status`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    const res = await fetchIntegration(url, { signal: AbortSignal.timeout(10_000) });
     if (!res.ok) {
       return { ok: false, message: `Server responded with HTTP ${res.status}` };
     }
@@ -176,7 +180,7 @@ export async function patchAudiobookshelfProgress(
 ): Promise<void> {
   const url = `${baseUrl.replace(/\/$/, "")}/api/me/progress/${libraryItemId}`;
   const progress = duration > 0 ? Math.max(0, Math.min(1, currentTime / duration)) : 0;
-  const res = await fetch(url, {
+  const res = await fetchIntegration(url, {
     method: "PATCH",
     headers: {
       Authorization: `Bearer ${apiKey}`,

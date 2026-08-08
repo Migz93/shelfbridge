@@ -1,5 +1,6 @@
 import type { TestResult } from "../../shared/types.js";
 import { logger } from "../logger.js";
+import { fetchIntegration } from "../security/outbound.js";
 
 export interface GoodreadsBook {
   goodreadsId: string;
@@ -25,15 +26,23 @@ function extractXmlField(xml: string, tag: string): string | null {
   return val || null;
 }
 
+const XML_NAMED_ENTITIES: Record<string, string> = {
+  quot: "\"",
+  apos: "'",
+  amp: "&",
+  lt: "<",
+  gt: ">"
+};
+
+// Decodes all entities in a single left-to-right pass so a literal sequence like
+// "&amp;lt;" (the escaped form of the text "&lt;") isn't re-scanned and unescaped
+// a second time into "<".
 function decodeXmlEntities(value: string): string {
-  return value
-    .replace(/&quot;/g, "\"")
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, code: string) => String.fromCodePoint(parseInt(code, 16)));
+  return value.replace(/&(?:(quot|apos|amp|lt|gt)|#(\d+)|#x([0-9a-f]+));/gi, (_match, name?: string, dec?: string, hex?: string) => {
+    if (name) return XML_NAMED_ENTITIES[name.toLowerCase()] ?? _match;
+    if (dec) return String.fromCodePoint(Number(dec));
+    return String.fromCodePoint(parseInt(hex!, 16));
+  });
 }
 
 function parseGoodreadsItems(xml: string, fetchedShelf?: string): GoodreadsBook[] {
@@ -126,7 +135,7 @@ export async function fetchShelfPage(
   page: number
 ): Promise<{ books: GoodreadsBook[]; hasMore: boolean }> {
   const url = `https://www.goodreads.com/review/list_rss/${encodeURIComponent(userId)}?shelf=${encodeURIComponent(shelf)}&per_page=200&page=${page}`;
-  const res = await fetch(url, {
+  const res = await fetchIntegration(url, {
     headers: { "User-Agent": "ShelfBridge/0.1 (book sync app)" },
     signal: AbortSignal.timeout(15000)
   });
@@ -173,7 +182,7 @@ export async function fetchAllGoodreadsBooks(userId: string, shelves?: string[])
       let hasMore = true;
       while (hasMore) {
         const url = `https://www.goodreads.com/review/list_rss/${encodeURIComponent(userId)}?shelf=all&per_page=200&page=${page}`;
-        const res = await fetch(url, {
+        const res = await fetchIntegration(url, {
           headers: { "User-Agent": "ShelfBridge/0.1 (book sync app)" },
           signal: AbortSignal.timeout(15000)
         });
@@ -228,7 +237,7 @@ export async function fetchGoodreadsCustomShelves(userId: string): Promise<strin
     let anyBooks = false;
     while (hasMore) {
       const url = `https://www.goodreads.com/review/list_rss/${encodeURIComponent(userId)}?shelf=${encodeURIComponent(shelf)}&per_page=200&page=${page}`;
-      const res = await fetch(url, {
+      const res = await fetchIntegration(url, {
         headers: { "User-Agent": "ShelfBridge/0.1 (book sync app)" },
         signal: AbortSignal.timeout(15000)
       });
@@ -275,7 +284,7 @@ export async function testGoodreadsUser(userId: string): Promise<TestResult> {
   if (!userId?.trim()) return { ok: false, message: "No user ID provided" };
   try {
     const url = `https://www.goodreads.com/review/list_rss/${encodeURIComponent(userId)}?shelf=read&per_page=1`;
-    const res = await fetch(url, {
+    const res = await fetchIntegration(url, {
       headers: { "User-Agent": "ShelfBridge/0.1 (book sync app)" },
       signal: AbortSignal.timeout(12000)
     });

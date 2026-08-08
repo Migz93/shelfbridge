@@ -14,11 +14,22 @@ import type {
 } from "../../shared/types.js";
 import { getGrimmoryToken, writeGrimmoryExternalIds } from "../sync/grimmory.js";
 import { logger } from "../logger.js";
-import { decryptCredential } from "../security/credentials.js";
 import { reconcileBookIdentities } from "../db/bookIdentity.js";
 import { normalizeExternalId, identifiersEqual } from "../identifiers.js";
 
 const router = Router();
+
+export async function writeAndPersistDuplicateMergePlan(
+  db: ReturnType<typeof getDb>,
+  plan: { bookId: number; profileId: number; goodreadsId: string | null; hardcoverBookId: string | null; hardcoverId: string | null },
+  writeRemote: () => Promise<void>
+): Promise<void> {
+  await writeRemote();
+  db.transaction(() => {
+    db.prepare(`UPDATE book_sources SET grimmory_goodreads_id = COALESCE(?, grimmory_goodreads_id), grimmory_hardcover_book_id = COALESCE(?, grimmory_hardcover_book_id), grimmory_hardcover_id = COALESCE(?, grimmory_hardcover_id), last_modified_at = datetime('now') WHERE book_id = ? AND source_type = 'grimmory' AND source_instance_id = ?`)
+      .run(plan.goodreadsId, plan.hardcoverBookId, plan.hardcoverId, plan.bookId, plan.profileId);
+  })();
+}
 
 type StatusFilter = "UNREAD" | "READING" | "READ" | "ABANDONED";
 type SourceFilter = "all" | "hardcover" | "goodreads" | "on-disk";
@@ -95,6 +106,7 @@ interface DbBookRow {
   chaptarr_monitored: number | null;
   chaptarr_has_file: number | null;
   chaptarr_id_mismatch: number | null;
+  chaptarr_id_mismatch_dismissed: number | null;
   chaptarr_media_type: string | null;
   chaptarr_primary_file_path: string | null;
   // Audiobookshelf source (book-level)
@@ -303,7 +315,53 @@ function probableDuplicateCandidateIds(rows: DbBookRow[], bookId: number, dismis
   return candidates;
 }
 
-function dbToDuplicateCandidate(rows: DbBookRow[]): BookDuplicateCandidate {
+export function isLiveProbableDuplicatePair(
+  rows: DbBookRow[],
+  bookId: number,
+  duplicateId: number,
+  dismissedPairs = dismissedDuplicatePairKeys()
+): boolean {
+  return probableDuplicateCandidateIds(rows, bookId, dismissedPairs).has(duplicateId);
+}
+
+function duplicateMergePlans(db: ReturnType<typeof getDb>, firstBookId: number, secondBookId: number) {
+  const rows = db.prepare(`
+    SELECT id, book_id, source_type, source_instance_id, external_id, hardcover_slug, grimmory_hardcover_id
+    FROM book_sources
+    WHERE book_id IN (?, ?)
+      AND source_type IN ('grimmory', 'hardcover', 'goodreads')
+  `).all(firstBookId, secondBookId) as {
+    id: number;
+    book_id: number;
+    source_type: "grimmory" | "hardcover" | "goodreads";
+    source_instance_id: number | null;
+    external_id: string;
+    hardcover_slug: string | null;
+    grimmory_hardcover_id: string | null;
+  }[];
+  const hasSource = (bookId: number, type: "grimmory" | "hardcover" | "goodreads") =>
+    rows.some((row) => row.book_id === bookId && row.source_type === type);
+
+  for (const [authoritativeBookId, grimmoryBookId] of [[firstBookId, secondBookId], [secondBookId, firstBookId]] as const) {
+    // Only repair the deliberate review pattern: one metadata-only record and
+    // one local Grimmory record. This avoids guessing for other duplicate types.
+    if (hasSource(authoritativeBookId, "grimmory")
+      || hasSource(grimmoryBookId, "hardcover")
+      || hasSource(grimmoryBookId, "goodreads")) continue;
+    const plans = rows
+      .filter((row) => row.book_id === grimmoryBookId && row.source_type === "grimmory" && row.source_instance_id != null)
+      .map((grimmory) => {
+        const goodreads = rows.find((row) => row.book_id === authoritativeBookId && row.source_type === "goodreads" && row.source_instance_id === grimmory.source_instance_id);
+        const hardcover = rows.find((row) => row.book_id === authoritativeBookId && row.source_type === "hardcover" && row.source_instance_id === grimmory.source_instance_id);
+        return goodreads || hardcover ? { authoritativeBookId, grimmoryBookId, profileId: grimmory.source_instance_id!, grimmory, goodreads, hardcover } : null;
+      })
+      .filter((plan): plan is NonNullable<typeof plan> => plan !== null);
+    if (plans.length > 0) return plans;
+  }
+  return [];
+}
+
+function dbToDuplicateCandidate(rows: DbBookRow[], mergeEligible: boolean): BookDuplicateCandidate {
   const summary = dbToSummary(rows);
   const row = rows[0]!;
   return {
@@ -317,16 +375,27 @@ function dbToDuplicateCandidate(rows: DbBookRow[]): BookDuplicateCandidate {
     goodreadsBookLink: summary.goodreadsBookLink,
     chaptarrBookId: summary.chaptarrBookId,
     seriesName: row.book_series_name,
-    seriesNumber: row.book_series_number
+    seriesNumber: row.book_series_number,
+    mergeEligible
   };
 }
 
-// In the new schema, source IDs are book-level (not per-profile), so all rows for the same
-// book will have identical source ID values. This function is kept for API compatibility but
-// will effectively always return false with the new unified book_sources design.
+// book_sources rows for Grimmory/Hardcover/Goodreads are now scoped per profile
+// instance (see schema v14), so the same book can legitimately carry different
+// cross-reference IDs on different profiles' own servers — that's not a conflict.
+// Evaluate each profile's own rows independently rather than aggregating IDs
+// across every profile sharing this book.
 function hasIdentityReviewConflict(rows: DbBookRow[]): boolean {
-  return hasAggregateSourceReviewConflict(rows, "goodreads")
-    || hasAggregateSourceReviewConflict(rows, "hardcover");
+  const byProfile = new Map<number, DbBookRow[]>();
+  for (const row of rows) {
+    const group = byProfile.get(row.profile_id) ?? [];
+    group.push(row);
+    byProfile.set(row.profile_id, group);
+  }
+  return Array.from(byProfile.values()).some((profileRows) =>
+    hasAggregateSourceReviewConflict(profileRows, "goodreads")
+      || hasAggregateSourceReviewConflict(profileRows, "hardcover")
+  );
 }
 
 function hasBookNeedsIdReview(rows: DbBookRow[]): boolean {
@@ -340,8 +409,8 @@ function matchesSource(row: Pick<DbBookRow, "book_id">, source: SourceFilter, ha
   return hardcoverBookIds.has(row.book_id) || goodreadsBookIds.has(row.book_id) || onDiskBookIds.has(row.book_id);
 }
 
-function matchesChaptarrPresence(bookId: number, mode: "in" | "out", chaptarrMonitoredBookIds: Set<number>): boolean {
-  return mode === "in" ? chaptarrMonitoredBookIds.has(bookId) : !chaptarrMonitoredBookIds.has(bookId);
+function matchesChaptarrPresence(bookId: number, mode: "in" | "out", chaptarrPresentBookIds: Set<number>): boolean {
+  return mode === "in" ? chaptarrPresentBookIds.has(bookId) : !chaptarrPresentBookIds.has(bookId);
 }
 
 function matchesAction(
@@ -352,23 +421,27 @@ function matchesAction(
   grimmoryBookIds: Set<number>,
   chaptarrMonitoredBookIds: Set<number>,
   chaptarrHasFileBookIds: Set<number>,
-  chaptarrIdMismatchBookIds: Set<number>,
+  activeChaptarrIdMismatchBookIds: Set<number>,
   absRuntimeMismatchBookIds: Set<number>
 ): boolean {
   switch (action) {
     case "id-review":
       return idReviewBookIds.has(row.book_id);
+    case "possible-duplicates":
+    // Keep existing shared/bookmarked links working while the client normalises
+    // them to the clearer public name.
     case "probable-duplicates":
       return probableDuplicateIds.has(row.book_id);
     case "add-to-chaptarr":
       return (row.hardcover_book_id !== null || row.goodreads_book_link !== null)
-        && !chaptarrMonitoredBookIds.has(row.book_id);
+        && !chaptarrMonitoredBookIds.has(row.book_id)
+        && !chaptarrHasFileBookIds.has(row.book_id);
     case "grab-in-chaptarr":
       return chaptarrMonitoredBookIds.has(row.book_id) && !chaptarrHasFileBookIds.has(row.book_id);
     case "review-in-grimmory":
       return chaptarrHasFileBookIds.has(row.book_id) && !grimmoryBookIds.has(row.book_id);
     case "fix-chaptarr-id":
-      return chaptarrIdMismatchBookIds.has(row.book_id);
+      return activeChaptarrIdMismatchBookIds.has(row.book_id);
     case "abs-runtime-mismatch":
       return absRuntimeMismatchBookIds.has(row.book_id);
     default:
@@ -399,9 +472,10 @@ function matchesFilters(row: DbBookRow, opts: {
   hardcoverBookIds: Set<number>;
   goodreadsBookIds: Set<number>;
   onDiskBookIds: Set<number>;
+  chaptarrPresentBookIds: Set<number>;
   chaptarrMonitoredBookIds: Set<number>;
   chaptarrHasFileBookIds: Set<number>;
-  chaptarrIdMismatchBookIds: Set<number>;
+  activeChaptarrIdMismatchBookIds: Set<number>;
   absRuntimeMismatchBookIds: Set<number>;
 }): boolean {
   if (opts.includedProfileIds.length > 0) {
@@ -411,8 +485,8 @@ function matchesFilters(row: DbBookRow, opts: {
     if (!row.has_any_ubs) return false;
   }
   if (opts.excludedProfileIds.includes(row.profile_id)) return false;
-  if (opts.action && !matchesAction(row, opts.action, opts.idReviewBookIds, opts.probableDuplicateIds, opts.grimmoryBookIds, opts.chaptarrMonitoredBookIds, opts.chaptarrHasFileBookIds, opts.chaptarrIdMismatchBookIds, opts.absRuntimeMismatchBookIds)) return false;
-  if (opts.chaptarr && !matchesChaptarrPresence(row.book_id, opts.chaptarr, opts.chaptarrMonitoredBookIds)) return false;
+  if (opts.action && !matchesAction(row, opts.action, opts.idReviewBookIds, opts.probableDuplicateIds, opts.grimmoryBookIds, opts.chaptarrMonitoredBookIds, opts.chaptarrHasFileBookIds, opts.activeChaptarrIdMismatchBookIds, opts.absRuntimeMismatchBookIds)) return false;
+  if (opts.chaptarr && !matchesChaptarrPresence(row.book_id, opts.chaptarr, opts.chaptarrPresentBookIds)) return false;
   if (opts.includedSources.length > 0 && !opts.includedSources.some((s) => matchesSource(row, s, opts.hardcoverBookIds, opts.goodreadsBookIds, opts.onDiskBookIds))) return false;
   if (opts.excludedSources.some((s) => matchesSource(row, s, opts.hardcoverBookIds, opts.goodreadsBookIds, opts.onDiskBookIds))) return false;
   const primarySource: SourceFilter = opts.includedSources.length === 1 ? opts.includedSources[0]! : "all";
@@ -711,6 +785,7 @@ function fetchRows(): DbBookRow[] {
       chap_src.chaptarr_monitored,
       chap_src.chaptarr_has_file,
       chap_src.chaptarr_id_mismatch,
+      CASE WHEN chap_dismiss.id IS NULL THEN 0 ELSE 1 END AS chaptarr_id_mismatch_dismissed,
       chap_src.source_media_type           AS chaptarr_media_type,
       chap_src.chaptarr_primary_file_path,
       -- Audiobookshelf source (book-level)
@@ -765,11 +840,15 @@ function fetchRows(): DbBookRow[] {
     FROM book_profile bp
     JOIN books b ON b.id = bp.book_id
     JOIN profiles p ON p.id = bp.profile_id
-    LEFT JOIN book_sources hc_src   ON hc_src.book_id   = bp.book_id AND hc_src.source_type   = 'hardcover'
-    LEFT JOIN book_sources gr_src   ON gr_src.book_id   = bp.book_id AND gr_src.source_type   = 'goodreads'
-    LEFT JOIN book_sources grim_src ON grim_src.book_id = bp.book_id AND grim_src.source_type = 'grimmory'
+    -- Per-instance sources are scoped to this row's own profile so a book with
+    -- multiple configured instances of the same integration doesn't fan out into
+    -- extra rows (or attribute another profile's source data to this profile).
+    LEFT JOIN book_sources hc_src   ON hc_src.book_id   = bp.book_id AND hc_src.source_type   = 'hardcover' AND hc_src.source_instance_id = bp.profile_id
+    LEFT JOIN book_sources gr_src   ON gr_src.book_id   = bp.book_id AND gr_src.source_type   = 'goodreads' AND gr_src.source_instance_id = bp.profile_id
+    LEFT JOIN book_sources grim_src ON grim_src.book_id = bp.book_id AND grim_src.source_type = 'grimmory' AND grim_src.source_instance_id = bp.profile_id
     LEFT JOIN book_sources chap_src ON chap_src.book_id = bp.book_id AND chap_src.source_type = 'chaptarr'
-    LEFT JOIN book_sources abs_src  ON abs_src.book_id  = bp.book_id AND abs_src.source_type  = 'audiobookshelf'
+    LEFT JOIN chaptarr_id_mismatch_dismissals chap_dismiss ON chap_dismiss.chaptarr_external_id = chap_src.external_id
+    LEFT JOIN book_sources abs_src  ON abs_src.book_id  = bp.book_id AND abs_src.source_type  = 'audiobookshelf' AND abs_src.source_instance_id = bp.profile_id
     LEFT JOIN user_book_states hc_ubs   ON hc_ubs.book_id   = bp.book_id AND hc_ubs.profile_id   = bp.profile_id AND hc_ubs.source_type   = 'hardcover'
     LEFT JOIN user_book_states gr_ubs   ON gr_ubs.book_id   = bp.book_id AND gr_ubs.profile_id   = bp.profile_id AND gr_ubs.source_type   = 'goodreads'
     LEFT JOIN user_book_states grim_ubs ON grim_ubs.book_id = bp.book_id AND grim_ubs.profile_id = bp.profile_id AND grim_ubs.source_type = 'grimmory'
@@ -794,7 +873,6 @@ function countGroups(rows: DbBookRow[]): number {
 // GET /api/books
 router.get("/", (req, res) => {
   const db = getDb();
-  reconcileBookIdentities(db);
 
   const VALID_SOURCES = new Set<SourceFilter>(["hardcover", "goodreads", "on-disk"]);
   const parseSourceList = (raw: string | undefined): SourceFilter[] =>
@@ -834,7 +912,8 @@ router.get("/", (req, res) => {
   const grimmoryBookIds = new Set(allRows.filter((r) => r.grimmory_book_id !== null).map((r) => r.book_id));
   const chaptarrMonitoredBookIds = new Set(allRows.filter((r) => Boolean(r.chaptarr_monitored)).map((r) => r.book_id));
   const chaptarrHasFileBookIds = new Set(allRows.filter((r) => Boolean(r.chaptarr_has_file)).map((r) => r.book_id));
-  const chaptarrIdMismatchBookIds = new Set(allRows.filter((r) => Boolean(r.chaptarr_id_mismatch)).map((r) => r.book_id));
+  const chaptarrPresentBookIds = new Set([...chaptarrMonitoredBookIds, ...chaptarrHasFileBookIds]);
+  const activeChaptarrIdMismatchBookIds = new Set(allRows.filter((r) => Boolean(r.chaptarr_id_mismatch) && !Boolean(r.chaptarr_id_mismatch_dismissed)).map((r) => r.book_id));
   const dismissedPairs = dismissedDuplicatePairKeys();
   const probableDuplicateIds = probableDuplicateBookIds(allRows, dismissedPairs);
   const absRuntimeMismatchBookIds = new Set(allRows.filter((r) => {
@@ -848,15 +927,15 @@ router.get("/", (req, res) => {
     return false;
   }).map((r) => r.book_id));
 
-  const filteredRows = allRows.filter((row) => matchesFilters(row, { includedProfileIds, excludedProfileIds, includedSources, excludedSources, status, chaptarr, action, q, idReviewBookIds, probableDuplicateIds, grimmoryBookIds, hardcoverBookIds, goodreadsBookIds, onDiskBookIds, chaptarrMonitoredBookIds, chaptarrHasFileBookIds, chaptarrIdMismatchBookIds, absRuntimeMismatchBookIds }));
+  const filteredRows = allRows.filter((row) => matchesFilters(row, { includedProfileIds, excludedProfileIds, includedSources, excludedSources, status, chaptarr, action, q, idReviewBookIds, probableDuplicateIds, grimmoryBookIds, hardcoverBookIds, goodreadsBookIds, onDiskBookIds, chaptarrPresentBookIds, chaptarrMonitoredBookIds, chaptarrHasFileBookIds, activeChaptarrIdMismatchBookIds, absRuntimeMismatchBookIds }));
   const summaries = groupByBook(filteredRows).map(dbToSummary).sort(compareSummaries(sortBy));
   const offset = (page - 1) * pageSize;
 
   const profileNames = db.prepare("SELECT id, display_name FROM profiles").all() as { id: number; display_name: string }[];
 
   const passesPresence = (row: DbBookRow) =>
-    (!chaptarr || matchesChaptarrPresence(row.book_id, chaptarr, chaptarrMonitoredBookIds)) &&
-    (!action || matchesAction(row, action, idReviewBookIds, probableDuplicateIds, grimmoryBookIds, chaptarrMonitoredBookIds, chaptarrHasFileBookIds, chaptarrIdMismatchBookIds, absRuntimeMismatchBookIds));
+    (!chaptarr || matchesChaptarrPresence(row.book_id, chaptarr, chaptarrPresentBookIds)) &&
+    (!action || matchesAction(row, action, idReviewBookIds, probableDuplicateIds, grimmoryBookIds, chaptarrMonitoredBookIds, chaptarrHasFileBookIds, activeChaptarrIdMismatchBookIds, absRuntimeMismatchBookIds));
   const passesSource = (row: DbBookRow) =>
     (includedSources.length === 0 || includedSources.some((s) => matchesSource(row, s, hardcoverBookIds, goodreadsBookIds, onDiskBookIds))) &&
     !excludedSources.some((s) => matchesSource(row, s, hardcoverBookIds, goodreadsBookIds, onDiskBookIds));
@@ -869,12 +948,12 @@ router.get("/", (req, res) => {
   const sourceFilteredRows = presenceRows.filter(passesSource);
   const allProfileSourceRows = allRows.filter(passesPresence).filter(passesSource);
 
-  const chaptarrInCount = countGroups(profileRows.filter((row) => matchesChaptarrPresence(row.book_id, "in", chaptarrMonitoredBookIds)));
-  const chaptarrOutCount = countGroups(profileRows.filter((row) => matchesChaptarrPresence(row.book_id, "out", chaptarrMonitoredBookIds)));
-  const addToChaptarrCount = countGroups(profileRows.filter((row) => matchesAction(row, "add-to-chaptarr", idReviewBookIds, probableDuplicateIds, grimmoryBookIds, chaptarrMonitoredBookIds, chaptarrHasFileBookIds, chaptarrIdMismatchBookIds, absRuntimeMismatchBookIds)));
-  const grabInChaptarrCount = countGroups(profileRows.filter((row) => matchesAction(row, "grab-in-chaptarr", idReviewBookIds, probableDuplicateIds, grimmoryBookIds, chaptarrMonitoredBookIds, chaptarrHasFileBookIds, chaptarrIdMismatchBookIds, absRuntimeMismatchBookIds)));
-  const reviewInGrimmoryCount = countGroups(profileRows.filter((row) => matchesAction(row, "review-in-grimmory", idReviewBookIds, probableDuplicateIds, grimmoryBookIds, chaptarrMonitoredBookIds, chaptarrHasFileBookIds, chaptarrIdMismatchBookIds, absRuntimeMismatchBookIds)));
-  const fixChaptarrIdCount = countGroups(profileRows.filter((row) => matchesAction(row, "fix-chaptarr-id", idReviewBookIds, probableDuplicateIds, grimmoryBookIds, chaptarrMonitoredBookIds, chaptarrHasFileBookIds, chaptarrIdMismatchBookIds, absRuntimeMismatchBookIds)));
+  const chaptarrInCount = countGroups(profileRows.filter((row) => matchesChaptarrPresence(row.book_id, "in", chaptarrPresentBookIds)));
+  const chaptarrOutCount = countGroups(profileRows.filter((row) => matchesChaptarrPresence(row.book_id, "out", chaptarrPresentBookIds)));
+  const addToChaptarrCount = countGroups(profileRows.filter((row) => matchesAction(row, "add-to-chaptarr", idReviewBookIds, probableDuplicateIds, grimmoryBookIds, chaptarrMonitoredBookIds, chaptarrHasFileBookIds, activeChaptarrIdMismatchBookIds, absRuntimeMismatchBookIds)));
+  const grabInChaptarrCount = countGroups(profileRows.filter((row) => matchesAction(row, "grab-in-chaptarr", idReviewBookIds, probableDuplicateIds, grimmoryBookIds, chaptarrMonitoredBookIds, chaptarrHasFileBookIds, activeChaptarrIdMismatchBookIds, absRuntimeMismatchBookIds)));
+  const reviewInGrimmoryCount = countGroups(profileRows.filter((row) => matchesAction(row, "review-in-grimmory", idReviewBookIds, probableDuplicateIds, grimmoryBookIds, chaptarrMonitoredBookIds, chaptarrHasFileBookIds, activeChaptarrIdMismatchBookIds, absRuntimeMismatchBookIds)));
+  const fixChaptarrIdCount = countGroups(profileRows.filter((row) => matchesAction(row, "fix-chaptarr-id", idReviewBookIds, probableDuplicateIds, grimmoryBookIds, chaptarrMonitoredBookIds, chaptarrHasFileBookIds, activeChaptarrIdMismatchBookIds, absRuntimeMismatchBookIds)));
   const idReviewCount = countGroups(profileRows.filter((row) => idReviewBookIds.has(row.book_id)));
   const probableDuplicateCount = countGroups(profileRows.filter((row) => probableDuplicateIds.has(row.book_id)));
 
@@ -994,6 +1073,99 @@ router.post("/:bookId/duplicates/:duplicateId/dismiss", (req, res) => {
   res.json({ ok: true });
 });
 
+// POST /api/books/:bookId/duplicates/:duplicateId/merge
+router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
+  const db = getDb();
+  const bookId = parseInt(req.params["bookId"] ?? "0", 10);
+  const duplicateId = parseInt(req.params["duplicateId"] ?? "0", 10);
+  if (!Number.isFinite(bookId) || !Number.isFinite(duplicateId) || bookId <= 0 || duplicateId <= 0 || bookId === duplicateId) {
+    res.status(400).json({ error: "Invalid duplicate pair" }); return;
+  }
+  if (!isLiveProbableDuplicatePair(fetchRows(), bookId, duplicateId)) {
+    res.status(400).json({ error: "Merge requires a live probable-duplicate pair" }); return;
+  }
+  const plans = duplicateMergePlans(db, bookId, duplicateId);
+  if (plans.length === 0) {
+    res.status(400).json({ error: "Merge requires an authoritative Goodreads or Hardcover record and a Grimmory record" }); return;
+  }
+  try {
+    const resolvedPlans: Array<{ plan: typeof plans[number]; baseUrl: string; token: string; grimmoryLocalId: number }> = [];
+    for (const plan of plans) {
+      const connection = db.prepare("SELECT base_url, username, password FROM grimmory_connections WHERE profile_id = ?").get(plan.profileId) as { base_url: string; username: string; password: string } | undefined;
+      const baseUrl = connection?.base_url?.trim() || getSetting("grimmory.baseUrl", "");
+      const password = connection?.password;
+      if (!baseUrl || !connection?.username || !password) { res.status(400).json({ error: "Grimmory connection is not configured" }); return; }
+      const token = await getGrimmoryToken(baseUrl, connection.username, password);
+      if (!token) { res.status(502).json({ error: "Could not authenticate with Grimmory" }); return; }
+      const grimmoryLocalId = Number(plan.grimmory.external_id);
+      if (!Number.isSafeInteger(grimmoryLocalId) || grimmoryLocalId <= 0) {
+        res.status(400).json({ error: "Grimmory record has a non-numeric local ID" }); return;
+      }
+      resolvedPlans.push({ plan, baseUrl, token, grimmoryLocalId });
+    }
+
+    for (const { plan, baseUrl, token, grimmoryLocalId } of resolvedPlans) {
+      const hardcoverId = plan.hardcover?.hardcover_slug?.trim() || plan.grimmory.grimmory_hardcover_id?.trim() || undefined;
+      await writeAndPersistDuplicateMergePlan(db, {
+        bookId: plan.grimmoryBookId, profileId: plan.profileId,
+        goodreadsId: plan.goodreads?.external_id ?? null, hardcoverBookId: plan.hardcover?.external_id ?? null,
+        hardcoverId: hardcoverId ?? null
+      }, async () => {
+        await writeGrimmoryExternalIds(baseUrl, token, grimmoryLocalId, {
+          ...(plan.goodreads?.external_id ? { goodreadsId: plan.goodreads.external_id } : {}),
+          ...(plan.hardcover?.external_id ? { hardcoverBookId: plan.hardcover.external_id, hardcoverId } : {})
+        });
+      });
+    }
+    db.transaction(() => {
+      reconcileBookIdentities(db);
+    })();
+    const reconciled = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(plans[0]!.grimmory.id) as { book_id: number } | undefined;
+    if (!reconciled) throw new Error("Reconciled Grimmory record could not be found");
+    logger.info("Merged duplicate by repairing Grimmory authoritative IDs", { bookId, duplicateId, plans: plans.map((plan) => ({ authoritativeBookId: plan.authoritativeBookId, grimmoryBookId: plan.grimmoryBookId, profileId: plan.profileId, goodreads: Boolean(plan.goodreads), hardcover: Boolean(plan.hardcover) })) });
+    res.json({ ok: true, bookId: reconciled.book_id });
+  } catch (err) { logger.warn("Failed duplicate merge", { bookId, duplicateId, error: err }); res.status(502).json({ error: err instanceof Error ? err.message : String(err) }); }
+});
+
+// POST /api/books/:bookId/chaptarr-id-mismatch/dismiss
+router.post("/:bookId/chaptarr-id-mismatch/dismiss", (req, res) => {
+  const db = getDb();
+  const bookId = parseInt(req.params["bookId"] ?? "0", 10);
+  if (!Number.isFinite(bookId) || bookId <= 0) {
+    res.status(400).json({ error: "Invalid book id" });
+    return;
+  }
+
+  const rows = db.prepare(`
+    SELECT external_id
+    FROM book_sources
+    WHERE book_id = ?
+      AND source_type = 'chaptarr'
+      AND COALESCE(chaptarr_id_mismatch, 0) = 1
+  `).all(bookId) as { external_id: string }[];
+
+  if (rows.length === 0) {
+    res.status(404).json({ error: "No Chaptarr ID mismatch is active for this book" });
+    return;
+  }
+
+  const insert = db.prepare(`
+    INSERT INTO chaptarr_id_mismatch_dismissals (chaptarr_external_id)
+    VALUES (?)
+    ON CONFLICT(chaptarr_external_id) DO UPDATE SET dismissed_at = datetime('now')
+  `);
+  const transaction = db.transaction(() => {
+    for (const row of rows) insert.run(row.external_id);
+  });
+  transaction();
+
+  logger.info("Dismissed Chaptarr ID mismatch", {
+    bookId,
+    chaptarrExternalIds: rows.map((row) => row.external_id)
+  });
+  res.json({ ok: true, dismissed: rows.length });
+});
+
 // POST /api/books/:bookId/relationships/:profileId/write-grimmory-id
 // :profileId corresponds to BookRelationship.id (which equals profile_id in the new schema)
 router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, res) => {
@@ -1006,11 +1178,12 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
     return;
   }
 
-  // Grimmory book is book-level — look it up from book_sources
+  // Grimmory local id/metadata is instance-specific — scope to this profile's own
+  // Grimmory connection so the write below targets the correct server/book.
   const grimSrc = db.prepare(`
     SELECT external_id, grimmory_hardcover_id
-    FROM book_sources WHERE source_type = 'grimmory' AND book_id = ?
-  `).get(bookId) as { external_id: string; grimmory_hardcover_id: string | null } | undefined;
+    FROM book_sources WHERE source_type = 'grimmory' AND source_instance_id = ? AND book_id = ?
+  `).get(profileId, bookId) as { external_id: string; grimmory_hardcover_id: string | null } | undefined;
 
   if (!grimSrc) {
     res.status(400).json({ error: "No Grimmory relationship is available for this book" });
@@ -1020,13 +1193,13 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
 
   // Grimmory connection is per-profile
   const gc = db.prepare(`
-    SELECT base_url, username, encrypted_password
+    SELECT base_url, username, password
     FROM grimmory_connections WHERE profile_id = ?
-  `).get(profileId) as { base_url: string; username: string; encrypted_password: string } | undefined;
+  `).get(profileId) as { base_url: string; username: string; password: string } | undefined;
 
   const baseUrl = gc?.base_url?.trim() || getSetting("grimmory.baseUrl", "");
   const username = gc?.username;
-  const password = decryptCredential(gc?.encrypted_password);
+  const password = gc?.password;
   if (!baseUrl || !username || !password) {
     res.status(400).json({ error: "Grimmory connection is not configured" });
     return;
@@ -1040,9 +1213,12 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
     }
 
     if (source === "goodreads") {
+      // Scoped to this profile's own Goodreads instance — otherwise this write could
+      // push another profile's selected Goodreads relationship into this profile's
+      // Grimmory server.
       const grSrc = db.prepare(`
-        SELECT external_id FROM book_sources WHERE source_type = 'goodreads' AND book_id = ?
-      `).get(bookId) as { external_id: string } | undefined;
+        SELECT external_id FROM book_sources WHERE source_type = 'goodreads' AND source_instance_id = ? AND book_id = ?
+      `).get(profileId, bookId) as { external_id: string } | undefined;
       const goodreadsId = grSrc?.external_id?.trim();
       if (!goodreadsId) {
         res.status(400).json({ error: "No Goodreads ID is available for this book" });
@@ -1051,13 +1227,14 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
       await writeGrimmoryExternalIds(baseUrl, token, grimmoryBookId, { goodreadsId });
       db.prepare(`
         UPDATE book_sources SET grimmory_goodreads_id = ?, last_modified_at = datetime('now')
-        WHERE book_id = ? AND source_type = 'grimmory'
-      `).run(goodreadsId, bookId);
+        WHERE book_id = ? AND source_type = 'grimmory' AND source_instance_id = ?
+      `).run(goodreadsId, bookId, profileId);
       logger.info("Wrote Goodreads ID to Grimmory metadata", { bookId, profileId, grimmoryBookId, goodreadsId });
     } else {
+      // Scoped to this profile's own Hardcover instance — same reasoning as Goodreads above.
       const hcSrc = db.prepare(`
-        SELECT external_id, hardcover_slug FROM book_sources WHERE source_type = 'hardcover' AND book_id = ?
-      `).get(bookId) as { external_id: string; hardcover_slug: string | null } | undefined;
+        SELECT external_id, hardcover_slug FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ? AND book_id = ?
+      `).get(profileId, bookId) as { external_id: string; hardcover_slug: string | null } | undefined;
       if (!hcSrc?.external_id) {
         res.status(400).json({ error: "No Hardcover ID is available for this book" });
         return;
@@ -1067,8 +1244,8 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
       await writeGrimmoryExternalIds(baseUrl, token, grimmoryBookId, { hardcoverBookId, hardcoverId: hardcoverId ?? undefined });
       db.prepare(`
         UPDATE book_sources SET grimmory_hardcover_book_id = ?, grimmory_hardcover_id = ?, last_modified_at = datetime('now')
-        WHERE book_id = ? AND source_type = 'grimmory'
-      `).run(hardcoverBookId, hardcoverId, bookId);
+        WHERE book_id = ? AND source_type = 'grimmory' AND source_instance_id = ?
+      `).run(hardcoverBookId, hardcoverId, bookId, profileId);
       logger.info("Wrote Hardcover ID to Grimmory metadata", { bookId, profileId, grimmoryBookId, hardcoverBookId, hardcoverId });
     }
 
@@ -1082,8 +1259,6 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
 
 // GET /api/books/:id
 router.get("/:id", (req, res) => {
-  const db = getDb();
-  reconcileBookIdentities(db);
   const id = parseInt(req.params["id"] ?? "0", 10);
   const allRows = fetchRows();
   const rows = allRows.filter((row) => row.book_id === id);
@@ -1092,11 +1267,13 @@ router.get("/:id", (req, res) => {
   const duplicateIds = probableDuplicateCandidateIds(allRows, id);
   const duplicateCandidates = groupByBook(allRows)
     .filter((group) => duplicateIds.has(group[0]!.book_id))
-    .map(dbToDuplicateCandidate)
+    .map((group) => dbToDuplicateCandidate(group, duplicateMergePlans(getDb(), id, group[0]!.book_id).length > 0))
     .sort((a, b) => a.title.localeCompare(b.title));
 
   const summary = dbToSummary(rows);
-  const hasReviewConflict = hasIdentityReviewConflict(rows);
+  const hasActiveChaptarrIdMismatch = rows.some((candidate) =>
+    Boolean(candidate.chaptarr_id_mismatch) && !Boolean(candidate.chaptarr_id_mismatch_dismissed)
+  );
   const row = rows[0]!;
   const detail: BookDetail = {
     ...summary,
@@ -1110,10 +1287,11 @@ router.get("/:id", (req, res) => {
     grimmoryGoodreadsId: first(rows, (candidate) => candidate.grimmory_goodreads_id),
     goodreadsBookId: row.book_goodreads_book_id,
     hardcoverExpected: rows.some((r) => r.hardcover_book_id !== null),
+    hasActiveChaptarrIdMismatch,
     duplicateCandidates,
     relationships: bestRelationshipRowsByProfile(activeRelationshipRows).map((relationshipRow) => ({
       ...dbToRelationship(relationshipRow),
-      needsIdReview: hasReviewConflict
+      needsIdReview: hasIdentityReviewConflict([relationshipRow])
     }))
   };
 

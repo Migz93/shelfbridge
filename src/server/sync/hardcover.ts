@@ -1,5 +1,6 @@
 import type { TestResult } from "../../shared/types.js";
 import { logger } from "../logger.js";
+import { fetchIntegration } from "../security/outbound.js";
 
 const HARDCOVER_API = "https://api.hardcover.app/v1/graphql";
 
@@ -53,7 +54,7 @@ export interface HardcoverEdition {
 }
 
 export async function hardcoverQuery<T>(token: string, query: string, variables?: Record<string, unknown>): Promise<T> {
-  const res = await fetch(HARDCOVER_API, {
+  const res = await fetchIntegration(HARDCOVER_API, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -201,7 +202,10 @@ const BOOK_EDITIONS_QUERY = `
     books(where: { id: { _eq: $bookId } }) {
       editions(order_by: [{ users_count: desc }]) {
         id
+        edition_format
+        asin
         pages
+        audio_seconds
         users_count
       }
     }
@@ -212,9 +216,25 @@ const BOOK_EDITIONS_QUERY = `
 export async function fetchEditionsForBook(
   token: string,
   bookId: number
-): Promise<Array<{ id: number; pages: number | null; users_count: number | null }>> {
+): Promise<Array<{
+  id: number;
+  edition_format: string | null;
+  asin: string | null;
+  pages: number | null;
+  audio_seconds: number | null;
+  users_count: number | null;
+}>> {
   const data = await hardcoverQuery<{
-    books: Array<{ editions: Array<{ id: number; pages: number | null; users_count: number | null }> }>
+    books: Array<{
+      editions: Array<{
+        id: number;
+        edition_format: string | null;
+        asin: string | null;
+        pages: number | null;
+        audio_seconds: number | null;
+        users_count: number | null;
+      }>
+    }>
   }>(token, BOOK_EDITIONS_QUERY, { bookId });
   return data.books?.[0]?.editions ?? [];
 }

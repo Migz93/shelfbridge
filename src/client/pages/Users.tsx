@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   BookOpen,
@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { apiGet, apiPatch, apiPost } from "../lib/api";
 import { useLiveRefresh } from "../lib/useLiveRefresh";
+import { useModalA11y } from "../lib/useModalA11y";
 import { formatRelativeTime } from "../lib/utils";
 import { ConnectionBadge, Field, PasswordInput, SelectInput, TextInput, ToggleField } from "../components/FormControls";
 import { RunSyncButton } from "../components/RunSyncButton";
@@ -952,7 +953,7 @@ function HardcoverTabContent({
             Choose an optional import list, an optional destination shelf for all matched books, and then any per-list mappings you want to keep in sync.
           </div>
 
-          {!hardcoverEnabled || !profile?.hardcover ? (
+          {!profile?.hardcover ? (
             <div className="text-sm text-on-surface-variant bg-background-container rounded-xl px-4 py-3 border border-outline-variant/20">
               Connect Hardcover first to configure list mappings.
             </div>
@@ -1328,17 +1329,22 @@ function TestConnectionRow({
 }
 
 function ModalShell({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose(); }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  const modalRef = useModalA11y(true, onClose);
+  const titleId = useId();
 
   return (
     <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-background-container rounded-2xl w-full max-w-4xl max-h-[90vh] border border-outline-variant/20 shadow-xl flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={modalRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        className="bg-background-container rounded-2xl w-full max-w-4xl max-h-[90vh] border border-outline-variant/20 shadow-xl flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex items-center justify-between px-6 py-5">
-          <h2 className="font-headline text-xl font-semibold text-on-surface">{title}</h2>
+          <h2 id={titleId} className="font-headline text-xl font-semibold text-on-surface">{title}</h2>
           <button onClick={onClose} className="p-2 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-background-container-high transition-colors">
             <X size={18} />
           </button>

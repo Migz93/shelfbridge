@@ -27,9 +27,48 @@ if (getSetting("app.trustProxy", "false") === "true") {
   app.set("trust proxy", 1);
   logger.info("Trust proxy enabled — using one trusted proxy hop for client IP identification");
 }
-app.use(helmet({ contentSecurityPolicy: false }));
+// The client is a same-origin Vite/React bundle with no inline scripts, but it does use
+// inline `style` attributes, so that needs an explicit allowance. Fonts are bundled
+// locally (see index.css), so no third-party font host needs to be whitelisted.
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'"],
+      styleSrcAttr: ["'unsafe-inline'"],
+      fontSrc: ["'self'"],
+      imgSrc: ["'self'", "data:"],
+      connectSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      frameAncestors: ["'self'"],
+      // Disable upgrade-insecure-requests: this app runs over plain HTTP in
+      // the default Docker setup, so this directive would cause browsers to
+      // rewrite HTTP sub-requests to HTTPS and break the UI. Must be set to
+      // null (not deleted) so Helmet's useDefaults logic doesn't re-add it.
+      "upgrade-insecure-requests": null
+    }
+  },
+  // Disable HSTS: not appropriate for a plain-HTTP self-hosted deployment.
+  hsts: false
+}));
+logger.info("Transport security policy configured for plain-HTTP deployment", {
+  upgradeInsecureRequests: false,
+  hsts: false
+});
 app.use(express.json());
 app.use(sessionMiddleware);
+// Applies to every route (including /images and the static/catch-all client routes below),
+// so file-serving and auth-checked routes outside /api aren't left unlimited.
+const globalLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 600,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+app.use(globalLimiter);
+
 const apiLimiter = rateLimit({
   windowMs: 60_000,
   max: 300,

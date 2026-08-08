@@ -3,6 +3,7 @@ import { NavLink, Link } from "react-router-dom";
 import { LayoutDashboard, BookOpen, Headphones, Users, History, Settings, Server, ExternalLink, Download, LogOut } from "lucide-react";
 import { apiGet } from "../lib/api";
 import { SETTINGS_CHANGED_EVENT } from "../lib/settingsEvents";
+import { useModalA11y } from "../lib/useModalA11y";
 import type { AboutInfo, AppSettings } from "../../shared/types";
 
 const NAV_ITEMS = [
@@ -22,6 +23,7 @@ interface SidebarProps {
 
 export default function Sidebar({ mobileOpen, onMobileClose, onLogout }: SidebarProps) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const drawerRef = useModalA11y<HTMLElement>(mobileOpen, onMobileClose);
 
   useEffect(() => {
     function refreshSettings() {
@@ -34,21 +36,26 @@ export default function Sidebar({ mobileOpen, onMobileClose, onLogout }: Sidebar
   }, []);
 
   const externalLinks: { href: string; icon: React.ElementType; label: string }[] = [];
-  if (settings?.grimmory.baseUrl.trim()) {
+  if (settings?.grimmory.baseUrl.trim() && settings.grimmory.addMenuLink) {
     externalLinks.push({ href: settings.grimmory.baseUrl, icon: ExternalLink, label: "Grimmory" });
   }
-  if (settings?.download.baseUrl.trim()) {
+  if (settings?.download.baseUrl.trim() && settings.download.addMenuLink) {
     externalLinks.push({ href: settings.download.baseUrl, icon: Download, label: "Shelfmark" });
   }
-  if (settings?.chaptarr.baseUrl.trim()) {
+  if (settings?.chaptarr.baseUrl.trim() && settings.chaptarr.addMenuLink) {
     externalLinks.push({ href: settings.chaptarr.baseUrl, icon: ExternalLink, label: "Chaptarr" });
   }
-  if (settings?.audiobookshelf.baseUrl.trim()) {
+  if (settings?.audiobookshelf.baseUrl.trim() && settings.audiobookshelf.addMenuLink) {
     externalLinks.push({ href: settings.audiobookshelf.baseUrl, icon: Headphones, label: "Audiobookshelf" });
   }
 
   return (
     <aside
+      ref={drawerRef}
+      role={mobileOpen ? "dialog" : undefined}
+      aria-modal={mobileOpen ? true : undefined}
+      aria-label={mobileOpen ? "Navigation" : undefined}
+      tabIndex={mobileOpen ? -1 : undefined}
       className={`fixed inset-y-0 left-0 w-64 flex flex-col bg-background-container-low border-r border-outline-variant/20 z-40 transition-transform duration-300
         md:translate-x-0 ${mobileOpen ? "translate-x-0" : "-translate-x-full"}`}
     >
@@ -113,9 +120,12 @@ export default function Sidebar({ mobileOpen, onMobileClose, onLogout }: Sidebar
 
 function VersionFooter({ onMobileClose, onLogout }: { onMobileClose: () => void; onLogout: () => void }) {
   const [info, setInfo] = useState<AboutInfo | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
-    apiGet<AboutInfo>("/api/settings/about").then(setInfo).catch(() => null);
+    apiGet<AboutInfo>("/api/settings/about")
+      .then(setInfo)
+      .catch(() => setLoadFailed(true));
   }, []);
 
   const subLabel = info
@@ -123,8 +133,10 @@ function VersionFooter({ onMobileClose, onLogout }: { onMobileClose: () => void;
       ? `v${info.version}`
       : info.commitSha === "local"
         ? "local"
-        : info.commitSha
-    : "...";
+        : info.commitSha.slice(0, 7)
+    : loadFailed
+      ? "unavailable"
+      : "...";
 
   return (
     <div className="px-3 pb-3 space-y-1">
