@@ -5,11 +5,6 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: read
-  packages: write
-  security-events: write
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -21,9 +16,15 @@ jobs:
   docker:
     name: Build and Publish Release Image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
@@ -66,12 +67,14 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Scan published release image with Trivy
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+      - name: Scan published AMD64 release image with Trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_PLATFORM: linux/amd64
         with:
           image-ref: ${{ env.IMAGE_NAME }}@${{ steps.docker-build.outputs.digest }}
           format: sarif
-          output: trivy-results.sarif
+          output: trivy-results-amd64.sarif
           exit-code: "0"
           ignore-unfixed: true
           scanners: vuln
@@ -79,8 +82,32 @@ jobs:
           limit-severities-for-sarif: true
           timeout: 10m
 
-      - name: Upload Trivy results to GitHub Security
+      - name: Upload AMD64 Trivy results to GitHub Security
         if: always()
         uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
         with:
-          sarif_file: trivy-results.sarif
+          sarif_file: trivy-results-amd64.sarif
+          category: trivy-linux-amd64
+
+      - name: Scan published ARM64 release image with Trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_PLATFORM: linux/arm64
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}@${{ steps.docker-build.outputs.digest }}
+          format: sarif
+          output: trivy-results-arm64.sarif
+          exit-code: "0"
+          ignore-unfixed: true
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          limit-severities-for-sarif: true
+          timeout: 10m
+          skip-setup-trivy: true
+
+      - name: Upload ARM64 Trivy results to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        with:
+          sarif_file: trivy-results-arm64.sarif
+          category: trivy-linux-arm64
