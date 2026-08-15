@@ -78,6 +78,12 @@ router.get("/", (_req, res) => {
 router.patch("/", (req, res) => {
   const parsed = settingsPatchSchema.safeParse(req.body);
   if (!parsed.success) {
+    const unsafeUrlIssue = parsed.error.issues.find(
+      (issue) => issue.code === "custom" && issue.path[issue.path.length - 1] === "baseUrl"
+    );
+    if (unsafeUrlIssue) {
+      logger.warn("Rejected unsafe integration URL update", { error: unsafeUrlIssue.message });
+    }
     res.status(400).json(validationErrorResponse(parsed.error));
     return;
   }
