@@ -9,7 +9,7 @@ import { scheduler } from "../scheduler.js";
 import { getRecentLogs, readRecentMachineLogs } from "../logger.js";
 import { APP_VERSION, BUILD_CHANNEL, BUILD_COMMIT } from "../version.js";
 import { logger } from "../logger.js";
-import { UnsafeIntegrationUrlError, validateIntegrationUrl } from "../security/outbound.js";
+import { validateIntegrationUrl } from "../security/outbound.js";
 import {
   chaptarrTestSchema,
   integrationTestSchema,
@@ -82,20 +82,6 @@ router.patch("/", (req, res) => {
     return;
   }
   const body = parsed.data;
-
-  try {
-    if (body.grimmory?.baseUrl !== undefined) validateIntegrationUrl(body.grimmory.baseUrl);
-    if (body.download?.baseUrl !== undefined) validateIntegrationUrl(body.download.baseUrl);
-    if (body.chaptarr?.baseUrl !== undefined) validateIntegrationUrl(body.chaptarr.baseUrl);
-    if (body.audiobookshelf?.baseUrl !== undefined) validateIntegrationUrl(body.audiobookshelf.baseUrl);
-  } catch (error) {
-    if (error instanceof UnsafeIntegrationUrlError) {
-      logger.warn("Rejected unsafe integration URL update", { error: error.message });
-      res.status(400).json({ error: error.message });
-      return;
-    }
-    throw error;
-  }
 
   applySettingsPatch(getDb(), body);
   res.json(readSettings());

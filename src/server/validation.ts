@@ -37,7 +37,7 @@ const optionalIntegrationUrlSchema = z.string().superRefine((value, context) => 
 }).optional();
 
 const integrationSettingsSchema = z.object({
-  baseUrl: z.string().optional(),
+  baseUrl: optionalIntegrationUrlSchema,
   addMenuLink: z.boolean().optional()
 }).strict();
 

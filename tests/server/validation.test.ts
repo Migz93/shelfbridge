@@ -14,7 +14,7 @@ import {
   syncRunSchema,
   writeGrimmoryIdSchema
 } from "../../src/server/validation.js";
-import { replaceHardcoverListMappings } from "../../src/server/routes/profiles.js";
+import { parseProfileId, replaceHardcoverListMappings } from "../../src/server/routes/profiles.js";
 import settingsRouter, { applySettingsPatch } from "../../src/server/routes/settings.js";
 import { parsePositiveId } from "../../src/server/routes/books.js";
 import { createTestDatabase } from "./test-db.js";
@@ -24,6 +24,8 @@ test("settings patches reject malformed values and unsupported conflict strategi
   assert.equal(settingsPatchSchema.safeParse({ chaptarr: { addMenuLink: "true" } }).success, false);
   assert.equal(settingsPatchSchema.safeParse({ sync: { historyRetentionDays: -1 } }).success, false);
   assert.equal(settingsPatchSchema.safeParse({ sync: { conflictStrategy: "last_write_wins" } }).success, false);
+  assert.equal(settingsPatchSchema.safeParse({ grimmory: { baseUrl: "ftp://integration.example.test" } }).success, false);
+  assert.equal(settingsPatchSchema.safeParse({ chaptarr: { baseUrl: "" } }).success, true);
   assert.equal(settingsPatchSchema.safeParse({ unexpected: true }).success, false);
   assert.equal(settingsPatchSchema.safeParse({ sync: { historyRetentionDays: 7 } }).success, true);
 });
@@ -68,6 +70,14 @@ test("book mutation IDs must be complete positive integers", () => {
   assert.equal(parsePositiveId("0"), null);
 });
 
+test("profile mutation IDs must be complete positive integers", () => {
+  assert.equal(parseProfileId("12"), 12);
+  assert.equal(parseProfileId("1e3"), null);
+  assert.equal(parseProfileId("0x10"), null);
+  assert.equal(parseProfileId("+12"), null);
+  assert.equal(parseProfileId(" 12 "), null);
+});
+
 test("mutating routes return structured validation errors before database access", async () => {
   const app = express();
   app.use(express.json());
@@ -81,12 +91,12 @@ test("mutating routes return structured validation errors before database access
     const response = await fetch(`http://127.0.0.1:${address.port}/`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sync: { historyRetentionDays: -1 } })
+      body: JSON.stringify({ grimmory: { baseUrl: "ftp://integration.example.test" } })
     });
     assert.equal(response.status, 400);
     assert.deepEqual(await response.json(), {
       error: "Invalid request",
-      fieldErrors: { sync: ["Too small: expected number to be >0"] },
+      fieldErrors: { grimmory: ["Integration URL must use HTTP or HTTPS"] },
       formErrors: []
     });
   } finally {
