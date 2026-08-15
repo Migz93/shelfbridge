@@ -1,6 +1,18 @@
 import { z } from "zod";
+import { UnsafeIntegrationUrlError, validateOutboundUrl } from "./security/outbound.js";
 
 const conflictStrategySchema = z.enum(["latest_wins", "grimmory_wins", "hardcover_wins"]);
+
+const suppliedOutboundUrlSchema = z.string().superRefine((value, context) => {
+  try {
+    validateOutboundUrl(value);
+  } catch (error) {
+    context.addIssue({
+      code: "custom",
+      message: error instanceof UnsafeIntegrationUrlError ? error.message : "Integration URL must be valid"
+    });
+  }
+});
 
 const integrationSettingsSchema = z.object({
   baseUrl: z.string().optional(),
@@ -26,7 +38,7 @@ export const syncRunSchema = z.object({
 }).strict();
 
 export const integrationTestSchema = z.object({
-  baseUrl: z.string().optional()
+  baseUrl: suppliedOutboundUrlSchema.optional()
 }).strict();
 
 export const chaptarrTestSchema = integrationTestSchema.extend({
@@ -36,7 +48,7 @@ export const chaptarrTestSchema = integrationTestSchema.extend({
 export const profileGrimmoryTestSchema = z.object({
   username: z.string().optional(),
   password: z.string().optional(),
-  baseUrl: z.string().optional()
+  baseUrl: suppliedOutboundUrlSchema.optional()
 }).strict();
 
 export const profileHardcoverTestSchema = z.object({ apiToken: z.string().optional() }).strict();

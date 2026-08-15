@@ -59,8 +59,8 @@ call an integration. Invalid requests return `400` with this shape:
 ```
 
 `fieldErrors` maps request fields to one or more messages; `formErrors` holds
-request-level problems such as unsupported fields. Profile and mapping routes
-return `404` when the referenced profile does not exist.
+request-level problems such as unsupported fields. Profile mutation and mapping
+replacement routes return `404` when the referenced profile does not exist.
 
 ---
 
