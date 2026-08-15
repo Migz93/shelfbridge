@@ -14,7 +14,10 @@ test("integration URLs reject invalid schemes, credentials, and non-strings", ()
 });
 
 test("outbound integration requests reject an empty URL", () => {
-  assert.throws(() => validateOutboundUrl(""), UnsafeIntegrationUrlError);
+  assert.throws(
+    () => validateOutboundUrl(""),
+    (error: unknown) => error instanceof UnsafeIntegrationUrlError && error.message === "Integration URL must not be empty"
+  );
 });
 
 test("integration requests disable automatic redirects", async () => {

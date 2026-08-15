@@ -204,8 +204,10 @@ so all tests start already authenticated.
 | Settings, profiles, and sync request schemas | Invalid booleans, retention values, conflict strategies, malformed connections, and profile IDs are rejected before a route can access the database |
 | Connection tests, job controls, and book actions | Malformed test payloads, schedule intervals, and external-ID write sources are rejected |
 | Mutating route IDs | Book-action IDs must be complete positive integers, not permissive `parseInt` prefixes |
+| Route validation contract | A malformed settings mutation returns the documented structured 400 response before database access |
 | Mapping request schemas | Malformed Goodreads and Hardcover mappings are rejected before replacement |
 | Failed mapping replacement | A failing insert rolls back the delete-and-reinsert transaction, retaining the prior mappings |
+| Failed multi-setting update | A later settings write failure rolls back all earlier writes in the same patch |
 
 ### `tests/server/sync-decision.test.ts` — Sync decision table
 

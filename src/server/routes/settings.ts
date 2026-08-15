@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { getDb, getSetting, setSetting } from "../db/index.js";
+import { getDb, getSetting, setSetting, setSettingForDb } from "../db/index.js";
+import type Database from "better-sqlite3";
 import { LOG_LEVELS, type AboutInfo, type AppSettings, type JobInfo, type LogsPageResponse } from "../../shared/types.js";
 import { testGrimmoryServer } from "../sync/grimmory.js";
 import { testChaptarrConnection } from "../sync/chaptarr.js";
@@ -18,6 +19,27 @@ import {
 } from "../validation.js";
 
 const router = Router();
+
+export function applySettingsPatch(
+  db: Database.Database,
+  body: ReturnType<typeof settingsPatchSchema.parse>
+): void {
+  db.transaction(() => {
+    if (body.general?.trustProxy !== undefined) setSettingForDb(db, "app.trustProxy", String(body.general.trustProxy));
+    if (body.grimmory?.baseUrl !== undefined) setSettingForDb(db, "grimmory.baseUrl", validateIntegrationUrl(body.grimmory.baseUrl));
+    if (body.grimmory?.addMenuLink !== undefined) setSettingForDb(db, "grimmory.addMenuLink", String(body.grimmory.addMenuLink));
+    if (body.download?.baseUrl !== undefined) setSettingForDb(db, "download.baseUrl", validateIntegrationUrl(body.download.baseUrl));
+    if (body.download?.addMenuLink !== undefined) setSettingForDb(db, "download.addMenuLink", String(body.download.addMenuLink));
+    if (body.sync?.startupSyncEnabled !== undefined) setSettingForDb(db, "sync.startupSyncEnabled", String(body.sync.startupSyncEnabled));
+    if (body.sync?.historyRetentionDays !== undefined) setSettingForDb(db, "sync.historyRetentionDays", String(body.sync.historyRetentionDays));
+    if (body.sync?.conflictStrategy !== undefined) setSettingForDb(db, "sync.conflictStrategy", body.sync.conflictStrategy);
+    if (body.chaptarr?.baseUrl !== undefined) setSettingForDb(db, "chaptarr.baseUrl", validateIntegrationUrl(body.chaptarr.baseUrl));
+    if (body.chaptarr?.apiKey !== undefined) setSettingForDb(db, "chaptarr.apiKey", body.chaptarr.apiKey);
+    if (body.chaptarr?.addMenuLink !== undefined) setSettingForDb(db, "chaptarr.addMenuLink", String(body.chaptarr.addMenuLink));
+    if (body.audiobookshelf?.baseUrl !== undefined) setSettingForDb(db, "audiobookshelf.baseUrl", validateIntegrationUrl(body.audiobookshelf.baseUrl));
+    if (body.audiobookshelf?.addMenuLink !== undefined) setSettingForDb(db, "audiobookshelf.addMenuLink", String(body.audiobookshelf.addMenuLink));
+  })();
+}
 
 function readSettings(): AppSettings {
   return {
@@ -75,21 +97,7 @@ router.patch("/", (req, res) => {
     throw error;
   }
 
-  getDb().transaction(() => {
-    if (body.general?.trustProxy !== undefined) setSetting("app.trustProxy", String(body.general.trustProxy));
-    if (body.grimmory?.baseUrl !== undefined) setSetting("grimmory.baseUrl", validateIntegrationUrl(body.grimmory.baseUrl));
-    if (body.grimmory?.addMenuLink !== undefined) setSetting("grimmory.addMenuLink", String(body.grimmory.addMenuLink));
-    if (body.download?.baseUrl !== undefined) setSetting("download.baseUrl", validateIntegrationUrl(body.download.baseUrl));
-    if (body.download?.addMenuLink !== undefined) setSetting("download.addMenuLink", String(body.download.addMenuLink));
-    if (body.sync?.startupSyncEnabled !== undefined) setSetting("sync.startupSyncEnabled", String(body.sync.startupSyncEnabled));
-    if (body.sync?.historyRetentionDays !== undefined) setSetting("sync.historyRetentionDays", String(body.sync.historyRetentionDays));
-    if (body.sync?.conflictStrategy !== undefined) setSetting("sync.conflictStrategy", body.sync.conflictStrategy);
-    if (body.chaptarr?.baseUrl !== undefined) setSetting("chaptarr.baseUrl", validateIntegrationUrl(body.chaptarr.baseUrl));
-    if (body.chaptarr?.apiKey !== undefined) setSetting("chaptarr.apiKey", body.chaptarr.apiKey);
-    if (body.chaptarr?.addMenuLink !== undefined) setSetting("chaptarr.addMenuLink", String(body.chaptarr.addMenuLink));
-    if (body.audiobookshelf?.baseUrl !== undefined) setSetting("audiobookshelf.baseUrl", validateIntegrationUrl(body.audiobookshelf.baseUrl));
-    if (body.audiobookshelf?.addMenuLink !== undefined) setSetting("audiobookshelf.addMenuLink", String(body.audiobookshelf.addMenuLink));
-  })();
+  applySettingsPatch(getDb(), body);
   res.json(readSettings());
 });
 

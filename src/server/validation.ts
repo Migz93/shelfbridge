@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { UnsafeIntegrationUrlError, validateOutboundUrl } from "./security/outbound.js";
+import { UnsafeIntegrationUrlError, validateIntegrationUrl, validateOutboundUrl } from "./security/outbound.js";
 
 const conflictStrategySchema = z.enum(["latest_wins", "grimmory_wins", "hardcover_wins"]);
 
@@ -21,6 +21,20 @@ const optionalSuppliedOutboundUrlSchema = z.preprocess(
   (value) => typeof value === "string" && !value.trim() ? undefined : value,
   suppliedOutboundUrlSchema.optional()
 );
+
+// Saved integration URLs may be blank to clear a configured value. Non-blank
+// values still use the same URL policy as every outbound integration request.
+const optionalIntegrationUrlSchema = z.string().superRefine((value, context) => {
+  if (!value.trim()) return;
+  try {
+    validateIntegrationUrl(value);
+  } catch (error) {
+    context.addIssue({
+      code: "custom",
+      message: error instanceof UnsafeIntegrationUrlError ? error.message : "Integration URL must be valid"
+    });
+  }
+}).optional();
 
 const integrationSettingsSchema = z.object({
   baseUrl: z.string().optional(),
@@ -94,7 +108,7 @@ export const profilePatchSchema = z.object({
   grimmory: z.object({
     username: z.string().optional(),
     password: z.string().optional(),
-    baseUrl: z.string().optional()
+    baseUrl: optionalIntegrationUrlSchema
   }).strict().optional(),
   hardcover: z.object({
     enabled: z.boolean().optional(),

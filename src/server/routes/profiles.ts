@@ -8,7 +8,7 @@ import { testAudiobookshelfToken } from "../sync/audiobookshelf.js";
 import type { HardcoverListMapping, GoodreadsShelfMapping } from "../../shared/types.js";
 import { reconcileBookIdentities } from "../db/bookIdentity.js";
 import { logger } from "../logger.js";
-import { UnsafeIntegrationUrlError, validateIntegrationUrl } from "../security/outbound.js";
+import { validateIntegrationUrl } from "../security/outbound.js";
 import {
   goodreadsMappingsSchema,
   hardcoverMappingsSchema,
@@ -68,10 +68,8 @@ function parseProfileId(value: string | undefined): number | null {
   return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 
-function getExistingProfileId(db: Database.Database, value: string | undefined): number | null {
-  const id = parseProfileId(value);
-  if (id === null || !db.prepare("SELECT 1 FROM profiles WHERE id = ?").get(id)) return null;
-  return id;
+function profileExists(db: Database.Database, id: number): boolean {
+  return Boolean(db.prepare("SELECT 1 FROM profiles WHERE id = ?").get(id));
 }
 
 function cleanupHardcoverSourceData(profileId: number): void {
@@ -245,13 +243,13 @@ router.get("/:id", (req, res) => {
 
 // POST /api/profiles
 router.post("/", (req, res) => {
-  const db = getDb();
   const parsed = profileCreateSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json(validationErrorResponse(parsed.error));
     return;
   }
   const { displayName } = parsed.data;
+  const db = getDb();
 
   const result = db.prepare("INSERT INTO profiles (display_name) VALUES (?)").run(displayName);
   const id = result.lastInsertRowid as number;
@@ -266,14 +264,9 @@ router.post("/", (req, res) => {
 
 // PATCH /api/profiles/:id
 router.patch("/:id", (req, res) => {
-  const db = getDb();
   const id = parseProfileId(req.params["id"]);
   if (id === null) {
     res.status(400).json({ error: "Invalid profile id" });
-    return;
-  }
-  if (!db.prepare("SELECT 1 FROM profiles WHERE id = ?").get(id)) {
-    res.status(404).json({ error: "Profile not found" });
     return;
   }
   const parsed = profilePatchSchema.safeParse(req.body);
@@ -282,15 +275,10 @@ router.patch("/:id", (req, res) => {
     return;
   }
   const body = parsed.data;
-
-  try {
-    if (body.grimmory?.baseUrl !== undefined) validateIntegrationUrl(body.grimmory.baseUrl);
-  } catch (error) {
-    if (error instanceof UnsafeIntegrationUrlError) {
-      res.status(400).json({ error: error.message });
-      return;
-    }
-    throw error;
+  const db = getDb();
+  if (!profileExists(db, id)) {
+    res.status(404).json({ error: "Profile not found" });
+    return;
   }
 
   if (body.displayName !== undefined) {
@@ -497,19 +485,19 @@ router.get("/:id/goodreads/shelf-mappings", (req, res) => {
 
 // POST /api/profiles/:id/goodreads/shelf-mappings — full replace
 router.post("/:id/goodreads/shelf-mappings", (req, res) => {
-  const db = getDb();
   const id = parseProfileId(req.params["id"]);
   if (id === null) {
     res.status(400).json({ error: "Invalid profile id" });
     return;
   }
-  if (!db.prepare("SELECT 1 FROM profiles WHERE id = ?").get(id)) {
-    res.status(404).json({ error: "Profile not found" });
-    return;
-  }
   const parsed = goodreadsMappingsSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json(validationErrorResponse(parsed.error));
+    return;
+  }
+  const db = getDb();
+  if (!profileExists(db, id)) {
+    res.status(404).json({ error: "Profile not found" });
     return;
   }
   replaceGoodreadsShelfMappings(db, id, parsed.data.mappings);
@@ -562,19 +550,19 @@ router.get("/:id/list-mappings", (req, res) => {
 
 // POST /api/profiles/:id/list-mappings — full replace
 router.post("/:id/list-mappings", (req, res) => {
-  const db = getDb();
   const id = parseProfileId(req.params["id"]);
   if (id === null) {
     res.status(400).json({ error: "Invalid profile id" });
     return;
   }
-  if (!db.prepare("SELECT 1 FROM profiles WHERE id = ?").get(id)) {
-    res.status(404).json({ error: "Profile not found" });
-    return;
-  }
   const parsed = hardcoverMappingsSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json(validationErrorResponse(parsed.error));
+    return;
+  }
+  const db = getDb();
+  if (!profileExists(db, id)) {
+    res.status(404).json({ error: "Profile not found" });
     return;
   }
   replaceHardcoverListMappings(db, id, parsed.data.mappings);
@@ -585,12 +573,13 @@ router.post("/:id/list-mappings", (req, res) => {
 // Accepts optional { username, password, baseUrl } in body — uses those directly
 // so the UI can test unsaved form values without a save-first round trip.
 router.post("/:id/test/grimmory", async (req, res) => {
-  const db = getDb();
-  const id = getExistingProfileId(db, req.params["id"]);
-  if (id === null) { res.status(404).json({ error: "Profile not found" }); return; }
+  const id = parseProfileId(req.params["id"]);
+  if (id === null) { res.status(400).json({ error: "Invalid profile id" }); return; }
   const parsed = profileGrimmoryTestSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json(validationErrorResponse(parsed.error)); return; }
   const body = parsed.data;
+  const db = getDb();
+  if (!profileExists(db, id)) { res.status(404).json({ error: "Profile not found" }); return; }
 
   const stored = db.prepare("SELECT * FROM grimmory_connections WHERE profile_id = ?").get(id) as DbGrimmory | undefined;
 
@@ -617,12 +606,13 @@ router.post("/:id/test/grimmory", async (req, res) => {
 // POST /api/profiles/:id/test/hardcover
 // Accepts optional { apiToken } in body.
 router.post("/:id/test/hardcover", async (req, res) => {
-  const db = getDb();
-  const id = getExistingProfileId(db, req.params["id"]);
-  if (id === null) { res.status(404).json({ error: "Profile not found" }); return; }
+  const id = parseProfileId(req.params["id"]);
+  if (id === null) { res.status(400).json({ error: "Invalid profile id" }); return; }
   const parsed = profileHardcoverTestSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json(validationErrorResponse(parsed.error)); return; }
   const body = parsed.data;
+  const db = getDb();
+  if (!profileExists(db, id)) { res.status(404).json({ error: "Profile not found" }); return; }
 
   const stored = db.prepare("SELECT * FROM hardcover_connections WHERE profile_id = ?").get(id) as DbHardcover | undefined;
   const token = body.apiToken ?? stored?.api_token ?? "";
@@ -647,12 +637,13 @@ router.post("/:id/test/hardcover", async (req, res) => {
 // POST /api/profiles/:id/test/goodreads
 // Accepts optional { goodreadsUserId } in body.
 router.post("/:id/test/goodreads", async (req, res) => {
-  const db = getDb();
-  const id = getExistingProfileId(db, req.params["id"]);
-  if (id === null) { res.status(404).json({ error: "Profile not found" }); return; }
+  const id = parseProfileId(req.params["id"]);
+  if (id === null) { res.status(400).json({ error: "Invalid profile id" }); return; }
   const parsed = profileGoodreadsTestSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json(validationErrorResponse(parsed.error)); return; }
   const body = parsed.data;
+  const db = getDb();
+  if (!profileExists(db, id)) { res.status(404).json({ error: "Profile not found" }); return; }
 
   const stored = db.prepare("SELECT * FROM goodreads_connections WHERE profile_id = ?").get(id) as DbGoodreads | undefined;
   const userId = body.goodreadsUserId ?? stored?.goodreads_user_id ?? "";
@@ -677,12 +668,13 @@ router.post("/:id/test/goodreads", async (req, res) => {
 // POST /api/profiles/:id/test/audiobookshelf
 // Accepts optional { apiKey } in body.
 router.post("/:id/test/audiobookshelf", async (req, res) => {
-  const db = getDb();
-  const id = getExistingProfileId(db, req.params["id"]);
-  if (id === null) { res.status(404).json({ error: "Profile not found" }); return; }
+  const id = parseProfileId(req.params["id"]);
+  if (id === null) { res.status(400).json({ error: "Invalid profile id" }); return; }
   const parsed = profileAudiobookshelfTestSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json(validationErrorResponse(parsed.error)); return; }
   const body = parsed.data;
+  const db = getDb();
+  if (!profileExists(db, id)) { res.status(404).json({ error: "Profile not found" }); return; }
 
   const stored = db.prepare("SELECT * FROM audiobookshelf_connections WHERE profile_id = ?").get(id) as DbAudiobookshelf | undefined;
   const apiKey = body.apiKey ?? stored?.api_key ?? "";
