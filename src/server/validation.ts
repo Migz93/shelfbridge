@@ -14,6 +14,14 @@ const suppliedOutboundUrlSchema = z.string().superRefine((value, context) => {
   }
 });
 
+// Test buttons submit their current form value even when it is blank. Preserve
+// the route-level "not configured" response in that case while still rejecting
+// any non-blank URL that violates the outbound request policy.
+const optionalSuppliedOutboundUrlSchema = z.preprocess(
+  (value) => typeof value === "string" && !value.trim() ? undefined : value,
+  suppliedOutboundUrlSchema.optional()
+);
+
 const integrationSettingsSchema = z.object({
   baseUrl: z.string().optional(),
   addMenuLink: z.boolean().optional()
@@ -38,7 +46,7 @@ export const syncRunSchema = z.object({
 }).strict();
 
 export const integrationTestSchema = z.object({
-  baseUrl: suppliedOutboundUrlSchema.optional()
+  baseUrl: optionalSuppliedOutboundUrlSchema
 }).strict();
 
 export const chaptarrTestSchema = integrationTestSchema.extend({
@@ -48,7 +56,7 @@ export const chaptarrTestSchema = integrationTestSchema.extend({
 export const profileGrimmoryTestSchema = z.object({
   username: z.string().optional(),
   password: z.string().optional(),
-  baseUrl: suppliedOutboundUrlSchema.optional()
+  baseUrl: optionalSuppliedOutboundUrlSchema
 }).strict();
 
 export const profileHardcoverTestSchema = z.object({ apiToken: z.string().optional() }).strict();

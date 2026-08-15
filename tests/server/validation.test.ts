@@ -42,11 +42,11 @@ test("profile requests reject malformed connections and sync settings", () => {
 
 test("connection tests, jobs, and book actions reject malformed request bodies", () => {
   assert.equal(integrationTestSchema.safeParse({ baseUrl: 42 }).success, false);
-  assert.equal(integrationTestSchema.safeParse({ baseUrl: " " }).success, false);
+  assert.deepEqual(integrationTestSchema.parse({ baseUrl: " " }), { baseUrl: undefined });
   assert.equal(integrationTestSchema.safeParse({ baseUrl: "ftp://integration.example.test" }).success, false);
   assert.equal(integrationTestSchema.safeParse({ baseUrl: "https://user:pass@integration.example.test" }).success, false);
   assert.equal(profileGrimmoryTestSchema.safeParse({ username: true }).success, false);
-  assert.equal(profileGrimmoryTestSchema.safeParse({ baseUrl: "" }).success, false);
+  assert.deepEqual(profileGrimmoryTestSchema.parse({ baseUrl: "" }), { baseUrl: undefined });
   assert.equal(jobIntervalSchema.safeParse({ intervalMinutes: 1.5 }).success, false);
   assert.equal(writeGrimmoryIdSchema.safeParse({ source: "audiobookshelf" }).success, false);
   assert.equal(writeGrimmoryIdSchema.safeParse({ source: "goodreads" }).success, true);
