@@ -9,8 +9,70 @@ import type { HardcoverListMapping, GoodreadsShelfMapping } from "../../shared/t
 import { reconcileBookIdentities } from "../db/bookIdentity.js";
 import { logger } from "../logger.js";
 import { UnsafeIntegrationUrlError, validateIntegrationUrl } from "../security/outbound.js";
+import {
+  goodreadsMappingsSchema,
+  hardcoverMappingsSchema,
+  profileAudiobookshelfTestSchema,
+  profileCreateSchema,
+  profileGoodreadsTestSchema,
+  profileGrimmoryTestSchema,
+  profileHardcoverTestSchema,
+  profilePatchSchema,
+  validationErrorResponse
+} from "../validation.js";
+import type Database from "better-sqlite3";
 
 const router = Router();
+
+type GoodreadsMappingInput = { goodreadsShelfName: string; grimmoryShelfName: string };
+type HardcoverMappingInput = { hardcoverListId: number; hardcoverListName: string; grimmoryShelfName: string };
+
+export function replaceGoodreadsShelfMappings(
+  db: Database.Database,
+  profileId: number,
+  mappings: GoodreadsMappingInput[]
+): void {
+  const replace = db.transaction(() => {
+    db.prepare("DELETE FROM shelf_mappings WHERE profile_id = ? AND source = 'goodreads' AND source_list_id IS NULL").run(profileId);
+    const insert = db.prepare(`
+      INSERT INTO shelf_mappings (profile_id, source, source_status, source_list_name, grimmory_shelf_name)
+      VALUES (?, 'goodreads', ?, ?, ?)
+    `);
+    for (const mapping of mappings) {
+      insert.run(profileId, mapping.goodreadsShelfName, mapping.goodreadsShelfName, mapping.grimmoryShelfName);
+    }
+  });
+  replace();
+}
+
+export function replaceHardcoverListMappings(
+  db: Database.Database,
+  profileId: number,
+  mappings: HardcoverMappingInput[]
+): void {
+  const replace = db.transaction(() => {
+    db.prepare("DELETE FROM shelf_mappings WHERE profile_id = ? AND source = 'hardcover' AND source_list_id IS NOT NULL").run(profileId);
+    const insert = db.prepare(`
+      INSERT INTO shelf_mappings (profile_id, source, source_status, source_list_id, source_list_name, grimmory_shelf_name)
+      VALUES (?, 'hardcover', ?, ?, ?, ?)
+    `);
+    for (const mapping of mappings) {
+      insert.run(profileId, mapping.hardcoverListName, String(mapping.hardcoverListId), mapping.hardcoverListName, mapping.grimmoryShelfName);
+    }
+  });
+  replace();
+}
+
+function parseProfileId(value: string | undefined): number | null {
+  const id = Number(value);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+function getExistingProfileId(db: Database.Database, value: string | undefined): number | null {
+  const id = parseProfileId(value);
+  if (id === null || !db.prepare("SELECT 1 FROM profiles WHERE id = ?").get(id)) return null;
+  return id;
+}
 
 function cleanupHardcoverSourceData(profileId: number): void {
   const db = getDb();
@@ -184,10 +246,14 @@ router.get("/:id", (req, res) => {
 // POST /api/profiles
 router.post("/", (req, res) => {
   const db = getDb();
-  const { displayName } = req.body as { displayName: string };
-  if (!displayName?.trim()) { res.status(400).json({ error: "displayName required" }); return; }
+  const parsed = profileCreateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(validationErrorResponse(parsed.error));
+    return;
+  }
+  const { displayName } = parsed.data;
 
-  const result = db.prepare("INSERT INTO profiles (display_name) VALUES (?)").run(displayName.trim());
+  const result = db.prepare("INSERT INTO profiles (display_name) VALUES (?)").run(displayName);
   const id = result.lastInsertRowid as number;
 
   // New users inherit the current global conflict default, then can override it
@@ -201,16 +267,21 @@ router.post("/", (req, res) => {
 // PATCH /api/profiles/:id
 router.patch("/:id", (req, res) => {
   const db = getDb();
-  const id = parseInt(req.params["id"] ?? "0", 10);
-  const body = req.body as Partial<{
-    displayName: string;
-    enabled: boolean;
-    grimmory: { username: string; password: string; baseUrl?: string };
-    hardcover: { enabled?: boolean; apiToken?: string; syncListId?: number | null; syncListName?: string | null; targetShelfName?: string | null };
-    goodreads: { goodreadsUserId?: string; enabled?: boolean; syncShelfName?: string | null; targetShelfName?: string | null };
-    audiobookshelf: { enabled?: boolean; apiKey?: string };
-    syncSettings: Partial<SyncSettings>;
-  }>;
+  const id = parseProfileId(req.params["id"]);
+  if (id === null) {
+    res.status(400).json({ error: "Invalid profile id" });
+    return;
+  }
+  if (!db.prepare("SELECT 1 FROM profiles WHERE id = ?").get(id)) {
+    res.status(404).json({ error: "Profile not found" });
+    return;
+  }
+  const parsed = profilePatchSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(validationErrorResponse(parsed.error));
+    return;
+  }
+  const body = parsed.data;
 
   try {
     if (body.grimmory?.baseUrl !== undefined) validateIntegrationUrl(body.grimmory.baseUrl);
@@ -358,8 +429,16 @@ router.patch("/:id", (req, res) => {
 
 // DELETE /api/profiles/:id
 router.delete("/:id", (req, res) => {
-  const id = parseInt(req.params["id"] ?? "0", 10);
-  getDb().prepare("DELETE FROM profiles WHERE id = ?").run(id);
+  const id = parseProfileId(req.params["id"]);
+  if (id === null) {
+    res.status(400).json({ error: "Invalid profile id" });
+    return;
+  }
+  const result = getDb().prepare("DELETE FROM profiles WHERE id = ?").run(id);
+  if (result.changes === 0) {
+    res.status(404).json({ error: "Profile not found" });
+    return;
+  }
   res.json({ ok: true });
 });
 
@@ -419,22 +498,21 @@ router.get("/:id/goodreads/shelf-mappings", (req, res) => {
 // POST /api/profiles/:id/goodreads/shelf-mappings — full replace
 router.post("/:id/goodreads/shelf-mappings", (req, res) => {
   const db = getDb();
-  const id = parseInt(req.params["id"] ?? "0", 10);
-  const { mappings } = req.body as {
-    mappings: { goodreadsShelfName: string; grimmoryShelfName: string }[];
-  };
-  if (!Array.isArray(mappings)) { res.status(400).json({ error: "mappings must be an array" }); return; }
-
-  // Delete existing Goodreads shelf mappings (those without a source_list_id, i.e. shelf-name-keyed)
-  db.prepare("DELETE FROM shelf_mappings WHERE profile_id = ? AND source = 'goodreads' AND source_list_id IS NULL").run(id);
-  const insert = db.prepare(`
-    INSERT INTO shelf_mappings (profile_id, source, source_status, source_list_name, grimmory_shelf_name)
-    VALUES (?, 'goodreads', ?, ?, ?)
-  `);
-  for (const m of mappings) {
-    if (!m.grimmoryShelfName?.trim() || !m.goodreadsShelfName?.trim()) continue;
-    insert.run(id, m.goodreadsShelfName, m.goodreadsShelfName, m.grimmoryShelfName.trim());
+  const id = parseProfileId(req.params["id"]);
+  if (id === null) {
+    res.status(400).json({ error: "Invalid profile id" });
+    return;
   }
+  if (!db.prepare("SELECT 1 FROM profiles WHERE id = ?").get(id)) {
+    res.status(404).json({ error: "Profile not found" });
+    return;
+  }
+  const parsed = goodreadsMappingsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(validationErrorResponse(parsed.error));
+    return;
+  }
+  replaceGoodreadsShelfMappings(db, id, parsed.data.mappings);
   res.json({ ok: true });
 });
 
@@ -485,21 +563,21 @@ router.get("/:id/list-mappings", (req, res) => {
 // POST /api/profiles/:id/list-mappings — full replace
 router.post("/:id/list-mappings", (req, res) => {
   const db = getDb();
-  const id = parseInt(req.params["id"] ?? "0", 10);
-  const { mappings } = req.body as {
-    mappings: { hardcoverListId: number; hardcoverListName: string; grimmoryShelfName: string }[];
-  };
-  if (!Array.isArray(mappings)) { res.status(400).json({ error: "mappings must be an array" }); return; }
-
-  db.prepare("DELETE FROM shelf_mappings WHERE profile_id = ? AND source = 'hardcover' AND source_list_id IS NOT NULL").run(id);
-  const insert = db.prepare(`
-    INSERT INTO shelf_mappings (profile_id, source, source_status, source_list_id, source_list_name, grimmory_shelf_name)
-    VALUES (?, 'hardcover', ?, ?, ?, ?)
-  `);
-  for (const m of mappings) {
-    if (!m.grimmoryShelfName?.trim() || !m.hardcoverListId) continue;
-    insert.run(id, m.hardcoverListName, String(m.hardcoverListId), m.hardcoverListName, m.grimmoryShelfName.trim());
+  const id = parseProfileId(req.params["id"]);
+  if (id === null) {
+    res.status(400).json({ error: "Invalid profile id" });
+    return;
   }
+  if (!db.prepare("SELECT 1 FROM profiles WHERE id = ?").get(id)) {
+    res.status(404).json({ error: "Profile not found" });
+    return;
+  }
+  const parsed = hardcoverMappingsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(validationErrorResponse(parsed.error));
+    return;
+  }
+  replaceHardcoverListMappings(db, id, parsed.data.mappings);
   res.json({ ok: true });
 });
 
@@ -508,8 +586,11 @@ router.post("/:id/list-mappings", (req, res) => {
 // so the UI can test unsaved form values without a save-first round trip.
 router.post("/:id/test/grimmory", async (req, res) => {
   const db = getDb();
-  const id = parseInt(req.params["id"] ?? "0", 10);
-  const body = req.body as { username?: string; password?: string; baseUrl?: string };
+  const id = getExistingProfileId(db, req.params["id"]);
+  if (id === null) { res.status(404).json({ error: "Profile not found" }); return; }
+  const parsed = profileGrimmoryTestSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json(validationErrorResponse(parsed.error)); return; }
+  const body = parsed.data;
 
   const stored = db.prepare("SELECT * FROM grimmory_connections WHERE profile_id = ?").get(id) as DbGrimmory | undefined;
 
@@ -537,8 +618,11 @@ router.post("/:id/test/grimmory", async (req, res) => {
 // Accepts optional { apiToken } in body.
 router.post("/:id/test/hardcover", async (req, res) => {
   const db = getDb();
-  const id = parseInt(req.params["id"] ?? "0", 10);
-  const body = req.body as { apiToken?: string };
+  const id = getExistingProfileId(db, req.params["id"]);
+  if (id === null) { res.status(404).json({ error: "Profile not found" }); return; }
+  const parsed = profileHardcoverTestSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json(validationErrorResponse(parsed.error)); return; }
+  const body = parsed.data;
 
   const stored = db.prepare("SELECT * FROM hardcover_connections WHERE profile_id = ?").get(id) as DbHardcover | undefined;
   const token = body.apiToken ?? stored?.api_token ?? "";
@@ -564,8 +648,11 @@ router.post("/:id/test/hardcover", async (req, res) => {
 // Accepts optional { goodreadsUserId } in body.
 router.post("/:id/test/goodreads", async (req, res) => {
   const db = getDb();
-  const id = parseInt(req.params["id"] ?? "0", 10);
-  const body = req.body as { goodreadsUserId?: string };
+  const id = getExistingProfileId(db, req.params["id"]);
+  if (id === null) { res.status(404).json({ error: "Profile not found" }); return; }
+  const parsed = profileGoodreadsTestSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json(validationErrorResponse(parsed.error)); return; }
+  const body = parsed.data;
 
   const stored = db.prepare("SELECT * FROM goodreads_connections WHERE profile_id = ?").get(id) as DbGoodreads | undefined;
   const userId = body.goodreadsUserId ?? stored?.goodreads_user_id ?? "";
@@ -591,8 +678,11 @@ router.post("/:id/test/goodreads", async (req, res) => {
 // Accepts optional { apiKey } in body.
 router.post("/:id/test/audiobookshelf", async (req, res) => {
   const db = getDb();
-  const id = parseInt(req.params["id"] ?? "0", 10);
-  const body = req.body as { apiKey?: string };
+  const id = getExistingProfileId(db, req.params["id"]);
+  if (id === null) { res.status(404).json({ error: "Profile not found" }); return; }
+  const parsed = profileAudiobookshelfTestSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json(validationErrorResponse(parsed.error)); return; }
+  const body = parsed.data;
 
   const stored = db.prepare("SELECT * FROM audiobookshelf_connections WHERE profile_id = ?").get(id) as DbAudiobookshelf | undefined;
   const apiKey = body.apiKey ?? stored?.api_key ?? "";

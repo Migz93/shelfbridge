@@ -43,6 +43,27 @@ Deletes the current server-side session and clears the browser cookie.
 
 ---
 
+## Request validation
+
+Mutating API routes validate request bodies before they access the database or
+call an integration. Invalid requests return `400` with this shape:
+
+```json
+{
+  "error": "Invalid request",
+  "fieldErrors": {
+    "sync": ["Invalid option: expected one of \"latest_wins\"|\"grimmory_wins\"|\"hardcover_wins\""]
+  },
+  "formErrors": []
+}
+```
+
+`fieldErrors` maps request fields to one or more messages; `formErrors` holds
+request-level problems such as unsupported fields. Profile and mapping routes
+return `404` when the referenced profile does not exist.
+
+---
+
 ## Settings
 
 ### `GET /api/settings`

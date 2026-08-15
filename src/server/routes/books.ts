@@ -16,8 +16,14 @@ import { getGrimmoryToken, writeGrimmoryExternalIds } from "../sync/grimmory.js"
 import { logger } from "../logger.js";
 import { reconcileBookIdentities } from "../db/bookIdentity.js";
 import { normalizeExternalId, identifiersEqual } from "../identifiers.js";
+import { validationErrorResponse, writeGrimmoryIdSchema } from "../validation.js";
 
 const router = Router();
+
+export function parsePositiveId(value: string | undefined): number | null {
+  const id = Number(value);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
 
 export async function writeAndPersistDuplicateMergePlan(
   db: ReturnType<typeof getDb>,
@@ -1008,8 +1014,8 @@ router.get("/", (req, res) => {
 // DELETE /api/books/:id
 router.delete("/:id", (req, res) => {
   const db = getDb();
-  const bookId = parseInt(req.params["id"] ?? "0", 10);
-  if (!Number.isFinite(bookId) || bookId <= 0) {
+  const bookId = parsePositiveId(req.params["id"]);
+  if (bookId === null) {
     res.status(400).json({ error: "Invalid book id" });
     return;
   }
@@ -1044,9 +1050,9 @@ router.delete("/:id", (req, res) => {
 // POST /api/books/:bookId/duplicates/:duplicateId/dismiss
 router.post("/:bookId/duplicates/:duplicateId/dismiss", (req, res) => {
   const db = getDb();
-  const bookId = parseInt(req.params["bookId"] ?? "0", 10);
-  const duplicateId = parseInt(req.params["duplicateId"] ?? "0", 10);
-  if (!Number.isFinite(bookId) || !Number.isFinite(duplicateId) || bookId <= 0 || duplicateId <= 0 || bookId === duplicateId) {
+  const bookId = parsePositiveId(req.params["bookId"]);
+  const duplicateId = parsePositiveId(req.params["duplicateId"]);
+  if (bookId === null || duplicateId === null || bookId === duplicateId) {
     res.status(400).json({ error: "Invalid duplicate pair" });
     return;
   }
@@ -1076,9 +1082,9 @@ router.post("/:bookId/duplicates/:duplicateId/dismiss", (req, res) => {
 // POST /api/books/:bookId/duplicates/:duplicateId/merge
 router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
   const db = getDb();
-  const bookId = parseInt(req.params["bookId"] ?? "0", 10);
-  const duplicateId = parseInt(req.params["duplicateId"] ?? "0", 10);
-  if (!Number.isFinite(bookId) || !Number.isFinite(duplicateId) || bookId <= 0 || duplicateId <= 0 || bookId === duplicateId) {
+  const bookId = parsePositiveId(req.params["bookId"]);
+  const duplicateId = parsePositiveId(req.params["duplicateId"]);
+  if (bookId === null || duplicateId === null || bookId === duplicateId) {
     res.status(400).json({ error: "Invalid duplicate pair" }); return;
   }
   if (!isLiveProbableDuplicatePair(fetchRows(), bookId, duplicateId)) {
@@ -1130,8 +1136,8 @@ router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
 // POST /api/books/:bookId/chaptarr-id-mismatch/dismiss
 router.post("/:bookId/chaptarr-id-mismatch/dismiss", (req, res) => {
   const db = getDb();
-  const bookId = parseInt(req.params["bookId"] ?? "0", 10);
-  if (!Number.isFinite(bookId) || bookId <= 0) {
+  const bookId = parsePositiveId(req.params["bookId"]);
+  if (bookId === null) {
     res.status(400).json({ error: "Invalid book id" });
     return;
   }
@@ -1170,13 +1176,18 @@ router.post("/:bookId/chaptarr-id-mismatch/dismiss", (req, res) => {
 // :profileId corresponds to BookRelationship.id (which equals profile_id in the new schema)
 router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, res) => {
   const db = getDb();
-  const bookId = parseInt(req.params["bookId"] ?? "0", 10);
-  const profileId = parseInt(req.params["profileId"] ?? "0", 10);
-  const { source } = req.body as { source?: "goodreads" | "hardcover" };
-  if (source !== "goodreads" && source !== "hardcover") {
-    res.status(400).json({ error: "source must be goodreads or hardcover" });
+  const bookId = parsePositiveId(req.params["bookId"]);
+  const profileId = parsePositiveId(req.params["profileId"]);
+  if (bookId === null || profileId === null) {
+    res.status(400).json({ error: "Invalid book or profile id" });
     return;
   }
+  const parsed = writeGrimmoryIdSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(validationErrorResponse(parsed.error));
+    return;
+  }
+  const { source } = parsed.data;
 
   // Grimmory local id/metadata is instance-specific — scope to this profile's own
   // Grimmory connection so the write below targets the correct server/book.

@@ -2,6 +2,7 @@ import { Router } from "express";
 import { getDb } from "../db/index.js";
 import { logger } from "../logger.js";
 import { getActiveSyncStatus, runSync } from "../sync/engine.js";
+import { syncRunSchema, validationErrorResponse } from "../validation.js";
 
 const router = Router();
 
@@ -11,15 +12,20 @@ router.get("/status", (_req, res) => {
 
 // POST /api/sync/run  — manual sync (all profiles or single profile)
 router.post("/run", async (req, res) => {
-  const body = req.body as { profileId?: unknown; dryRun?: unknown };
-  const profileId = typeof body.profileId === "number" ? body.profileId : undefined;
-  if (body.profileId !== undefined && profileId === undefined) {
-    res.status(400).json({ ok: false, message: "profileId must be a number" });
+  const parsed = syncRunSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(validationErrorResponse(parsed.error));
     return;
   }
+  const { profileId, dryRun = false } = parsed.data;
   const db = getDb();
 
-  const isDryRun = body.dryRun === true;
+  if (profileId !== undefined && !db.prepare("SELECT 1 FROM profiles WHERE id = ?").get(profileId)) {
+    res.status(404).json({ ok: false, message: "Profile not found" });
+    return;
+  }
+
+  const isDryRun = dryRun;
   const currentStatus = getActiveSyncStatus();
   if (currentStatus.isRunning) {
     logger.warn("Manual sync request ignored because a sync is already running", {
@@ -35,7 +41,7 @@ router.post("/run", async (req, res) => {
     return;
   }
 
-  const profileIds: number[] = profileId
+  const profileIds: number[] = profileId !== undefined
     ? [profileId]
     : (db.prepare("SELECT id FROM profiles WHERE enabled = 1").all() as { id: number }[]).map((r) => r.id);
 
