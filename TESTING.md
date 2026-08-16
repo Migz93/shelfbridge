@@ -214,6 +214,12 @@ Each `prune*UserStatesMissingFromFetch` / `prune*SourcesMissingFromFetch` helper
 |---|---|
 | Source upsert timestamps | An unchanged source refreshes `last_sync_at` without changing `last_modified_at`; a changed source advances both. |
 
+### `tests/server/audiobookshelf-progress.test.ts` — Audiobookshelf progress propagation
+
+| Test | What it checks |
+|---|---|
+| Blank live Hardcover read | Audiobookshelf repairs a selected live Hardcover read at 0% even when the cached Hardcover progress is non-zero. |
+
 ### `tests/server/concurrency.test.ts` — Bounded work queues
 
 | Test | What it checks |

@@ -227,7 +227,7 @@ if (hasAbs && (hasHardcover || grimmoryAvailable)) {
         : liveTrackedRead?.progress_seconds && absDuration > 0
           ? meaningfulProgress((liveTrackedRead.progress_seconds / absDuration) * 100)
           : null;
-      const hcReadNeedsCorrection = liveReadProgress !== null && needsWrite(liveReadProgress);
+      const hcReadNeedsCorrection = liveTrackedRead !== undefined && needsWrite(liveReadProgress);
       // ABS is the source of truth for audiobook status too — 98%+ counts as
       // finished. This overrides whatever status Hardcover or Grimmory
       // currently have stored, since both can drift (e.g. a stale Hardcover
