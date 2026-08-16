@@ -100,6 +100,14 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
 
     let goodreadsMatched = 0;
     let goodreadsUnmatched = 0;
+    // Sources for newly-discovered Goodreads-only books, reconciled in a single
+    // batch after the loop instead of once per book — reconciling per book
+    // makes a first sync of a large, mostly-unmatched library quadratic.
+    const pendingGoodreadsOnly: Array<{
+      newSourceId: number; goodreadsId: string; title: string; rating: number | null;
+      shelf: string | null; readAt: string | null; updatedAt: string | null;
+      matchType: string | null; bookLink: string | null;
+    }> = [];
 
     for (const grBook of goodreadsBooks) {
       let matched: LinkLookup | undefined;
@@ -295,30 +303,36 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
           });
         }
 
-        // Reconcile to assign book_id, then write user state
-        reconcileBookIdentities(db);
-        const newSource = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(newSourceId) as { book_id: number } | undefined;
-        if (newSource?.book_id) {
-          db.prepare(`
-            INSERT OR IGNORE INTO user_book_states
-              (book_id, profile_id, source_type, rating, sync_health,
-               goodreads_shelf, goodreads_read_at, goodreads_updated_at,
-               goodreads_match_type, goodreads_book_link,
-               last_sync_at, last_sync_decision, last_modified_at)
-            VALUES (?, ?, 'goodreads', ?, 'missing', ?, ?, ?, ?, ?, datetime('now'), 'goodreads_only', datetime('now'))
-          `).run(
-            newSource.book_id, profileId, grBook.rating,
-            grBook.shelf, grBook.readAt, grBook.updatedAt,
-            matchType, grBook.bookLink
-          );
-          logger.info("Created Goodreads-only book", { profileId, goodreadsId: grBook.goodreadsId, title: grBook.title, bookId: newSource.book_id });
-        }
+        // book_id is assigned by the single reconcile pass after this loop.
+        pendingGoodreadsOnly.push({
+          newSourceId, goodreadsId: grBook.goodreadsId, title: grBook.title, rating: grBook.rating,
+          shelf: grBook.shelf, readAt: grBook.readAt, updatedAt: grBook.updatedAt,
+          matchType, bookLink: grBook.bookLink ?? null
+        });
         goodreadsUnmatched++;
       }
     }
 
-    // Reconcile to pick up new GR sources
+    // Reconcile once to pick up all new GR sources created above, then write
+    // their user states now that book_id is known.
     reconcileBookIdentities(db);
+    for (const pending of pendingGoodreadsOnly) {
+      const newSource = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(pending.newSourceId) as { book_id: number } | undefined;
+      if (!newSource?.book_id) continue;
+      db.prepare(`
+        INSERT OR IGNORE INTO user_book_states
+          (book_id, profile_id, source_type, rating, sync_health,
+           goodreads_shelf, goodreads_read_at, goodreads_updated_at,
+           goodreads_match_type, goodreads_book_link,
+           last_sync_at, last_sync_decision, last_modified_at)
+        VALUES (?, ?, 'goodreads', ?, 'missing', ?, ?, ?, ?, ?, datetime('now'), 'goodreads_only', datetime('now'))
+      `).run(
+        newSource.book_id, profileId, pending.rating,
+        pending.shelf, pending.readAt, pending.updatedAt,
+        pending.matchType, pending.bookLink
+      );
+      logger.info("Created Goodreads-only book", { profileId, goodreadsId: pending.goodreadsId, title: pending.title, bookId: newSource.book_id });
+    }
     logger.info("Goodreads enrichment complete", { profileId, goodreadsMatched, goodreadsUnmatched });
 
     if (grimmoryAvailable && hasGrimmory && grimmoryToken) {

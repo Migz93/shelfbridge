@@ -13,12 +13,33 @@ export function normalizeExternalId(value: string | number | null | undefined): 
   return numericPrefix?.[1] ?? text;
 }
 
+function isbn10ChecksumValid(isbn: string): boolean {
+  let sum = 0;
+  for (let i = 0; i < 10; i++) {
+    const char = isbn[i];
+    const digit = char === "X" ? 10 : Number(char);
+    sum += digit * (10 - i);
+  }
+  return sum % 11 === 0;
+}
+
+function isbn13ChecksumValid(isbn: string): boolean {
+  let sum = 0;
+  for (let i = 0; i < 13; i++) {
+    sum += Number(isbn[i]) * (i % 2 === 0 ? 1 : 3);
+  }
+  return sum % 10 === 0;
+}
+
+// A checksum-invalid ISBN is most likely a typo in source metadata. Treat it
+// like a missing ISBN (return null) rather than throwing, so it falls back to
+// other identity signals instead of becoming a bad merge key.
 export function normalizeIsbn(value: string | number | null | undefined): string | null {
   const text = cleanIdentifier(value);
   if (!text) return null;
   const normalized = text.replace(/[\s\-\u2010-\u2015]/g, "").toUpperCase();
-  if (/^\d{9}[\dX]$/.test(normalized)) return normalized;
-  if (/^\d{13}$/.test(normalized)) return normalized;
+  if (/^\d{9}[\dX]$/.test(normalized)) return isbn10ChecksumValid(normalized) ? normalized : null;
+  if (/^\d{13}$/.test(normalized)) return isbn13ChecksumValid(normalized) ? normalized : null;
   return null;
 }
 

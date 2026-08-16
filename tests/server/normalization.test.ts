@@ -44,6 +44,12 @@ test("normalizeIsbn ignores conventional separators", () => {
   assert.equal(normalizeIsbn("97814028AB626"), null);
 });
 
+test("normalizeIsbn rejects a well-formed ISBN with an invalid check digit", () => {
+  // Same digits as the valid examples above with the final check digit changed.
+  assert.equal(normalizeIsbn("978-1-4028-9462-9"), null);
+  assert.equal(normalizeIsbn("0-306-40615-9"), null);
+});
+
 test("newerSource returns whichever timestamp is later, or null when either side is missing", () => {
   assert.equal(newerSource("2026-01-02T00:00:00Z", "2026-01-01T00:00:00Z"), "hardcover");
   assert.equal(newerSource("2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"), "grimmory");
