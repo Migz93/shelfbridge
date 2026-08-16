@@ -571,7 +571,18 @@ export function reconcileBookIdentities(db: Database.Database): void {
           && normalizeTitle(goodreadsRow.title) === normalizeTitle(grimmoryRow.title));
         const corroboratedPath = Boolean(grimmoryRow && filePathIdentityKeys(grimmoryRow)
           .some((key) => corroboratedGrimmoryChaptarrFilePaths.has(key)));
-        if (sameTitle && corroboratedPath) {
+        // sameTitle/corroboratedPath only vouch for firstRow and secondRow
+        // specifically. unionRoots below merges their whole clusters, so
+        // confirm the conflict is actually confined to these two rows —
+        // otherwise an unrelated conflicting member already in one of the
+        // clusters would get pulled into the merge on this pair's coattails.
+        const residualKeysA = new Set([...keysA].filter((key) => !new Set(highIdentityKeys(firstRow!)).has(key)));
+        const residualKeysB = new Set([...keysB].filter((key) => !new Set(highIdentityKeys(secondRow!)).has(key)));
+        const conflictConfinedToThisPair = sameTitle && corroboratedPath
+          && !highKeyConflict(residualKeysA, residualKeysB)
+          && !highKeyConflict(residualKeysA, new Set(highIdentityKeys(secondRow!)))
+          && !highKeyConflict(new Set(highIdentityKeys(firstRow!)), residualKeysB);
+        if (conflictConfinedToThisPair) {
           unionRoots(rootA, rootB);
           logger.info("Merged ISBN match despite stale Grimmory identifier", {
             goodreadsSourceId: goodreadsRow!.id,
@@ -611,10 +622,11 @@ export function reconcileBookIdentities(db: Database.Database): void {
       const rowB = rowsById.get(id);
       const isChaptarrGrimmoryPair = (rowA?.source_type === "chaptarr" && rowB?.source_type === "grimmory")
         || (rowA?.source_type === "grimmory" && rowB?.source_type === "chaptarr");
-      if (isChaptarrGrimmoryPair && canBridgeChaptarrToGrimmory) {
-        unionRoots(rootA, rootB);
-        continue;
-      }
+      // A bridgeable pair was already unioned above (rootA would equal rootB
+      // and the loop would have continued at the top), so reaching here with
+      // isChaptarrGrimmoryPair true only happens when the pair could NOT be
+      // bridged (ambiguous Grimmory instance) — skip it rather than falling
+      // through to the high-key conflict check below.
       if (isChaptarrGrimmoryPair) continue;
       const keysA = rootIndex.get(rootA)?.highKeys ?? new Set<IdentityKey>();
       const keysB = rootIndex.get(rootB)?.highKeys ?? new Set<IdentityKey>();
@@ -780,8 +792,24 @@ export function reconcileBookIdentities(db: Database.Database): void {
       if (shouldMoveState(state, conflict)) {
         deleteUserState.run(conflict.id);
         updateUserStateBook.run(targetBookId, state.id);
+        logger.warn("Replaced conflicting user state while moving books into a merged canonical", {
+          keptId: state.id,
+          discardedId: conflict.id,
+          profileId: state.profile_id,
+          sourceBookId,
+          targetBookId,
+          sourceType: state.source_type
+        });
       } else {
         deleteUserState.run(state.id);
+        logger.warn("Discarded stale user state while moving books into a merged canonical", {
+          keptId: conflict.id,
+          discardedId: state.id,
+          profileId: state.profile_id,
+          sourceBookId,
+          targetBookId,
+          sourceType: state.source_type
+        });
       }
     }
   };
@@ -911,13 +939,22 @@ export function reconcileBookIdentities(db: Database.Database): void {
           )
         ));
         const crossesScopedProfiles = crossingFilePathKeys.length > 0;
+        const unassignedCandidateIds = crossesScopedProfiles ? [] : Array.from(new Set(
+          group
+            .flatMap((row) => filePathIdentityKeys(row))
+            .flatMap((key) => canonicalBookIdsByFilePath.get(key) ?? [])
+            .filter((id) => !group.some((row) => row.book_id === id))
+        ));
+        if (unassignedCandidateIds.length > 1) {
+          logger.warn("Ambiguous same-format file path matches multiple canonical books; picking one arbitrarily", {
+            candidateBookIds: unassignedCandidateIds,
+            sourceExternalIds: group.map((row) => row.external_id)
+          });
+        }
         const filePathCanonicalId = crossesScopedProfiles ? undefined : groupFilePathKeys
           .flatMap((key) => canonicalBookIdsByFilePath.get(key) ?? [])
           .find((id) => group.some((row) => row.book_id === id))
-          ?? group
-            .flatMap((row) => filePathIdentityKeys(row))
-            .flatMap((key) => canonicalBookIdsByFilePath.get(key) ?? [])
-            .find((id) => !group.some((row) => row.book_id === id));
+          ?? unassignedCandidateIds[0];
         if (crossesScopedProfiles) {
           trackSkippedCrossProfileGroup(crossingFilePathKeys);
         }
