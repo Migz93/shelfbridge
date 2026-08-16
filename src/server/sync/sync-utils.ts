@@ -124,8 +124,13 @@ export function latestHardcoverRead(
   // edition we know we care about when we have one; fall back to the
   // highest-id read otherwise (single-edition books, or no hint available).
   if (preferredEditionId !== null) {
-    const editionMatch = reads.find((read) => read.edition_id === preferredEditionId);
-    if (editionMatch) return editionMatch;
+    const editionReads = reads.filter((read) => read.edition_id === preferredEditionId);
+    // Hardcover may auto-create an empty read while changing the parent
+    // user-book edition. Prefer an already-progressed read on the intended
+    // edition so that a blank duplicate cannot become the sync source.
+    const progressedEditionRead = editionReads.find(hardcoverReadHasProgress);
+    if (progressedEditionRead) return progressedEditionRead;
+    if (editionReads[0]) return editionReads[0];
   }
   return reads[0] ?? null;
 }
@@ -385,6 +390,16 @@ export function shouldBookProgressOwnSharedHardcover(grimmoryBooks: GrimmoryBook
   if (hardcoverBookId === null || hardcoverBookId === undefined) return false;
   const siblings = activeGrimmorySiblingsForHardcover(grimmoryBooks, hardcoverBookId);
   return siblings.book !== null && siblings.audiobook !== null;
+}
+
+export function shouldActiveSiblingOwnSharedHardcover(grimmoryBooks: GrimmoryBook[], grBook: GrimmoryBook): boolean {
+  if (grBook.hardcoverBookId === null || grBook.hardcoverBookId === undefined) return false;
+  const siblings = activeGrimmorySiblingsForHardcover(grimmoryBooks, grBook.hardcoverBookId);
+  // A shared Hardcover work only has one mutable user-book record. If both
+  // formats are active, reading takes precedence; otherwise the sole active
+  // sibling owns it. Completed/inactive siblings must never overwrite it.
+  const owner = siblings.book ?? siblings.audiobook;
+  return owner !== null && owner.id !== grBook.id;
 }
 
 export function normalizeEditionFormat(value: string | null | undefined): string | null {

@@ -7,7 +7,14 @@ import {
   shouldGoodreadsOverwriteGrimmory
 } from "../../src/server/sync/engine.js";
 import { normalizeIsbn } from "../../src/server/identifiers.js";
-import { hardcoverProgressPercent } from "../../src/server/sync/sync-utils.js";
+import {
+  activeGrimmorySiblingsForHardcover,
+  hardcoverProgressPercent,
+  latestHardcoverRead,
+  shouldActiveSiblingOwnSharedHardcover,
+  shouldBookProgressOwnSharedHardcover
+} from "../../src/server/sync/sync-utils.js";
+import { hasKnownHardcoverIdentity } from "../../src/server/sync/chaptarr.js";
 
 test("normalizeTitle strips parenthetical series info, case, and punctuation", () => {
   assert.equal(normalizeTitle("Dune (Dune, #1)"), "dune");
@@ -52,6 +59,35 @@ test("hardcoverProgressPercent uses the selected read's page count", () => {
     book: { default_physical_edition: null, pages: null }
   };
   assert.equal(hardcoverProgressPercent(book as any, null, 2), 50);
+});
+
+test("latestHardcoverRead prefers a progressed read over a blank duplicate on the selected edition", () => {
+  const book = {
+    user_book_reads: [
+      { id: 2, edition_id: 7, progress: null, progress_pages: null, progress_seconds: null, started_at: "2026-08-11", finished_at: null },
+      { id: 1, edition_id: 7, progress: 19.7, progress_pages: null, progress_seconds: 8132, started_at: "2026-08-10", finished_at: null }
+    ]
+  };
+  assert.equal(latestHardcoverRead(book as any, 7)?.id, 1);
+});
+
+test("shared Hardcover progress belongs to an active book sibling only when the audiobook is active too", () => {
+  const book = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READING" };
+  const inactiveAudio = { id: 2, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "UNREAD" };
+  const activeAudio = { ...inactiveAudio, readStatus: "READING" };
+
+  assert.equal(shouldBookProgressOwnSharedHardcover([book, inactiveAudio] as any, "42"), false);
+  assert.equal(shouldBookProgressOwnSharedHardcover([book, activeAudio] as any, "42"), true);
+  const completedBook = { ...book, readStatus: "READ" };
+  assert.equal(shouldActiveSiblingOwnSharedHardcover([completedBook, activeAudio] as any, completedBook as any), true);
+  assert.equal(shouldActiveSiblingOwnSharedHardcover([completedBook, activeAudio] as any, activeAudio as any), false);
+  assert.equal(activeGrimmorySiblingsForHardcover([book, activeAudio] as any, "42").book?.id, 1);
+});
+
+test("a shared Hardcover work ID is valid across separate local media identities", () => {
+  const identities = new Map<number, ReadonlySet<string>>([[10, new Set(["42"])]]);
+  assert.equal(hasKnownHardcoverIdentity(identities, 10, "42"), true);
+  assert.equal(hasKnownHardcoverIdentity(identities, 10, "99"), false);
 });
 
 test("shouldGoodreadsOverwriteGrimmory overwrites when Grimmory has no timestamp to conflict with", () => {

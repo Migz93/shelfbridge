@@ -1,8 +1,7 @@
 import { logger } from "../logger.js";
-import { normalizeExternalId } from "../identifiers.js";
 export async function persistHardcoverSources(context: any): Promise<void> {
   const { db, profileId, hcBooks, hcEditions, grimmoryAvailable, upsertBookSource, cacheSourceCover, sqliteNow,
-    hasHardcover, activeGrimmorySiblingsForHardcover, grimmoryBooks, absOwnedHardcoverBookIds,
+    hasHardcover, activeGrimmorySiblingsForHardcover, grimmoryBooks,
     inferHardcoverMediaType, firstHardcoverSeries, normalizeEditionFormat, enqueueImageCacheTask,
     pruneHardcoverUserStatesMissingFromFetch, pruneHardcoverSourcesMissingFromFetch, hardcoverSnapshotStatus } = context;
 // ── Phase C: Write HC book_sources ─────────────────────────────────────
@@ -13,14 +12,6 @@ if (hasHardcover) {
       ? activeGrimmorySiblingsForHardcover(grimmoryBooks, hcBook.book.id)
       : { book: null, audiobook: null };
     const bookOwnsSharedHardcover = preferredSiblings.book !== null && preferredSiblings.audiobook !== null;
-    const normalizedHcBookId = normalizeExternalId(hcBook.book.id) ?? String(hcBook.book.id);
-    // Hardcover's "currently pinned" edition on a shared book can drift on
-    // its own (e.g. editing any read on the book appears to retarget it),
-    // which would otherwise bounce this row between audiobook/print every
-    // run. When we already know (from ABS) that this Hardcover book is the
-    // audiobook side, keep routing it there regardless of what edition
-    // Hardcover currently reports as current.
-    const absOwnsThisHardcoverBook = !bookOwnsSharedHardcover && absOwnedHardcoverBookIds.has(normalizedHcBookId);
     const inferredMediaType = inferHardcoverMediaType(hcBook, userEdition);
     // Hardcover uses one book ID for multiple active editions, while our
     // book_sources row is keyed by that book ID. Keep the row in the book
@@ -28,15 +19,12 @@ if (hasHardcover) {
     // flip the local identity between book and audiobook.
     const mediaType = bookOwnsSharedHardcover
       ? "physical"
-      : absOwnsThisHardcoverBook
-        ? "audiobook"
-        : inferredMediaType;
+      : inferredMediaType;
     // Only trust Hardcover's live "current edition" data for audio-specific
-    // fields (edition id, format, audio seconds, ASIN) when it actually
-    // looks like an audio edition this run. If ABS ownership forced
-    // mediaType to "audiobook" but Hardcover's current edition has drifted
-    // to something else, keep whatever audio edition data was already
-    // persisted rather than overwriting it with mismatched (e.g. ebook) data.
+    // fields (edition id, format, audio seconds, ASIN) when the current
+    // Hardcover edition is actually audio. Shared-book ownership is resolved
+    // from active Grimmory siblings above; an inactive ABS sibling must not
+    // rewrite the primary book record as audio.
     const trustCurrentEditionForAudio = mediaType !== "audiobook" || inferredMediaType === "audiobook";
     const edition = mediaType === "audiobook"
       ? hcBook.book.default_audio_edition

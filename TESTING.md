@@ -206,7 +206,7 @@ Each `prune*UserStatesMissingFromFetch` / `prune*SourcesMissingFromFetch` helper
 
 ### `tests/server/normalization.test.ts` — Title/date helpers
 
-`normalizeTitle`, `normalizeSeriesNumber`, strict ISBN-10/ISBN-13 normalization, `newerSource`, selected-read Hardcover progress calculation, `shouldGoodreadsOverwriteGrimmory`.
+`normalizeTitle`, `normalizeSeriesNumber`, strict ISBN-10/ISBN-13 normalization, `newerSource`, selected-read Hardcover progress calculation (including duplicate blank reads), shared Hardcover book/audiobook precedence (including preventing inactive siblings from overwriting the active record), cross-media Hardcover identity validation, `shouldGoodreadsOverwriteGrimmory`.
 
 ### `tests/server/concurrency.test.ts` — Bounded work queues
 
