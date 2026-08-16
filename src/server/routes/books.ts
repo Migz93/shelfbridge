@@ -17,6 +17,7 @@ import { logger } from "../logger.js";
 import { reconcileBookIdentities } from "../db/bookIdentity.js";
 import { normalizeExternalId, identifiersEqual } from "../identifiers.js";
 import { validationErrorResponse, writeGrimmoryIdSchema } from "../validation.js";
+import { hasIdentityReviewConflict } from "../sync/identity-review.js";
 
 const router = Router();
 
@@ -182,48 +183,6 @@ function hasNeedsIdReview(row: Pick<DbBookRow,
     || (sourceHardcoverId !== null && !identifiersEqual(grimmoryHardcoverId, sourceHardcoverId));
 }
 
-function distinctClean(values: Array<string | number | null | undefined>): string[] {
-  return Array.from(new Set(
-    values
-      .map((value) => normalizeExternalId(value))
-      .filter((value): value is string => Boolean(value))
-  ));
-}
-
-function distinctComparableIds(
-  rows: Array<Pick<DbBookRow, "goodreads_book_id" | "grimmory_goodreads_id" | "hardcover_book_id" | "grimmory_hardcover_book_id">>,
-  source: "goodreads" | "hardcover"
-): string[] {
-  if (source === "goodreads") {
-    const comparableRows = rows.filter((row) => normalizeExternalId(row.goodreads_book_id) !== null);
-    return distinctClean(comparableRows.flatMap((row) => [row.goodreads_book_id, row.grimmory_goodreads_id]));
-  }
-
-  // Only compare Grimmory's stored Hardcover ID when we also have a ShelfBridge
-  // Hardcover source row for the canonical book. Grimmory can legitimately carry
-  // a Hardcover cross-reference for books that never came from Hardcover.
-  const comparableRows = rows.filter((row) => row.hardcover_book_id !== null);
-  return distinctClean(comparableRows.flatMap((row) => [row.hardcover_book_id, row.grimmory_hardcover_book_id]));
-}
-
-function hasAggregateSourceReviewConflict(
-  rows: Array<Pick<DbBookRow, "goodreads_book_id" | "grimmory_goodreads_id" | "hardcover_book_id" | "grimmory_hardcover_book_id">>,
-  source: "goodreads" | "hardcover"
-): boolean {
-  const sourceIds = distinctComparableIds(rows, source);
-  const grimmoryIds = source === "goodreads"
-    ? distinctClean(rows.map((row) => row.grimmory_goodreads_id))
-    : distinctClean(rows.map((row) => row.grimmory_hardcover_book_id));
-
-  // If Grimmory doesn't carry an ID for this source, there is nothing actionable
-  // to review here beyond the canonical merge itself.
-  if (grimmoryIds.length === 0) return false;
-  if (grimmoryIds.length > 1) return true;
-
-  const [grimmoryId] = grimmoryIds;
-  return grimmoryId !== undefined && sourceIds.length > 0 && !sourceIds.includes(grimmoryId);
-}
-
 function normalizeReviewText(value: string | null | undefined): string | null {
   const text = value
     ?.toLowerCase()
@@ -385,24 +344,6 @@ function dbToDuplicateCandidate(rows: DbBookRow[], mergeEligible: boolean): Book
     seriesNumber: row.book_series_number,
     mergeEligible
   };
-}
-
-// book_sources rows for Grimmory/Hardcover/Goodreads are now scoped per profile
-// instance (see schema v14), so the same book can legitimately carry different
-// cross-reference IDs on different profiles' own servers — that's not a conflict.
-// Evaluate each profile's own rows independently rather than aggregating IDs
-// across every profile sharing this book.
-function hasIdentityReviewConflict(rows: DbBookRow[]): boolean {
-  const byProfile = new Map<number, DbBookRow[]>();
-  for (const row of rows) {
-    const group = byProfile.get(row.profile_id) ?? [];
-    group.push(row);
-    byProfile.set(row.profile_id, group);
-  }
-  return Array.from(byProfile.values()).some((profileRows) =>
-    hasAggregateSourceReviewConflict(profileRows, "goodreads")
-      || hasAggregateSourceReviewConflict(profileRows, "hardcover")
-  );
 }
 
 function hasBookNeedsIdReview(rows: DbBookRow[]): boolean {
