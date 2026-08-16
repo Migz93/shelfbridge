@@ -54,6 +54,10 @@ if (hasAbs && absApiKey && (hasHardcover || grimmoryAvailable)) {
     }
 
     for (const absSource of absSources) {
+      // A single book's local DB write or API call throwing must not abort
+      // every remaining book in this phase, nor get misreported by the outer
+      // catch as a whole-phase Audiobookshelf sync failure.
+      try {
       const absProgress = absProgressIndex.get(absSource.abs_item_id);
 
       // HC user state (if HC configured)
@@ -557,6 +561,12 @@ if (hasAbs && absApiKey && (hasHardcover || grimmoryAvailable)) {
           recordEvent(db, runId, profileId, "", "skipped_no_change", "abs_to_hardcover", "hc_user_book_id_missing", { pct: absSourcePct });
           counters.skipped++;
         }
+      }
+      } catch (err) {
+        logger.warn("Failed to process one Audiobookshelf book; continuing with the rest", {
+          profileId, absItemId: absSource.abs_item_id, bookId: absSource.book_id, error: err
+        });
+        recordEvent(db, runId, profileId, "", "api_failure", "audiobookshelf", "book_processing_failed", { error: String(err) });
       }
     }
   } catch (err) {
