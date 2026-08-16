@@ -77,13 +77,24 @@ if (hasAbs && absApiKey && (hasHardcover || grimmoryAvailable)) {
       // away from the edition we're actually tracking progress against). Scoped
       // to this profile's own Hardcover instance — each profile can track a
       // different edition of the same book.
-      const hcAudioSecondsRow = hasHardcover ? db.prepare(`
-        SELECT hardcover_audio_seconds, source_edition_id, external_id FROM book_sources
+      // Selects every hardcover book_sources column this book's iteration needs,
+      // fetched once and reused below instead of re-querying the same row later
+      // in the loop (nothing writes to this profile's hardcover book_sources row
+      // between here and its later use).
+      const hcSourceRow = hasHardcover ? db.prepare(`
+        SELECT external_id, source_edition_id, source_media_type, source_audible_asin, hardcover_audio_seconds
+        FROM book_sources
         WHERE source_type = 'hardcover' AND source_instance_id = ? AND book_id = ?
-      `).get(profileId, absSource.book_id) as { hardcover_audio_seconds: number | null; source_edition_id: string | null; external_id: string } | undefined : undefined;
-      const hcAudioSeconds = hcAudioSecondsRow?.hardcover_audio_seconds ?? null;
-      const persistedAudioEditionId = hcAudioSecondsRow?.source_edition_id != null
-        ? Number.parseInt(hcAudioSecondsRow.source_edition_id, 10)
+      `).get(profileId, absSource.book_id) as {
+        external_id: string;
+        source_edition_id: string | number | null;
+        source_media_type: string | null;
+        source_audible_asin: string | null;
+        hardcover_audio_seconds: number | null;
+      } | undefined : undefined;
+      const hcAudioSeconds = hcSourceRow?.hardcover_audio_seconds ?? null;
+      const persistedAudioEditionId = hcSourceRow?.source_edition_id != null
+        ? Number.parseInt(String(hcSourceRow.source_edition_id), 10)
         : null;
       // Hardcover's own live "current edition" pointer for this book right
       // now — compared against our persisted target below to detect drift
@@ -115,7 +126,7 @@ if (hasAbs && absApiKey && (hasHardcover || grimmoryAvailable)) {
       // source row when it shares the Hardcover work with an ebook/print
       // canonical. Fall back to Grimmory's shared work ID so live Hardcover
       // status can still correct a stale local audio state.
-      const liveHardcoverBookId = hcAudioSecondsRow?.external_id
+      const liveHardcoverBookId = hcSourceRow?.external_id
         ?? localIdentityGrBook?.hardcoverBookId
         ?? sharedHardcoverSource?.source_hardcover_book_id
         ?? null;
@@ -312,17 +323,6 @@ if (hasAbs && absApiKey && (hasHardcover || grimmoryAvailable)) {
         && liveHcBookForEdition !== undefined
         && liveHcBookForEdition.edition_id !== persistedAudioEditionId;
       if (needsWrite(effectiveHcProgress) || hcReadNeedsCorrection || hcStatusNeedsCorrection || hcEditionNeedsCorrection) {
-        const hcSourceRow = hasHardcover ? db.prepare(`
-          SELECT external_id, source_edition_id, source_media_type, source_audible_asin, hardcover_audio_seconds
-          FROM book_sources
-          WHERE source_type = 'hardcover' AND source_instance_id = ? AND book_id = ?
-        `).get(profileId, absSource.book_id) as {
-          external_id: string;
-          source_edition_id: string | number | null;
-          source_media_type: string | null;
-          source_audible_asin: string | null;
-          hardcover_audio_seconds: number | null;
-        } | undefined : undefined;
         // Scoped to this profile's own Grimmory/ABS instances — these values feed a
         // Hardcover edition lookup made through this profile's own Hardcover token,
         // so another profile's cross-reference data must not leak in.

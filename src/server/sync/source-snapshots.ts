@@ -5,6 +5,9 @@ import type { GrimmoryBook } from "./grimmory.js";
 import { normalizeExternalId } from "../identifiers.js";
 import type { getDb } from "../db/index.js";
 import type { SourceSnapshotStatus } from "./pruning.js";
+import { mapWithConcurrency } from "./concurrency.js";
+
+const GRIMMORY_PROGRESS_FETCH_CONCURRENCY = 8;
 
 type Db = ReturnType<typeof getDb>;
 export type SnapshotContext = {
@@ -172,7 +175,7 @@ if (hasGrimmory) {
 // Fetch Grimmory progress (needed for Phase B Grimmory user state)
 const grimmoryProgressById = new Map<number, { readProgress: number | null; lastReadTime: string | null; readStatus: string | null }>();
 if (grimmoryAvailable && grimmoryToken && profile["sync_progress_enabled"] !== 0) {
-  for (const grBook of grimmoryBooks) {
+  await mapWithConcurrency(grimmoryBooks, GRIMMORY_PROGRESS_FETCH_CONCURRENCY, async (grBook) => {
     try {
       const progress = await adapters.fetchGrimmoryProgress(baseUrl, grimmoryToken, grBook.id);
       grimmoryProgressById.set(grBook.id, progress);
@@ -181,7 +184,7 @@ if (grimmoryAvailable && grimmoryToken && profile["sync_progress_enabled"] !== 0
     } catch (err) {
       logger.warn("Failed to fetch Grimmory progress", { profileId, grimmoryBookId: grBook.id, error: err });
     }
-  }
+  });
 }
 
 // Books with a runtime-validated Audiobookshelf link are ABS-owned: ABS is
