@@ -1117,26 +1117,50 @@ router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
       resolvedPlans.push({ plan, baseUrl, token, grimmoryLocalId });
     }
 
+    // Each plan writes to a remote Grimmory server first and cannot be rolled
+    // back once that write lands — so a later plan failing must not make this
+    // endpoint report total failure (502) for a request that already partly
+    // applied. Every plan runs regardless of an earlier one's outcome, and the
+    // response reports exactly which profiles succeeded and which didn't.
+    const succeededProfileIds: number[] = [];
+    const failures: Array<{ profileId: number; error: string }> = [];
     for (const { plan, baseUrl, token, grimmoryLocalId } of resolvedPlans) {
       const hardcoverId = plan.hardcover?.hardcover_slug?.trim() || plan.grimmory.grimmory_hardcover_id?.trim() || undefined;
-      await writeAndPersistDuplicateMergePlan(db, {
-        bookId: plan.grimmoryBookId, profileId: plan.profileId,
-        goodreadsId: plan.goodreads?.external_id ?? null, hardcoverBookId: plan.hardcover?.external_id ?? null,
-        hardcoverId: hardcoverId ?? null
-      }, async () => {
-        await writeGrimmoryExternalIds(baseUrl, token, grimmoryLocalId, {
-          ...(plan.goodreads?.external_id ? { goodreadsId: plan.goodreads.external_id } : {}),
-          ...(plan.hardcover?.external_id ? { hardcoverBookId: plan.hardcover.external_id, hardcoverId } : {})
+      try {
+        await writeAndPersistDuplicateMergePlan(db, {
+          bookId: plan.grimmoryBookId, profileId: plan.profileId,
+          goodreadsId: plan.goodreads?.external_id ?? null, hardcoverBookId: plan.hardcover?.external_id ?? null,
+          hardcoverId: hardcoverId ?? null
+        }, async () => {
+          await writeGrimmoryExternalIds(baseUrl, token, grimmoryLocalId, {
+            ...(plan.goodreads?.external_id ? { goodreadsId: plan.goodreads.external_id } : {}),
+            ...(plan.hardcover?.external_id ? { hardcoverBookId: plan.hardcover.external_id, hardcoverId } : {})
+          });
         });
-      });
+        succeededProfileIds.push(plan.profileId);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn("Duplicate merge plan failed for one profile; continuing with the rest", { bookId, duplicateId, profileId: plan.profileId, error: err });
+        failures.push({ profileId: plan.profileId, error: message });
+      }
     }
+
+    if (succeededProfileIds.length === 0) {
+      res.status(502).json({ error: "Merge failed for every profile", failures });
+      return;
+    }
+
     db.transaction(() => {
       reconcileBookIdentities(db);
     })();
     const reconciled = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(plans[0]!.grimmory.id) as { book_id: number } | undefined;
     if (!reconciled) throw new Error("Reconciled Grimmory record could not be found");
-    logger.info("Merged duplicate by repairing Grimmory authoritative IDs", { bookId, duplicateId, plans: plans.map((plan) => ({ authoritativeBookId: plan.authoritativeBookId, grimmoryBookId: plan.grimmoryBookId, profileId: plan.profileId, goodreads: Boolean(plan.goodreads), hardcover: Boolean(plan.hardcover) })) });
-    res.json({ ok: true, bookId: reconciled.book_id });
+    logger.info("Merged duplicate by repairing Grimmory authoritative IDs", { bookId, duplicateId, succeededProfileIds, failures, plans: plans.map((plan) => ({ authoritativeBookId: plan.authoritativeBookId, grimmoryBookId: plan.grimmoryBookId, profileId: plan.profileId, goodreads: Boolean(plan.goodreads), hardcover: Boolean(plan.hardcover) })) });
+    if (failures.length > 0) {
+      res.status(207).json({ ok: true, bookId: reconciled.book_id, succeededProfileIds, failures });
+    } else {
+      res.json({ ok: true, bookId: reconciled.book_id });
+    }
   } catch (err) { logger.warn("Failed duplicate merge", { bookId, duplicateId, error: err }); res.status(502).json({ error: err instanceof Error ? err.message : String(err) }); }
 });
 
