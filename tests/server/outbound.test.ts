@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fetchIntegration, UnsafeIntegrationUrlError, validateIntegrationUrl } from "../../src/server/security/outbound.js";
+import { fetchIntegration, UnsafeIntegrationUrlError, validateIntegrationUrl, validateOutboundUrl } from "../../src/server/security/outbound.js";
 
 test("integration URLs allow normal LAN HTTP endpoints", () => {
   assert.equal(validateIntegrationUrl("http://192.168.1.20:9303/api/"), "http://192.168.1.20:9303/api");
@@ -11,6 +11,13 @@ test("integration URLs reject invalid schemes, credentials, and non-strings", ()
   for (const value of ["ftp://example.test", "https://user:pass@example.test", "/api/v1", null, 42]) {
     assert.throws(() => validateIntegrationUrl(value), UnsafeIntegrationUrlError);
   }
+});
+
+test("outbound integration requests reject an empty URL", () => {
+  assert.throws(
+    () => validateOutboundUrl(""),
+    (error: unknown) => error instanceof UnsafeIntegrationUrlError && error.message === "Integration URL must not be empty"
+  );
 });
 
 test("integration requests disable automatic redirects", async () => {

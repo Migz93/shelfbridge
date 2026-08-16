@@ -28,6 +28,14 @@ export function validateIntegrationUrl(value: unknown): string {
   return url.toString().replace(/\/$/, "");
 }
 
+export function validateOutboundUrl(value: unknown): string {
+  const url = validateIntegrationUrl(value);
+  if (!url) {
+    throw new UnsafeIntegrationUrlError("Integration URL must not be empty");
+  }
+  return url;
+}
+
 export async function fetchIntegration(url: string, init: RequestInit = {}): Promise<Response> {
-  return fetch(validateIntegrationUrl(url), { ...init, redirect: "error" });
+  return fetch(validateOutboundUrl(url), { ...init, redirect: "error" });
 }
