@@ -1,4 +1,4 @@
-<!-- shared: content — keep in sync across Migz93 self-hosted apps -->
+<!-- shared: structure — headings kept in sync across Migz93 self-hosted apps, content is app-specific -->
 
 # Contributing
 
