@@ -353,15 +353,58 @@ test("reconcileBookIdentities aggregates many ambiguous Chaptarr file-path skips
     const aggregatedWarnCalls = warnCalls.filter((call) => call.message === "Skipped Chaptarr file-path reassignment across scoped source profiles");
     assert.equal(aggregatedWarnCalls.length, 1, "a sync with many ambiguous paths must produce exactly one aggregated warning, not one per group");
 
-    const meta = aggregatedWarnCalls[0]?.meta as { skippedGroups: number; sample: Array<{ path: string; instanceIds: unknown[] }> };
+    const meta = aggregatedWarnCalls[0]?.meta as { skippedGroups: number; sample: Array<{ path: string; instanceIds: Array<number | null> }> };
     assert.equal(meta.skippedGroups, ambiguousGroupCount);
     assert.ok(meta.sample.length > 0, "the warning must include a sample of affected paths");
     assert.ok(meta.sample.length <= sampleLimit, `the sample must be bounded to ${sampleLimit} entries, not one per skipped group`);
+    for (const entry of meta.sample) {
+      assert.ok(entry.path.startsWith("/library/ambiguous-"), "each sample entry must reference one of the ambiguous paths");
+      assert.deepEqual(new Set(entry.instanceIds), new Set([firstProfile, secondProfile]), "each sample entry must identify the two colliding scoped profile instances");
+    }
 
     for (const externalId of chaptarrExternalIds) {
       const chaptarrRow = db.prepare("SELECT book_id FROM book_sources WHERE source_type = 'chaptarr' AND external_id = ?").get(externalId) as { book_id: number };
       assert.equal(chaptarrRow.book_id, originalChaptarrBookIds.get(externalId), `Chaptarr row ${externalId} must keep its original canonical book, not the ambiguous cross-profile one`);
     }
+  } finally {
+    (logger as unknown as { warn: typeof logger.warn }).warn = originalWarn;
+    cleanup();
+  }
+});
+
+test("reconcileBookIdentities does not let a single crossing path fill the aggregated warning's sample with duplicates", () => {
+  const { db, cleanup } = createTestDatabase();
+  const originalWarn = logger.warn.bind(logger);
+  const warnCalls: Array<{ message: string; meta?: unknown }> = [];
+  (logger as unknown as { warn: typeof logger.warn }).warn = ((message: string, meta?: unknown) => {
+    warnCalls.push({ message, meta });
+  }) as typeof logger.warn;
+  try {
+    const firstProfile = seedProfile(db, "First");
+    const secondProfile = seedProfile(db, "Second");
+    const path = "/library/duplicated-within-group.epub";
+    // Inserted before the Grimmory rows so the reconciler's file-path union-find
+    // pass picks one of these as the pivot for this path: the two Chaptarr rows
+    // (matching title/author, no conflicting IDs) merge into a single group, while
+    // the pivot's pairing with each ambiguous Grimmory row is independently
+    // skipped. The group's file-path keys then contain this crossing path twice
+    // before deduplication.
+    db.prepare("INSERT INTO book_sources (source_type, external_id, title, author, source_media_type, chaptarr_primary_file_path) VALUES ('chaptarr', 'chap-1', 'Duplicated', 'Author', 'book', ?)").run(path);
+    db.prepare("INSERT INTO book_sources (source_type, external_id, title, author, source_media_type, chaptarr_primary_file_path) VALUES ('chaptarr', 'chap-2', 'Duplicated', 'Author', 'book', ?)").run(path);
+    const firstBookId = Number(db.prepare("INSERT INTO books (title) VALUES ('First')").run().lastInsertRowid);
+    const secondBookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Second')").run().lastInsertRowid);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type, grimmory_primary_file_path) VALUES (?, 'grimmory', ?, '1', 'First', 'book', ?)").run(firstBookId, firstProfile, path);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type, grimmory_primary_file_path) VALUES (?, 'grimmory', ?, '1', 'Second', 'book', ?)").run(secondBookId, secondProfile, path);
+
+    reconcileBookIdentities(db);
+
+    const aggregatedWarnCalls = warnCalls.filter((call) => call.message === "Skipped Chaptarr file-path reassignment across scoped source profiles");
+    assert.equal(aggregatedWarnCalls.length, 1);
+
+    const meta = aggregatedWarnCalls[0]?.meta as { skippedGroups: number; sample: Array<{ path: string; instanceIds: unknown[] }> };
+    assert.equal(meta.skippedGroups, 1);
+    const samplesForPath = meta.sample.filter((entry) => entry.path === path);
+    assert.equal(samplesForPath.length, 1, "a path shared by two rows within the same skipped group must appear once in the sample, not once per row");
   } finally {
     (logger as unknown as { warn: typeof logger.warn }).warn = originalWarn;
     cleanup();

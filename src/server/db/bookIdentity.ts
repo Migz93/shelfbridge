@@ -905,9 +905,11 @@ export function reconcileBookIdentities(db: Database.Database): void {
         // proven canonical record without collapsing the ebook and audiobook
         // records into each other.
         const groupFilePathKeys = group.flatMap((row) => filePathIdentityKeys(row));
-        const crossingFilePathKeys = groupFilePathKeys.filter(
-          (key) => (scopedInstancesByCanonicalFilePath.get(key)?.size ?? 0) > 1
-        );
+        const crossingFilePathKeys = Array.from(new Set(
+          groupFilePathKeys.filter(
+            (key) => (scopedInstancesByCanonicalFilePath.get(key)?.size ?? 0) > 1
+          )
+        ));
         const crossesScopedProfiles = crossingFilePathKeys.length > 0;
         const filePathCanonicalId = crossesScopedProfiles ? undefined : groupFilePathKeys
           .flatMap((key) => canonicalBookIdsByFilePath.get(key) ?? [])
