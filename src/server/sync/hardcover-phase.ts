@@ -1,10 +1,94 @@
 import { logger } from "../logger.js";
-import { grimmoryRating } from "./grimmory.js";
-import { HARDCOVER_TO_GRIMMORY, matchHardcoverBook } from "./matcher.js";
-import type { HardcoverReadFields } from "./hardcover.js";
-import { getBookSource, getGoodreadsExternalId } from "./repository.js";
+import { grimmoryRating, type GrimmoryBook } from "./grimmory.js";
+import { buildGrimmoryIndex, HARDCOVER_TO_GRIMMORY, matchHardcoverBook } from "./matcher.js";
+import type { HardcoverEdition, HardcoverReadFields, HardcoverUserBook } from "./hardcover.js";
+import { getBookSource, getGoodreadsExternalId, getUserState, localGrimmoryBookForBookId } from "./repository.js";
+import type { getDb } from "../db/index.js";
+import type { SyncAdapters } from "./adapters.js";
+import type { cacheGrimmoryCover, cacheSourceCover } from "./covers.js";
+import type { ConflictStrategy, computeSyncDecision } from "./conflict-policy.js";
+import type {
+  activeGrimmorySiblingsForHardcover,
+  audiobookRuntimeForBook,
+  cleanupDuplicateBlankHardcoverReads,
+  grimmoryToHardcoverRating,
+  hardcoverDate,
+  hardcoverFieldsFromGrimmory,
+  hardcoverPages,
+  hardcoverProgressPercent,
+  hardcoverToGrimmoryRating,
+  hasActiveBookSiblingForSharedHardcover,
+  hasMeaningfulGrChange,
+  hasMeaningfulHcChange,
+  latestHardcoverRead,
+  meaningfulProgress,
+  newerSource,
+  persistResolvedHardcoverAudioEdition,
+  positiveRating,
+  progressPagesFromPercent,
+  sameNumber,
+  sqliteNow,
+  SyncCounters,
+  todayDate
+} from "./sync-utils.js";
 
-export async function syncHardcoverState(context: any): Promise<void> {
+type Db = ReturnType<typeof getDb>;
+type RecordEvent = (db: Db, runId: number, profileId: number, bookTitle: string, eventType: string, direction: string | null, decision: string, details: Record<string, unknown>) => void;
+
+export interface HardcoverStateContext {
+  db: Db;
+  profileId: number;
+  runId: number;
+  dryRun: boolean;
+  adapters: SyncAdapters;
+  counters: SyncCounters;
+  hcBooks: HardcoverUserBook[];
+  hcEditions: Map<number, HardcoverEdition>;
+  grimmoryBooks: GrimmoryBook[];
+  grimmoryAvailable: boolean;
+  hasGrimmory: boolean;
+  baseUrl: string;
+  grimmoryToken: string | null;
+  hardcoverToken: string;
+  profile: Record<string, unknown>;
+  recordEvent: RecordEvent;
+  getUserState: typeof getUserState;
+  localGrimmoryBookForBookId: typeof localGrimmoryBookForBookId;
+  cacheSourceCover: typeof cacheSourceCover;
+  cacheGrimmoryCover: typeof cacheGrimmoryCover;
+  computeSyncDecision: typeof computeSyncDecision;
+  cleanupDuplicateBlankHardcoverReads: typeof cleanupDuplicateBlankHardcoverReads;
+  hasMeaningfulHcChange: typeof hasMeaningfulHcChange;
+  hasMeaningfulGrChange: typeof hasMeaningfulGrChange;
+  sameNumber: typeof sameNumber;
+  grimmoryToHardcoverRating: typeof grimmoryToHardcoverRating;
+  hardcoverToGrimmoryRating: typeof hardcoverToGrimmoryRating;
+  hardcoverFieldsFromGrimmory: typeof hardcoverFieldsFromGrimmory;
+  progressPagesFromPercent: typeof progressPagesFromPercent;
+  latestHardcoverRead: typeof latestHardcoverRead;
+  hardcoverPages: typeof hardcoverPages;
+  persistResolvedHardcoverAudioEdition: typeof persistResolvedHardcoverAudioEdition;
+  todayDate: typeof todayDate;
+  sqliteNow: typeof sqliteNow;
+  conflictStrategy: ConflictStrategy;
+  grimmoryIndex: ReturnType<typeof buildGrimmoryIndex>;
+  matchedGrimmoryIds: Set<number>;
+  writeTagEnabled: boolean;
+  taggedSourceGrimmoryIds: Set<number>;
+  taggedSourceTitles: Map<number, string>;
+  hardcoverSourceGrimmoryIds: Set<number>;
+  audiobookRuntimeForBook: typeof audiobookRuntimeForBook;
+  hardcoverProgressPercent: typeof hardcoverProgressPercent;
+  absOwnedBookIds: Set<number>;
+  positiveRating: typeof positiveRating;
+  newerSource: typeof newerSource;
+  meaningfulProgress: typeof meaningfulProgress;
+  hardcoverDate: typeof hardcoverDate;
+  activeGrimmorySiblingsForHardcover: typeof activeGrimmorySiblingsForHardcover;
+  hasActiveBookSiblingForSharedHardcover: typeof hasActiveBookSiblingForSharedHardcover;
+}
+
+export async function syncHardcoverState(context: HardcoverStateContext): Promise<void> {
   const { db, profileId, runId, dryRun, adapters, counters, hcBooks,
     grimmoryBooks, grimmoryAvailable, hasGrimmory, baseUrl, grimmoryToken,
     hardcoverToken, profile, recordEvent, getUserState, localGrimmoryBookForBookId,
@@ -412,7 +496,7 @@ for (const hcBook of hcBooks) {
     if (needsEditionResolution && hardcoverToken) {
       try {
         const editions = await adapters.fetchEditionsForBook(hardcoverToken, hcBook.book.id);
-        const matched = editions.find((e: any) => e.pages === hcPages);
+        const matched = editions.find((e) => e.pages === hcPages);
         if (matched) {
           resolvedEditionId = matched.id;
           db.prepare(`
@@ -430,7 +514,7 @@ for (const hcBook of hcBooks) {
             WHERE book_id = ? AND profile_id = ? AND source_type = 'hardcover'
           `).run(hcPages, bookId, profileId);
           logger.warn("No Hardcover edition matched page count; edition will not be set on progress writes", {
-            profileId, bookId, hcPages, available: editions.map((e: any) => e.pages)
+            profileId, bookId, hcPages, available: editions.map((e) => e.pages)
           });
         }
       } catch (editionErr) {

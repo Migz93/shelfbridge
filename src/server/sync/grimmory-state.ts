@@ -1,7 +1,50 @@
 import { logger } from "../logger.js";
-import { grimmoryRating } from "./grimmory.js";
-import { getBookSource } from "./repository.js";
-export async function syncGrimmoryState(context: any): Promise<void> {
+import { grimmoryRating, type GrimmoryBook } from "./grimmory.js";
+import { getBookSource, getUserState } from "./repository.js";
+import type { getDb } from "../db/index.js";
+import type { SyncAdapters } from "./adapters.js";
+import type {
+  grimmoryToHardcoverRating,
+  hardcoverFieldsFromGrimmory,
+  hasGrimmoryUserActivity,
+  hasMeaningfulGrChange,
+  shouldAbsAudiobookOwnSharedHardcover,
+  shouldActiveSiblingOwnSharedHardcover,
+  SyncCounters
+} from "./sync-utils.js";
+import type { pruneGrimmorySourcesMissingFromFetch, pruneGrimmoryUserStatesMissingFromFetch, SourceSnapshotStatus } from "./pruning.js";
+
+type Db = ReturnType<typeof getDb>;
+type RecordEvent = (db: Db, runId: number, profileId: number, bookTitle: string, eventType: string, direction: string | null, decision: string, details: Record<string, unknown>) => void;
+
+export interface GrimmoryStateContext {
+  db: Db;
+  profileId: number;
+  runId: number;
+  grimmoryBooks: GrimmoryBook[];
+  grimmoryAvailable: boolean;
+  counters: SyncCounters;
+  recordEvent: RecordEvent;
+  getUserState: typeof getUserState;
+  hasMeaningfulGrChange: typeof hasMeaningfulGrChange;
+  dryRun: boolean;
+  hasGrimmoryUserActivity: typeof hasGrimmoryUserActivity;
+  matchedGrimmoryIds: Set<number>;
+  hardcoverFieldsFromGrimmory: typeof hardcoverFieldsFromGrimmory;
+  grimmoryToHardcoverRating: typeof grimmoryToHardcoverRating;
+  shouldActiveSiblingOwnSharedHardcover: typeof shouldActiveSiblingOwnSharedHardcover;
+  shouldAbsAudiobookOwnSharedHardcover: typeof shouldAbsAudiobookOwnSharedHardcover;
+  absOwnedHardcoverBookIds: Set<string>;
+  hasHardcover: boolean;
+  profile: Record<string, unknown>;
+  adapters: SyncAdapters;
+  hardcoverToken: string;
+  pruneGrimmoryUserStatesMissingFromFetch: typeof pruneGrimmoryUserStatesMissingFromFetch;
+  pruneGrimmorySourcesMissingFromFetch: typeof pruneGrimmorySourcesMissingFromFetch;
+  grimmorySnapshotStatus: SourceSnapshotStatus;
+}
+
+export async function syncGrimmoryState(context: GrimmoryStateContext): Promise<void> {
   const { db, profileId, runId, grimmoryBooks, grimmoryAvailable, counters, recordEvent,
     getUserState, hasMeaningfulGrChange, dryRun, hasGrimmoryUserActivity,
     matchedGrimmoryIds, hardcoverFieldsFromGrimmory, grimmoryToHardcoverRating,
@@ -134,9 +177,9 @@ if (grimmoryAvailable) {
     }
   }
 
-  pruneGrimmoryUserStatesMissingFromFetch(db, profileId, new Set(grimmoryBooks.map((b: any) => b.id)), grimmorySnapshotStatus);
+  pruneGrimmoryUserStatesMissingFromFetch(db, profileId, new Set(grimmoryBooks.map((b) => b.id)), grimmorySnapshotStatus);
   // Source pruning preserves rows with a live state, so it must run second.
-  pruneGrimmorySourcesMissingFromFetch(db, profileId, new Set(grimmoryBooks.map((b: any) => b.id)), grimmorySnapshotStatus);
+  pruneGrimmorySourcesMissingFromFetch(db, profileId, new Set(grimmoryBooks.map((b) => b.id)), grimmorySnapshotStatus);
   logger.info("Grimmory user_book_states written", { profileId, count: grimmoryBooks.length });
 }
 
