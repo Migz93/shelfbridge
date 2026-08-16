@@ -329,6 +329,9 @@ test("reconcileBookIdentities aggregates many ambiguous Chaptarr file-path skips
     const firstProfile = seedProfile(db, "First");
     const secondProfile = seedProfile(db, "Second");
     const ambiguousGroupCount = 8;
+    const sampleLimit = 5;
+    const chaptarrExternalIds: string[] = [];
+    const originalChaptarrBookIds = new Map<string, number>();
 
     for (let i = 0; i < ambiguousGroupCount; i++) {
       const path = `/library/ambiguous-${i}.epub`;
@@ -339,8 +342,11 @@ test("reconcileBookIdentities aggregates many ambiguous Chaptarr file-path skips
         .run(firstBookId, firstProfile, `first-${i}`, `First ${i}`, path);
       db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type, grimmory_primary_file_path) VALUES (?, 'grimmory', ?, ?, ?, 'book', ?)")
         .run(secondBookId, secondProfile, `second-${i}`, `Second ${i}`, path);
+      const chaptarrExternalId = `chap-${i}`;
       db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type, chaptarr_primary_file_path) VALUES (?, 'chaptarr', 0, ?, ?, 'book', ?)")
-        .run(chaptarrBookId, `chap-${i}`, `Chaptarr ${i}`, path);
+        .run(chaptarrBookId, chaptarrExternalId, `Chaptarr ${i}`, path);
+      chaptarrExternalIds.push(chaptarrExternalId);
+      originalChaptarrBookIds.set(chaptarrExternalId, chaptarrBookId);
     }
 
     reconcileBookIdentities(db);
@@ -351,7 +357,12 @@ test("reconcileBookIdentities aggregates many ambiguous Chaptarr file-path skips
     const meta = aggregatedWarnCalls[0]?.meta as { skippedGroups: number; sample: Array<{ path: string; instanceIds: unknown[] }> };
     assert.equal(meta.skippedGroups, ambiguousGroupCount);
     assert.ok(meta.sample.length > 0, "the warning must include a sample of affected paths");
-    assert.ok(meta.sample.length < ambiguousGroupCount, "the sample must be bounded, not one entry per skipped group");
+    assert.ok(meta.sample.length <= sampleLimit, `the sample must be bounded to ${sampleLimit} entries, not one per skipped group`);
+
+    for (const externalId of chaptarrExternalIds) {
+      const chaptarrRow = db.prepare("SELECT book_id FROM book_sources WHERE source_type = 'chaptarr' AND external_id = ?").get(externalId) as { book_id: number };
+      assert.equal(chaptarrRow.book_id, originalChaptarrBookIds.get(externalId), `Chaptarr row ${externalId} must keep its original canonical book, not the ambiguous cross-profile one`);
+    }
   } finally {
     (logger as unknown as { warn: typeof logger.warn }).warn = originalWarn;
     cleanup();
