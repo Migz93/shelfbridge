@@ -163,31 +163,41 @@ library/catalog source. A Chaptarr-only row should never create a blank book car
 instead, Chaptarr fields are left-joined onto canonical books that already have a
 real catalog source.
 
-The Books page has four filter rows:
+The Books page filter bar has six labeled rows (three on the left, three on
+the right):
 
-- **Sources** — **Hardcover**, **Goodreads**, **Audiobookshelf**, and **On Disk** chips cycle through
+- **Sources** — **Hardcover**, **Goodreads**, and **On Disk** chips cycle through
   include (blue) → exclude (red) → off on successive clicks. Source filters are
   evaluated at the book level: a book is "in Hardcover" if it has a `book_sources`
   row with `source_type='hardcover'`; "in Goodreads" if it has a `goodreads_book_link`;
   "On Disk" if it has a `book_sources` row for `grimmory` or `chaptarr`. Include
   and exclude filters therefore apply to the entire book cluster, not just individual rows.
-- **Profile** — narrows to one user's books, but only when that profile has an
+- **Users** — narrows to one profile's books, but only when that profile has an
   actual imported relationship for the canonical book. Shared catalog presence
   from Grimmory or Chaptarr alone is not enough to make a book appear for a
-  user. Profile chip counts follow the same rule and are based on active
-  per-user relationships only.
-- **Presence** — **Chaptarr** chip cycles through three states: include (blue) →
+  user. Chip counts follow the same rule and are based on active per-user
+  relationships only.
+- **Status** — reading state (All / Want to Read / Reading / Read / Did Not Finish)
+- **Presence** — a **Chaptarr** chip cycles through three states: include (blue) →
   exclude (red) → off. Chaptarr "in" means the book is monitored in Chaptarr.
   Presence is evaluated at the book level: a book is "in Chaptarr" if its
   `book_sources(source_type='chaptarr')` row has `chaptarr_monitored = 1`.
-- **Actions** — pre-composed pipeline-gap shortcuts. Each chip answers one step
-  in the download pipeline and tells you what to do next:
+- **Actions** — pipeline-gap shortcuts. Each chip answers one step in the
+  download pipeline and tells you what to do next:
   - **Add to Chaptarr** — in Hardcover/Goodreads but not monitored in Chaptarr
   - **Grab in Chaptarr** — monitored in Chaptarr but file not yet downloaded
   - **Review in Grimmory** — file downloaded in Chaptarr but no Grimmory match (likely a wrong ID)
-  - **ID Review** — ShelfBridge detected conflicting external IDs for this book
-  - **ABS Runtime Mismatch** — ABS item duration does not match the expected Grimmory/Hardcover runtime
-- **Status** — reading state (All / Want to Read / Reading / Read / Did Not Finish)
+- **Review** — chips that surface data-quality issues rather than pipeline gaps:
+  - **Bad Chaptarr ID** — Chaptarr's own upstream ID doesn't match its matched book (only shown when this applies to at least one book)
+  - **ID Review** — ShelfBridge detected conflicting external IDs for this book across sources
+  - **Possible Duplicates** — a loose title/author match that hasn't been confirmed as the same book
+
+One more action value exists but isn't a clickable chip on this page —
+**ABS Runtime Mismatch** (`action=abs-runtime-mismatch` in the URL, reachable
+from a Dashboard link): flags a book whose Audiobookshelf item hasn't been
+runtime-validated yet, or whose duration differs from Hardcover's audio
+edition duration by more than 5%. It only ever compares against Hardcover's
+audio duration, never Grimmory's.
 
 Poster aspect ratio is media-type specific:
 

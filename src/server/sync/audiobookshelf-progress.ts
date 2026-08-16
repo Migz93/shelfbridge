@@ -415,6 +415,16 @@ if (hasAbs && absApiKey && (hasHardcover || grimmoryAvailable)) {
                 userBookPatch.status_id = desiredStatusId;
               }
               if (Object.keys(userBookPatch).length > 0) {
+                // Hardcover's own website appears to feature whichever read was
+                // edited most recently in its "Currently Reading" widget,
+                // independent of finished_at or this edition_id pointer. A
+                // one-off manual edit to an older finished read (e.g.
+                // correcting its date) can therefore make Hardcover's UI
+                // feature that read instead of the actively-progressing one,
+                // even though all underlying data here is correct. This is a
+                // Hardcover-side display quirk, not something this patch
+                // controls — it resolves itself once the actively-tracked
+                // read is written to again.
                 await adapters.updateHardcoverUserBook(hardcoverToken, hcState.hardcover_user_book_id, userBookPatch);
               }
               // Our cached hardcover_read_id can go stale — e.g. Hardcover
