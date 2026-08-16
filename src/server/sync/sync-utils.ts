@@ -386,18 +386,26 @@ export function activeGrimmorySiblingsForHardcover(grimmoryBooks: GrimmoryBook[]
   };
 }
 
-export function shouldBookProgressOwnSharedHardcover(grimmoryBooks: GrimmoryBook[], hardcoverBookId: number | string | null | undefined): boolean {
-  if (hardcoverBookId === null || hardcoverBookId === undefined) return false;
-  const siblings = activeGrimmorySiblingsForHardcover(grimmoryBooks, hardcoverBookId);
-  return siblings.book !== null && siblings.audiobook !== null;
-}
-
 export function hasActiveBookSiblingForHardcover(
   grimmoryBooks: GrimmoryBook[],
   hardcoverBookId: number | string | null | undefined
 ): boolean {
   return hardcoverBookId !== null && hardcoverBookId !== undefined
     && activeGrimmorySiblingsForHardcover(grimmoryBooks, hardcoverBookId).book !== null;
+}
+
+/** An active book owns a Hardcover work only when a distinct audiobook shares it. */
+export function hasActiveBookSiblingForSharedHardcover(
+  grimmoryBooks: GrimmoryBook[],
+  hardcoverBookId: number | string | null | undefined
+): boolean {
+  if (hardcoverBookId === null || hardcoverBookId === undefined) return false;
+  const normalizedHardcoverId = normalizeExternalId(hardcoverBookId);
+  return normalizedHardcoverId !== null
+    && activeGrimmorySiblingsForHardcover(grimmoryBooks, hardcoverBookId).book !== null
+    && grimmoryBooks.some((book) =>
+      book.mediaType === "audiobook" && hardcoverIdForGrimmoryBook(book) === normalizedHardcoverId
+    );
 }
 
 export function shouldActiveSiblingOwnSharedHardcover(grimmoryBooks: GrimmoryBook[], grBook: GrimmoryBook): boolean {

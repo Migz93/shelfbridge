@@ -11,10 +11,10 @@ import {
   activeGrimmorySiblingsForHardcover,
   hardcoverProgressPercent,
   hasActiveBookSiblingForHardcover,
+  hasActiveBookSiblingForSharedHardcover,
   latestHardcoverRead,
   shouldAbsAudiobookOwnSharedHardcover,
-  shouldActiveSiblingOwnSharedHardcover,
-  shouldBookProgressOwnSharedHardcover
+  shouldActiveSiblingOwnSharedHardcover
 } from "../../src/server/sync/sync-utils.js";
 import { hasKnownHardcoverIdentity } from "../../src/server/sync/chaptarr.js";
 
@@ -78,8 +78,6 @@ test("shared Hardcover progress gives an active book sibling precedence over Aud
   const inactiveAudio = { id: 2, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "UNREAD" };
   const activeAudio = { ...inactiveAudio, readStatus: "READING" };
 
-  assert.equal(shouldBookProgressOwnSharedHardcover([book, inactiveAudio] as any, "42"), false);
-  assert.equal(shouldBookProgressOwnSharedHardcover([book, activeAudio] as any, "42"), true);
   const completedBook = { ...book, readStatus: "READ" };
   assert.equal(shouldActiveSiblingOwnSharedHardcover([completedBook, activeAudio] as any, completedBook as any), true);
   assert.equal(shouldActiveSiblingOwnSharedHardcover([completedBook, activeAudio] as any, activeAudio as any), false);
@@ -87,6 +85,8 @@ test("shared Hardcover progress gives an active book sibling precedence over Aud
   assert.equal(shouldAbsAudiobookOwnSharedHardcover([book, inactiveAudio] as any, book as any, new Set(["42"])), false);
   assert.equal(hasActiveBookSiblingForHardcover([book, inactiveAudio] as any, "42"), true);
   assert.equal(hasActiveBookSiblingForHardcover([inactiveAudio] as any, "42"), false);
+  assert.equal(hasActiveBookSiblingForSharedHardcover([book] as any, "42"), false);
+  assert.equal(hasActiveBookSiblingForSharedHardcover([book, inactiveAudio] as any, "42"), true);
   assert.equal(activeGrimmorySiblingsForHardcover([book, activeAudio] as any, "42").book?.id, 1);
 });
 

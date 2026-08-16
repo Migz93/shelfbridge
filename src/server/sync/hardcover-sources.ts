@@ -2,7 +2,7 @@ import { logger } from "../logger.js";
 import { normalizeExternalId } from "../identifiers.js";
 export async function persistHardcoverSources(context: any): Promise<void> {
   const { db, profileId, hcBooks, hcEditions, grimmoryAvailable, upsertBookSource, cacheSourceCover, sqliteNow,
-    hasHardcover, activeGrimmorySiblingsForHardcover, grimmoryBooks, absOwnedHardcoverBookIds,
+    hasHardcover, activeGrimmorySiblingsForHardcover, hasActiveBookSiblingForSharedHardcover, grimmoryBooks, absOwnedHardcoverBookIds,
     inferHardcoverMediaType, firstHardcoverSeries, normalizeEditionFormat, enqueueImageCacheTask,
     pruneHardcoverUserStatesMissingFromFetch, pruneHardcoverSourcesMissingFromFetch, hardcoverSnapshotStatus } = context;
 // ── Phase C: Write HC book_sources ─────────────────────────────────────
@@ -12,10 +12,9 @@ if (hasHardcover) {
     const preferredSiblings = grimmoryAvailable
       ? activeGrimmorySiblingsForHardcover(grimmoryBooks, hcBook.book.id)
       : { book: null, audiobook: null };
-    // An active ebook/print sibling wins regardless of whether Grimmory has
-    // observed an active audiobook sibling. This keeps Hardcover's shared row
-    // in the book identity bucket when its current-edition pointer drifts.
-    const bookOwnsSharedHardcover = preferredSiblings.book !== null;
+    // A book owns a shared work regardless of whether its audiobook sibling is
+    // active. Do not apply this to an ordinary book with no audio sibling.
+    const bookOwnsSharedHardcover = hasActiveBookSiblingForSharedHardcover(grimmoryBooks, hcBook.book.id);
     const absOwnsThisHardcoverBook = preferredSiblings.book === null
       && absOwnedHardcoverBookIds.has(normalizeExternalId(hcBook.book.id) ?? String(hcBook.book.id));
     const inferredMediaType = inferHardcoverMediaType(hcBook, userEdition);

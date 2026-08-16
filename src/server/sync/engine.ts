@@ -56,7 +56,7 @@ interface SyncCounters {
   sourceFailures: number;
 }
 
-const { sameNumber, positiveRating, grimmoryToHardcoverRating, hardcoverToGrimmoryRating, hasMeaningfulHcChange, hasMeaningfulGrChange, hasMeaningfulGoodreadsChange, hardcoverDate, hardcoverPages, firstHardcoverSeries, latestHardcoverRead, cleanupDuplicateBlankHardcoverReads, meaningfulProgress, audiobookRuntimeForBook, hardcoverProgressPercent, effectiveAbsCurrentTimeSeconds, persistResolvedHardcoverAudioEdition, progressPagesFromPercent, todayDate, sqliteNow, sourceTagName, hardcoverFieldsFromGrimmory, activeGrimmorySiblingsForHardcover, shouldBookProgressOwnSharedHardcover, hasActiveBookSiblingForHardcover, shouldActiveSiblingOwnSharedHardcover, shouldAbsAudiobookOwnSharedHardcover, normalizeEditionFormat, inferHardcoverMediaType, hasGrimmoryUserActivity, clampPercent } = syncUtils;
+const { sameNumber, positiveRating, grimmoryToHardcoverRating, hardcoverToGrimmoryRating, hasMeaningfulHcChange, hasMeaningfulGrChange, hasMeaningfulGoodreadsChange, hardcoverDate, hardcoverPages, firstHardcoverSeries, latestHardcoverRead, cleanupDuplicateBlankHardcoverReads, meaningfulProgress, audiobookRuntimeForBook, hardcoverProgressPercent, effectiveAbsCurrentTimeSeconds, persistResolvedHardcoverAudioEdition, progressPagesFromPercent, todayDate, sqliteNow, sourceTagName, hardcoverFieldsFromGrimmory, activeGrimmorySiblingsForHardcover, hasActiveBookSiblingForSharedHardcover, hasActiveBookSiblingForHardcover, shouldActiveSiblingOwnSharedHardcover, shouldAbsAudiobookOwnSharedHardcover, normalizeEditionFormat, inferHardcoverMediaType, hasGrimmoryUserActivity, clampPercent } = syncUtils;
 // Serialise all profile syncs because identity reconciliation mutates shared state.
 let syncQueue = Promise.resolve();
 const activeSyncRuns = new Map<number, { profileId: number; startedAt: string }>();
@@ -148,7 +148,7 @@ export async function runSyncImpl(
     await persistGrimmorySources({ db, profileId, grimmoryAvailable, grimmoryBooks, upsertBookSource, enqueueImageCacheTask, cacheSourceCover, sqliteNow, grimmoryToken, cacheGrimmoryCover, baseUrl });
 
     await persistHardcoverSources({ db, profileId, hcBooks, hcEditions, grimmoryAvailable, upsertBookSource, cacheSourceCover, sqliteNow,
-      hasHardcover, activeGrimmorySiblingsForHardcover, grimmoryBooks, absOwnedHardcoverBookIds,
+      hasHardcover, activeGrimmorySiblingsForHardcover, hasActiveBookSiblingForSharedHardcover, grimmoryBooks, absOwnedHardcoverBookIds,
       inferHardcoverMediaType, firstHardcoverSeries, normalizeEditionFormat, enqueueImageCacheTask,
       pruneHardcoverUserStatesMissingFromFetch, pruneHardcoverSourcesMissingFromFetch, hardcoverSnapshotStatus });
 
@@ -185,13 +185,13 @@ export async function runSyncImpl(
       cacheSourceCover, cacheGrimmoryCover, computeSyncDecision, cleanupDuplicateBlankHardcoverReads,
       hasMeaningfulHcChange, hasMeaningfulGrChange, sameNumber, grimmoryToHardcoverRating,
       hardcoverToGrimmoryRating, hardcoverFieldsFromGrimmory, progressPagesFromPercent,
-      latestHardcoverRead, hardcoverPages, shouldBookProgressOwnSharedHardcover,
+      latestHardcoverRead, hardcoverPages,
       persistResolvedHardcoverAudioEdition, todayDate, sqliteNow
       , conflictStrategy, grimmoryIndex, matchedGrimmoryIds, writeTagEnabled,
       taggedSourceGrimmoryIds, taggedSourceTitles, hardcoverSourceGrimmoryIds,
       audiobookRuntimeForBook, hardcoverProgressPercent, absOwnedBookIds,
       positiveRating, newerSource, meaningfulProgress, hardcoverDate,
-      activeGrimmorySiblingsForHardcover
+      activeGrimmorySiblingsForHardcover, hasActiveBookSiblingForSharedHardcover
     });
 
     await syncGrimmoryState({

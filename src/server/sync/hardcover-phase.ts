@@ -15,7 +15,7 @@ export async function syncHardcoverState(context: any): Promise<void> {
     matchedGrimmoryIds, writeTagEnabled, taggedSourceGrimmoryIds, taggedSourceTitles,
     hardcoverSourceGrimmoryIds, audiobookRuntimeForBook, hardcoverProgressPercent,
     absOwnedBookIds, positiveRating, newerSource, meaningfulProgress, hardcoverDate,
-    activeGrimmorySiblingsForHardcover } = context;
+    activeGrimmorySiblingsForHardcover, hasActiveBookSiblingForSharedHardcover } = context;
 // ── Phase F: HC user states + API sync ───────────────────────────────────
 // For each HC book, find its matching Grimmory book (via the in-memory index
 // AND the book_sources reconciliation), then apply conflict resolution and
@@ -32,7 +32,7 @@ for (const hcBook of hcBooks) {
   const preferredSiblings = grimmoryAvailable
     ? activeGrimmorySiblingsForHardcover(grimmoryBooks, hcBook.book.id)
     : { book: null, audiobook: null };
-  const bookOwnsSharedHardcover = preferredSiblings.book !== null;
+  const bookOwnsSharedHardcover = hasActiveBookSiblingForSharedHardcover(grimmoryBooks, hcBook.book.id);
 
   // Find matching Grimmory book via the in-memory matcher
   const match = bookOwnsSharedHardcover && preferredSiblings.book
