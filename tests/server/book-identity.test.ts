@@ -323,7 +323,6 @@ test("reconcileBookIdentities aggregates many ambiguous Chaptarr file-path skips
   const warnCalls: Array<{ message: string; meta?: unknown }> = [];
   (logger as unknown as { warn: typeof logger.warn }).warn = ((message: string, meta?: unknown) => {
     warnCalls.push({ message, meta });
-    return originalWarn(message, meta as Record<string, unknown>);
   }) as typeof logger.warn;
   try {
     const firstProfile = seedProfile(db, "First");
