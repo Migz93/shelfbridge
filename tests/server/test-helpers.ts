@@ -85,7 +85,7 @@ export function createFakeAdapters(overrides: Partial<SyncAdapters>): SyncAdapte
     "fetchEditionsForBook", "updateHardcoverUserBook", "insertHardcoverUserBook", "addBookToHardcoverList",
     "insertHardcoverUserBookRead", "updateHardcoverUserBookRead", "deleteHardcoverUserBookRead",
     "testGrimmoryLogin", "fetchGrimmoryBooks", "updateGrimmoryStatus", "updateGrimmoryRating",
-    "fetchGrimmoryShelfBookIds", "ensureGrimmoryShelf", "addBooksToGrimmoryShelf", "fetchGrimmoryProgress",
+    "fetchGrimmoryShelfBookIds", "fetchGrimmoryShelfList", "ensureGrimmoryShelf", "addBooksToGrimmoryShelf", "fetchGrimmoryProgress",
     "updateGrimmoryProgress", "clearGrimmoryProgress", "addGrimmoryTag", "fetchAllGoodreadsBooks",
     "fetchShelfPage", "syncChaptarrStatus", "fetchAudiobookshelfLibraries", "fetchAudiobookshelfLibraryItems",
     "fetchAudiobookshelfAllProgress"
