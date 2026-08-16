@@ -219,6 +219,7 @@ Each `prune*UserStatesMissingFromFetch` / `prune*SourcesMissingFromFetch` helper
 | Test | What it checks |
 |---|---|
 | Blank live Hardcover read | Audiobookshelf repairs a selected live Hardcover read at 0% even when the cached Hardcover progress is non-zero. |
+| Chaptarr-only shared work | A Chaptarr shared Hardcover ID lets an audiobook create its Hardcover user book and read without a direct Hardcover or Grimmory source row. |
 
 ### `tests/server/concurrency.test.ts` — Bounded work queues
 

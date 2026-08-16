@@ -335,11 +335,9 @@ if (hasAbs && (hasHardcover || grimmoryAvailable)) {
           grimmory_audible_asin: string | null;
           audiobookshelf_asin: string | null;
         } | undefined;
-        const parsedHcBookId = hcSourceRow
-          ? parseInt(hcSourceRow.external_id, 10)
-          : (audiobookIdentityRow?.grimmory_hardcover_book_id
-              ? parseInt(audiobookIdentityRow.grimmory_hardcover_book_id, 10)
-              : null);
+        const parsedHcBookId = liveHardcoverBookId !== null
+          ? parseInt(String(liveHardcoverBookId), 10)
+          : null;
         const hcBookId = parsedHcBookId !== null && Number.isFinite(parsedHcBookId) ? parsedHcBookId : null;
         const hcLibraryBook = hcBookId !== null ? hcBooks.find((book: any) => book.book.id === hcBookId) : undefined;
         let preferredEditionId: number | null = null;
