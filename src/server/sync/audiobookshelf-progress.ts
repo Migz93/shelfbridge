@@ -169,9 +169,20 @@ if (hasAbs && (hasHardcover || grimmoryAvailable)) {
             UPDATE user_book_states
             SET progress = ?, audiobookshelf_item_id = ?, audiobookshelf_current_time = ?,
                 audiobookshelf_duration = ?, audiobookshelf_updated_at = ?,
-                last_modified_at = datetime('now'), last_sync_at = datetime('now')
+                last_modified_at = CASE WHEN
+                  progress IS NOT ?
+                  OR audiobookshelf_item_id IS NOT ?
+                  OR audiobookshelf_current_time IS NOT ?
+                  OR audiobookshelf_duration IS NOT ?
+                  OR audiobookshelf_updated_at IS NOT ?
+                THEN datetime('now') ELSE last_modified_at END,
+                last_sync_at = datetime('now')
             WHERE book_id = ? AND profile_id = ? AND source_type = 'audiobookshelf'
           `).run(
+            absProgressPct, absSource.abs_item_id,
+            absCurrentTimeSeconds,
+            absDuration !== null ? Math.round(absDuration) : null,
+            absUpdatedAt,
             absProgressPct, absSource.abs_item_id,
             absCurrentTimeSeconds,
             absDuration !== null ? Math.round(absDuration) : null,

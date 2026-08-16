@@ -208,6 +208,12 @@ Each `prune*UserStatesMissingFromFetch` / `prune*SourcesMissingFromFetch` helper
 
 `normalizeTitle`, `normalizeSeriesNumber`, strict ISBN-10/ISBN-13 normalization, `newerSource`, selected-read Hardcover progress calculation (including duplicate blank reads), shared Hardcover book/audiobook precedence (including preventing inactive siblings from overwriting the active record), cross-media Hardcover identity validation, `shouldGoodreadsOverwriteGrimmory`.
 
+### `tests/server/repository.test.ts` — Source persistence
+
+| Test | What it checks |
+|---|---|
+| Source upsert timestamps | An unchanged source refreshes `last_sync_at` without changing `last_modified_at`; a changed source advances both. |
+
 ### `tests/server/concurrency.test.ts` — Bounded work queues
 
 | Test | What it checks |
@@ -241,7 +247,7 @@ Runs `runSyncImpl` end-to-end against a real (isolated) SQLite database with fak
 |---|---|
 | No connections configured | Completes successfully, writes nothing, never calls an adapter |
 | Hardcover fetch failure | Skips book and library-data writes, records a `source_unavailable` sync event, and marks the run `error` |
-| Hardcover-only sync | Writes `book_sources` + `user_book_states`; re-running with the same fetched data is idempotent (no duplicate rows) |
+| Hardcover-only sync | Writes `book_sources` + `user_book_states`; re-running with the same fetched data is idempotent (no duplicate rows or modification-time bump) |
 | Dry run | Computes and caches the resolved decision locally but never calls the Grimmory write adapter |
 | Real run | Calls the Grimmory write adapter with the resolved status once conflict resolution picks a winner |
 | Two profiles | Each profile's `book_sources` stay scoped to its own `source_instance_id` — no cross-profile leakage |

@@ -400,7 +400,27 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
       chaptarr_has_file          = excluded.chaptarr_has_file,
       chaptarr_id_mismatch       = excluded.chaptarr_id_mismatch,
       chaptarr_primary_file_path = excluded.chaptarr_primary_file_path,
-      last_modified_at           = datetime('now')
+      last_modified_at = CASE WHEN
+        book_id IS NOT excluded.book_id
+        OR title IS NOT excluded.title
+        OR author IS NOT excluded.author
+        OR series_name IS NOT excluded.series_name
+        OR series_number IS NOT excluded.series_number
+        OR source_hardcover_book_id IS NOT excluded.source_hardcover_book_id
+        OR source_goodreads_book_id IS NOT excluded.source_goodreads_book_id
+        OR source_goodreads_work_id IS NOT excluded.source_goodreads_work_id
+        OR source_goodreads_edition_id IS NOT excluded.source_goodreads_edition_id
+        OR source_edition_id IS NOT excluded.source_edition_id
+        OR source_media_type IS NOT excluded.source_media_type
+        OR source_edition_format IS NOT excluded.source_edition_format
+        OR source_narrator IS NOT excluded.source_narrator
+        OR source_asin IS NOT excluded.source_asin
+        OR source_audible_asin IS NOT excluded.source_audible_asin
+        OR chaptarr_monitored IS NOT excluded.chaptarr_monitored
+        OR chaptarr_has_file IS NOT excluded.chaptarr_has_file
+        OR chaptarr_id_mismatch IS NOT excluded.chaptarr_id_mismatch
+        OR chaptarr_primary_file_path IS NOT excluded.chaptarr_primary_file_path
+      THEN datetime('now') ELSE last_modified_at END
   `);
 
   const matchedChaptarrIds = new Set<string>();
