@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { reconcileBookIdentities } from "../../src/server/db/bookIdentity.js";
+import { logger } from "../../src/server/logger.js";
 import { createTestDatabase } from "./test-db.js";
 import { seedProfile } from "./test-helpers.js";
 
@@ -312,6 +313,47 @@ test("reconcileBookIdentities bridges a Goodreads ISBN despite a stale Grimmory 
     const sourceBookIds = db.prepare("SELECT book_id FROM book_sources ORDER BY id").all() as { book_id: number }[];
     assert.equal(new Set(sourceBookIds.map((row) => row.book_id)).size, 1, "the ISBN must bridge the Goodreads row despite the stale Grimmory ID when the local path corroborates it");
   } finally {
+    cleanup();
+  }
+});
+
+test("reconcileBookIdentities aggregates many ambiguous Chaptarr file-path skips into a single bounded warning", () => {
+  const { db, cleanup } = createTestDatabase();
+  const originalWarn = logger.warn.bind(logger);
+  const warnCalls: Array<{ message: string; meta?: unknown }> = [];
+  (logger as unknown as { warn: typeof logger.warn }).warn = ((message: string, meta?: unknown) => {
+    warnCalls.push({ message, meta });
+    return originalWarn(message, meta as Record<string, unknown>);
+  }) as typeof logger.warn;
+  try {
+    const firstProfile = seedProfile(db, "First");
+    const secondProfile = seedProfile(db, "Second");
+    const ambiguousGroupCount = 8;
+
+    for (let i = 0; i < ambiguousGroupCount; i++) {
+      const path = `/library/ambiguous-${i}.epub`;
+      const firstBookId = Number(db.prepare("INSERT INTO books (title) VALUES (?)").run(`First ${i}`).lastInsertRowid);
+      const secondBookId = Number(db.prepare("INSERT INTO books (title) VALUES (?)").run(`Second ${i}`).lastInsertRowid);
+      const chaptarrBookId = Number(db.prepare("INSERT INTO books (title) VALUES (?)").run(`Chaptarr ${i}`).lastInsertRowid);
+      db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type, grimmory_primary_file_path) VALUES (?, 'grimmory', ?, ?, ?, 'book', ?)")
+        .run(firstBookId, firstProfile, `first-${i}`, `First ${i}`, path);
+      db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type, grimmory_primary_file_path) VALUES (?, 'grimmory', ?, ?, ?, 'book', ?)")
+        .run(secondBookId, secondProfile, `second-${i}`, `Second ${i}`, path);
+      db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type, chaptarr_primary_file_path) VALUES (?, 'chaptarr', 0, ?, ?, 'book', ?)")
+        .run(chaptarrBookId, `chap-${i}`, `Chaptarr ${i}`, path);
+    }
+
+    reconcileBookIdentities(db);
+
+    const aggregatedWarnCalls = warnCalls.filter((call) => call.message === "Skipped Chaptarr file-path reassignment across scoped source profiles");
+    assert.equal(aggregatedWarnCalls.length, 1, "a sync with many ambiguous paths must produce exactly one aggregated warning, not one per group");
+
+    const meta = aggregatedWarnCalls[0]?.meta as { skippedGroups: number; sample: Array<{ path: string; instanceIds: unknown[] }> };
+    assert.equal(meta.skippedGroups, ambiguousGroupCount);
+    assert.ok(meta.sample.length > 0, "the warning must include a sample of affected paths");
+    assert.ok(meta.sample.length < ambiguousGroupCount, "the sample must be bounded, not one entry per skipped group");
+  } finally {
+    (logger as unknown as { warn: typeof logger.warn }).warn = originalWarn;
     cleanup();
   }
 });

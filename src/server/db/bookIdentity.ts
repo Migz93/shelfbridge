@@ -871,6 +871,19 @@ export function reconcileBookIdentities(db: Database.Database): void {
   let created = 0;
   let reassigned = 0;
   let merged = 0;
+  let skippedCrossProfileGroups = 0;
+  const CROSS_PROFILE_SAMPLE_LIMIT = 5;
+  const skippedCrossProfileSample: Array<{ path: string; instanceIds: Array<number | null> }> = [];
+  const trackSkippedCrossProfileGroup = (crossingKeys: IdentityKey[]): void => {
+    skippedCrossProfileGroups++;
+    if (skippedCrossProfileSample.length >= CROSS_PROFILE_SAMPLE_LIMIT) return;
+    for (const key of crossingKeys) {
+      if (skippedCrossProfileSample.length >= CROSS_PROFILE_SAMPLE_LIMIT) break;
+      const path = key.slice(key.indexOf(".file_path:") + ".file_path:".length);
+      const instanceIds = Array.from(scopedInstancesByCanonicalFilePath.get(key) ?? []);
+      skippedCrossProfileSample.push({ path, instanceIds });
+    }
+  };
   const chaptarrOrphanReassignments = new Map<number, Set<number>>();
   const trackChaptarrOrphanReassignment = (oldBookId: number | null, targetBookId: number): void => {
     if (oldBookId === null || oldBookId === targetBookId) return;
@@ -892,9 +905,10 @@ export function reconcileBookIdentities(db: Database.Database): void {
         // proven canonical record without collapsing the ebook and audiobook
         // records into each other.
         const groupFilePathKeys = group.flatMap((row) => filePathIdentityKeys(row));
-        const crossesScopedProfiles = groupFilePathKeys.some(
+        const crossingFilePathKeys = groupFilePathKeys.filter(
           (key) => (scopedInstancesByCanonicalFilePath.get(key)?.size ?? 0) > 1
         );
+        const crossesScopedProfiles = crossingFilePathKeys.length > 0;
         const filePathCanonicalId = crossesScopedProfiles ? undefined : groupFilePathKeys
           .flatMap((key) => canonicalBookIdsByFilePath.get(key) ?? [])
           .find((id) => group.some((row) => row.book_id === id))
@@ -903,7 +917,7 @@ export function reconcileBookIdentities(db: Database.Database): void {
             .flatMap((key) => canonicalBookIdsByFilePath.get(key) ?? [])
             .find((id) => !group.some((row) => row.book_id === id));
         if (crossesScopedProfiles) {
-          logger.warn("Skipped Chaptarr file-path reassignment across scoped source profiles", { sourceCount: group.length });
+          trackSkippedCrossProfileGroup(crossingFilePathKeys);
         }
         if (filePathCanonicalId !== undefined) {
           for (const row of group) {
@@ -1035,6 +1049,13 @@ export function reconcileBookIdentities(db: Database.Database): void {
 
   transaction();
   cleanupOrphanedImageCache(db);
+
+  if (skippedCrossProfileGroups > 0) {
+    logger.warn("Skipped Chaptarr file-path reassignment across scoped source profiles", {
+      skippedGroups: skippedCrossProfileGroups,
+      sample: skippedCrossProfileSample
+    });
+  }
 
   if (created > 0 || reassigned > 0 || merged > 0) {
     logger.info("Reconciled ShelfBridge book identities", { created, reassigned, merged, groups: groups.size });
