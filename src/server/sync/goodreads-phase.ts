@@ -110,6 +110,10 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
     }> = [];
 
     for (const grBook of goodreadsBooks) {
+      // A single book's local DB write throwing must not abort every
+      // remaining book in the library, nor get misreported by the outer
+      // catch as a Goodreads source outage.
+      try {
       let matched: LinkLookup | undefined;
       let matchType: string | null = null;
 
@@ -310,6 +314,12 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
           matchType, bookLink: grBook.bookLink ?? null
         });
         goodreadsUnmatched++;
+      }
+      } catch (err) {
+        logger.warn("Failed to process one Goodreads book; continuing with the rest of the library", {
+          profileId, goodreadsId: grBook.goodreadsId, title: grBook.title, error: err
+        });
+        recordEvent(db, runId, profileId, grBook.title, "api_failure", "goodreads", "book_processing_failed", { error: String(err) });
       }
     }
 

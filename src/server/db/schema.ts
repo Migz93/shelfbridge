@@ -813,6 +813,10 @@ function legacyMigrateToV14(db: Database.Database, backupPath: string | undefine
       name: string; type: string; notnull: number; dflt_value: string | null; pk: number;
     }[];
     const colNames = existingCols.map((c) => c.name);
+    // source_instance_id is added explicitly below — if a partially-applied
+    // prior run (or a future re-entrant call) already left it on the table,
+    // don't emit it a second time in the CREATE TABLE below.
+    const alreadyHasSourceInstanceId = colNames.includes("source_instance_id");
     const colDefs = existingCols.map((c) => {
       if (c.name === "id") return "id INTEGER PRIMARY KEY AUTOINCREMENT";
       if (c.name === "book_id") return "book_id INTEGER REFERENCES books(id) ON DELETE CASCADE";
@@ -831,8 +835,7 @@ function legacyMigrateToV14(db: Database.Database, backupPath: string | undefine
       runTransactionalStep(db, "Legacy schema migration to version 14", backupPath, () => {
         db.exec(`
           CREATE TABLE book_sources_v14 (
-            ${colDefs.join(",\n            ")},
-            source_instance_id INTEGER,
+            ${colDefs.join(",\n            ")}${alreadyHasSourceInstanceId ? "" : ",\n            source_instance_id INTEGER"},
             UNIQUE(source_type, source_instance_id, external_id)
           );
           INSERT INTO book_sources_v14 (${colNames.join(", ")})

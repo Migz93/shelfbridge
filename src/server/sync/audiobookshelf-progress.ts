@@ -18,10 +18,13 @@ export async function syncAudiobookshelfProgress(context: any): Promise<void> {
 // ABS is the source of truth for audiobook listening progress.
 // When ABS reports progress for a matched audiobook, push that progress
 // outward to Grimmory and Hardcover whenever they differ meaningfully.
-if (hasAbs && (hasHardcover || grimmoryAvailable)) {
+if (hasAbs && !absApiKey) {
+  logger.warn("Skipping Audiobookshelf progress sync: no API key configured despite hasAbs being set", { profileId });
+}
+if (hasAbs && absApiKey && (hasHardcover || grimmoryAvailable)) {
   try {
     logger.info("Fetching Audiobookshelf progress", { profileId });
-        const absProgressList: any[] = await adapters.fetchAudiobookshelfAllProgress(absBaseUrl, absApiKey!);
+        const absProgressList: any[] = await adapters.fetchAudiobookshelfAllProgress(absBaseUrl, absApiKey);
         const absProgressIndex = new Map<string, any>(absProgressList.map((p: any) => [p.libraryItemId, p]));
     logger.info("Audiobookshelf progress fetched", { profileId, count: absProgressList.length });
 
