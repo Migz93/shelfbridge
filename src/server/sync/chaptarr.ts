@@ -377,9 +377,9 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
       source_goodreads_edition_id, source_edition_id, source_media_type, source_edition_format,
       source_narrator, source_asin, source_audible_asin,
       chaptarr_monitored, chaptarr_has_file, chaptarr_id_mismatch, chaptarr_primary_file_path,
-      last_modified_at
+      last_sync_at, last_modified_at
     )
-    VALUES (?, 'chaptarr', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    VALUES (?, 'chaptarr', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
     ON CONFLICT(source_type, source_instance_id, external_id) DO UPDATE SET
       book_id                    = excluded.book_id,
       title                      = excluded.title,
@@ -400,6 +400,7 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
       chaptarr_has_file          = excluded.chaptarr_has_file,
       chaptarr_id_mismatch       = excluded.chaptarr_id_mismatch,
       chaptarr_primary_file_path = excluded.chaptarr_primary_file_path,
+      last_sync_at               = excluded.last_sync_at,
       last_modified_at = CASE WHEN
         book_id IS NOT excluded.book_id
         OR title IS NOT excluded.title

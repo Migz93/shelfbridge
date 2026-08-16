@@ -407,7 +407,10 @@ if (hasAbs && (hasHardcover || grimmoryAvailable)) {
               if (preferredEditionId && preferredEditionId !== (liveHcBookForEdition?.edition_id ?? hcState.hardcover_edition_id)) {
                 userBookPatch.edition_id = preferredEditionId;
               }
-              if (hcState.hardcover_status_id !== desiredStatusId) userBookPatch.status_id = desiredStatusId;
+              if (hcState.hardcover_status_id !== desiredStatusId
+                || (liveHcBookForEdition !== undefined && liveHcBookForEdition.status_id !== desiredStatusId)) {
+                userBookPatch.status_id = desiredStatusId;
+              }
               if (Object.keys(userBookPatch).length > 0) {
                 await adapters.updateHardcoverUserBook(hardcoverToken, hcState.hardcover_user_book_id, userBookPatch);
               }
