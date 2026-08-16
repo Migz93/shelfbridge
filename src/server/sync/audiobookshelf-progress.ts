@@ -102,7 +102,9 @@ if (hasAbs && (hasHardcover || grimmoryAvailable)) {
       const sharedHardcoverSource = db.prepare(`
         SELECT source_hardcover_book_id
         FROM book_sources
-        WHERE book_id = ? AND source_instance_id = ? AND source_hardcover_book_id IS NOT NULL
+        WHERE book_id = ?
+          AND (source_instance_id = ? OR (source_type = 'chaptarr' AND source_instance_id = 0))
+          AND source_hardcover_book_id IS NOT NULL
         ORDER BY CASE source_type WHEN 'grimmory' THEN 0 WHEN 'chaptarr' THEN 1 ELSE 2 END
         LIMIT 1
       `).get(absSource.book_id, profileId) as { source_hardcover_book_id: string | null } | undefined;
