@@ -37,11 +37,22 @@ const XML_NAMED_ENTITIES: Record<string, string> = {
 // Decodes all entities in a single left-to-right pass so a literal sequence like
 // "&amp;lt;" (the escaped form of the text "&lt;") isn't re-scanned and unescaped
 // a second time into "<".
+const MAX_UNICODE_CODEPOINT = 0x10ffff;
+
+function codePointToChar(codePoint: number, fallback: string): string {
+  if (!Number.isInteger(codePoint) || codePoint < 0 || codePoint > MAX_UNICODE_CODEPOINT) return fallback;
+  try {
+    return String.fromCodePoint(codePoint);
+  } catch {
+    return fallback;
+  }
+}
+
 function decodeXmlEntities(value: string): string {
-  return value.replace(/&(?:(quot|apos|amp|lt|gt)|#(\d+)|#x([0-9a-f]+));/gi, (_match, name?: string, dec?: string, hex?: string) => {
-    if (name) return XML_NAMED_ENTITIES[name.toLowerCase()] ?? _match;
-    if (dec) return String.fromCodePoint(Number(dec));
-    return String.fromCodePoint(parseInt(hex!, 16));
+  return value.replace(/&(?:(quot|apos|amp|lt|gt)|#(\d+)|#x([0-9a-f]+));/gi, (fullMatch, name?: string, dec?: string, hex?: string) => {
+    if (name) return XML_NAMED_ENTITIES[name.toLowerCase()] ?? fullMatch;
+    if (dec) return codePointToChar(Number(dec), fullMatch);
+    return codePointToChar(parseInt(hex!, 16), fullMatch);
   });
 }
 

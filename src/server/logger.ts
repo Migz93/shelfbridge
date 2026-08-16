@@ -78,9 +78,14 @@ class RingTransport extends TransportStream {
   }
 }
 
+function clampLimit(limit: number): number {
+  return Number.isFinite(limit) ? Math.max(0, Math.trunc(limit)) : 0;
+}
+
 /** Returns a snapshot of recent log entries for the in-process log viewer API. */
 export function getRecentLogs(limit = 200): LogEntry[] {
-  return ring.slice(-limit);
+  const clamped = clampLimit(limit);
+  return clamped === 0 ? [] : ring.slice(-clamped);
 }
 
 /** Stable path to the machine-readable JSON log file (via symlink). */
@@ -116,7 +121,8 @@ export async function readRecentMachineLogs(filePath = MACHINE_LOG_PATH, limit =
         // A rotation or concurrent write can leave an incomplete line; ignore it.
       }
     }
-    return entries.slice(-limit);
+    const clamped = clampLimit(limit);
+    return clamped === 0 ? [] : entries.slice(-clamped);
   } finally {
     await handle.close();
   }

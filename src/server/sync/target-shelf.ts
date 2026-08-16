@@ -15,7 +15,20 @@ export async function syncMatchedSourceBooksToGrimmoryShelf(
   const shelfName = targetShelfName?.trim();
   if (!shelfName || grimmoryBookIds.size === 0) return;
   try {
-    const shelfId = await adapters.ensureGrimmoryShelf(baseUrl, grimmoryToken, shelfName);
+    let shelfId: number;
+    if (dryRun) {
+      // Look up without creating — ensureGrimmoryShelf would create a missing
+      // shelf even on a dry run.
+      const shelves = await adapters.fetchGrimmoryShelfList(baseUrl, grimmoryToken);
+      const existing = shelves.find((s) => s.name.toLowerCase() === shelfName.toLowerCase());
+      if (!existing) {
+        logger.info("Dry run: would create Grimmory target shelf", { profileId, source, shelfName, count: grimmoryBookIds.size });
+        return;
+      }
+      shelfId = existing.id;
+    } else {
+      shelfId = await adapters.ensureGrimmoryShelf(baseUrl, grimmoryToken, shelfName);
+    }
     const currentIds = await adapters.fetchGrimmoryShelfBookIds(baseUrl, grimmoryToken, shelfId);
     const toAdd = Array.from(grimmoryBookIds).filter((id) => !currentIds.includes(id));
     if (toAdd.length === 0) { logger.info("Grimmory target shelf already up to date for source sync", { profileId, source, shelfName }); return; }

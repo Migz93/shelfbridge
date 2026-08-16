@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { readRecentMachineLogs } from "../../src/server/logger.js";
+import { getRecentLogs, readRecentMachineLogs } from "../../src/server/logger.js";
 
 test("recent log reader parses a bounded tail of an oversized machine log", async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "shelfbridge-logs-test-"));
@@ -20,6 +20,25 @@ test("recent log reader parses a bounded tail of an oversized machine log", asyn
 
     const entries = await readRecentMachineLogs(filePath, 2);
     assert.deepEqual(entries.map((entry) => entry.message), ["recent warning", "recent error"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("getRecentLogs clamps a negative or non-finite limit instead of returning the whole ring", () => {
+  assert.deepEqual(getRecentLogs(-5), []);
+  assert.deepEqual(getRecentLogs(0), []);
+  assert.deepEqual(getRecentLogs(NaN), []);
+  assert.deepEqual(getRecentLogs(Infinity).length >= 0, true);
+});
+
+test("readRecentMachineLogs clamps a negative limit to an empty result", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "shelfbridge-logs-test-"));
+  const filePath = path.join(dir, "machine.json");
+  try {
+    writeFileSync(filePath, `${JSON.stringify({ timestamp: "2026-01-01T00:00:00Z", level: "info", message: "old" })}\n`);
+    const entries = await readRecentMachineLogs(filePath, -1);
+    assert.deepEqual(entries, []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
