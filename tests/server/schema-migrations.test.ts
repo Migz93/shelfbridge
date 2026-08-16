@@ -272,7 +272,7 @@ test("legacy handover: a pre-existing schema_version database is migrated to v14
     initSchema(db);
 
     const userVersion = db.pragma("user_version", { simple: true }) as number;
-    assert.equal(userVersion, 1, "handover lands on migration 1, which is the v14 baseline");
+    assert.equal(userVersion, LATEST_MIGRATION_VERSION, "handover lands on migration 1 (the v14 baseline), then runMigrations() carries it on to the latest migration in the same call");
 
     const cols = (db.prepare("PRAGMA table_info(book_sources)").all() as { name: string }[]).map((c) => c.name);
     assert.ok(cols.includes("source_instance_id"), "source_instance_id column should be added by the legacy v14 rebuild");
@@ -338,7 +338,7 @@ test("legacy handover atomicity: a crash between DROP TABLE schema_version and t
     // The next process start must be able to recover on its own.
     initSchema(db);
     const userVersionAfterRetry = db.pragma("user_version", { simple: true }) as number;
-    assert.equal(userVersionAfterRetry, 1);
+    assert.equal(userVersionAfterRetry, LATEST_MIGRATION_VERSION);
     const legacyTableAfterRetry = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'").get();
     assert.equal(legacyTableAfterRetry, undefined);
   } finally {
@@ -449,17 +449,18 @@ test("legacy handover: the outer foreign-key backstop check runs before the drop
     seedLegacyBooksSchema(db, 14);
     db.exec("INSERT INTO books (id, title) VALUES (1, 'Book')");
 
-    // If the drop+bump ran before (or as part of) the outer check, the check
-    // would observe user_version already at 1. Capturing user_version at every
-    // foreign_key_check call and keeping the last one tells us its value at the
-    // outer check's "after" call — the one immediately preceding the decision
-    // to commit the drop+bump or abort.
+    // The outer runGuardedStep wrapping legacyMigrateToV14() always calls
+    // foreign_key_check exactly twice (before, then after), deterministically
+    // before anything else in initSchema runs — including any migrations 2+
+    // that may run afterward and perform their own foreign_key_check calls.
+    // Capturing every call's user_version and reading the second one isolates
+    // the outer check's "after" value regardless of what runs later.
     const originalPragma = db.pragma.bind(db);
-    let userVersionAtLastCheck: number | undefined;
+    const userVersionsAtChecks: number[] = [];
     (db as unknown as { pragma: typeof db.pragma }).pragma = ((arg: string, options?: unknown) => {
       const result = (originalPragma as (a: string, o?: unknown) => unknown)(arg, options);
       if (arg === "foreign_key_check") {
-        userVersionAtLastCheck = originalPragma("user_version", { simple: true }) as number;
+        userVersionsAtChecks.push(originalPragma("user_version", { simple: true }) as number);
       }
       return result;
     }) as typeof db.pragma;
@@ -471,12 +472,12 @@ test("legacy handover: the outer foreign-key backstop check runs before the drop
     }
 
     assert.equal(
-      userVersionAtLastCheck,
+      userVersionsAtChecks[1],
       0,
       "the outer foreign-key check must observe user_version still at 0 — if it ran after the drop+bump instead, a " +
       "violation it catches would abort this one boot but leave the handover looking already-complete on the next restart"
     );
-    assert.equal(db.pragma("user_version", { simple: true }), 1, "the handover must still complete normally when the check passes");
+    assert.equal(db.pragma("user_version", { simple: true }), LATEST_MIGRATION_VERSION, "the handover and any pending migrations must still complete normally when the check passes");
   } finally {
     cleanup();
   }
@@ -599,11 +600,13 @@ test("legacy handover is not re-run: a database already at user_version >= 1 is 
     seedLegacyBooksSchema(db, 13);
     db.exec("INSERT INTO books (id, title) VALUES (1, 'Book')");
     initSchema(db);
-    // The handover always targets user_version 1 (the v14 baseline) specifically,
-    // not "whatever the latest migration is" — that's a distinct concept and the
-    // two only happen to match today because there's a single migration so far.
+    // initSchema() chains the handover (which always specifically targets
+    // user_version 1, the v14 baseline) straight into runMigrations() in the
+    // same call and shares one backup between them, so a single call now
+    // lands on LATEST_MIGRATION_VERSION rather than stopping at 1 once a real
+    // migration 2+ exists.
     const versionAfterFirstRun = db.pragma("user_version", { simple: true }) as number;
-    assert.equal(versionAfterFirstRun, 1);
+    assert.equal(versionAfterFirstRun, LATEST_MIGRATION_VERSION);
     const backupDir = path.join(dataDir, "backups");
     assert.equal(readdirSync(backupDir).length, 1, "the first run should have taken exactly one backup");
 

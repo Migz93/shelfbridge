@@ -854,7 +854,13 @@ function fetchRows(): DbBookRow[] {
     LEFT JOIN book_sources gr_src   ON gr_src.book_id   = bp.book_id AND gr_src.source_type   = 'goodreads' AND gr_src.source_instance_id = bp.profile_id
     LEFT JOIN book_sources grim_src ON grim_src.book_id = bp.book_id AND grim_src.source_type = 'grimmory' AND grim_src.source_instance_id = bp.profile_id
     LEFT JOIN book_sources chap_src ON chap_src.book_id = bp.book_id AND chap_src.source_type = 'chaptarr'
-    LEFT JOIN chaptarr_id_mismatch_dismissals chap_dismiss ON chap_dismiss.chaptarr_external_id = chap_src.external_id
+    -- A dismissal only suppresses the specific mismatch it was raised against:
+    -- if Chaptarr's reported upstream ids have since changed, the signature no
+    -- longer matches and the row re-arms as an active mismatch.
+    LEFT JOIN chaptarr_id_mismatch_dismissals chap_dismiss
+      ON chap_dismiss.chaptarr_external_id = chap_src.external_id
+      AND chap_dismiss.dismissed_hardcover_book_id IS chap_src.source_hardcover_book_id
+      AND chap_dismiss.dismissed_goodreads_book_id IS chap_src.source_goodreads_book_id
     LEFT JOIN book_sources abs_src  ON abs_src.book_id  = bp.book_id AND abs_src.source_type  = 'audiobookshelf' AND abs_src.source_instance_id = bp.profile_id
     LEFT JOIN user_book_states hc_ubs   ON hc_ubs.book_id   = bp.book_id AND hc_ubs.profile_id   = bp.profile_id AND hc_ubs.source_type   = 'hardcover'
     LEFT JOIN user_book_states gr_ubs   ON gr_ubs.book_id   = bp.book_id AND gr_ubs.profile_id   = bp.profile_id AND gr_ubs.source_type   = 'goodreads'
@@ -1144,25 +1150,32 @@ router.post("/:bookId/chaptarr-id-mismatch/dismiss", (req, res) => {
   }
 
   const rows = db.prepare(`
-    SELECT external_id
+    SELECT external_id, source_hardcover_book_id, source_goodreads_book_id
     FROM book_sources
     WHERE book_id = ?
       AND source_type = 'chaptarr'
       AND COALESCE(chaptarr_id_mismatch, 0) = 1
-  `).all(bookId) as { external_id: string }[];
+  `).all(bookId) as { external_id: string; source_hardcover_book_id: string | null; source_goodreads_book_id: string | null }[];
 
   if (rows.length === 0) {
     res.status(404).json({ error: "No Chaptarr ID mismatch is active for this book" });
     return;
   }
 
+  // Record what was actually mismatched (Chaptarr's currently-reported upstream
+  // ids), so this dismissal only suppresses that specific mismatch — if a later
+  // sync changes what Chaptarr reports, the row re-arms instead of staying
+  // silently dismissed against a mismatch that no longer applies.
   const insert = db.prepare(`
-    INSERT INTO chaptarr_id_mismatch_dismissals (chaptarr_external_id)
-    VALUES (?)
-    ON CONFLICT(chaptarr_external_id) DO UPDATE SET dismissed_at = datetime('now')
+    INSERT INTO chaptarr_id_mismatch_dismissals (chaptarr_external_id, dismissed_hardcover_book_id, dismissed_goodreads_book_id)
+    VALUES (?, ?, ?)
+    ON CONFLICT(chaptarr_external_id) DO UPDATE SET
+      dismissed_at = datetime('now'),
+      dismissed_hardcover_book_id = excluded.dismissed_hardcover_book_id,
+      dismissed_goodreads_book_id = excluded.dismissed_goodreads_book_id
   `);
   const transaction = db.transaction(() => {
-    for (const row of rows) insert.run(row.external_id);
+    for (const row of rows) insert.run(row.external_id, row.source_hardcover_book_id, row.source_goodreads_book_id);
   });
   transaction();
 
