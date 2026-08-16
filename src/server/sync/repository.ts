@@ -50,8 +50,16 @@ export function upsertBookSource(db: Db, sourceType: string, instanceId: number,
   const existing = getBookSource(db, sourceType, instanceId, externalId);
   if (existing) {
     const setClauses = Object.keys(fields).map((k) => `${k} = ?`).join(", ");
-    db.prepare(`UPDATE book_sources SET ${setClauses}, last_modified_at = datetime('now') WHERE id = ?`)
-      .run(...Object.values(fields), existing.id);
+    const modifiedFields = Object.entries(fields)
+      .filter(([key]) => key !== "last_sync_at" && key !== "last_sync_decision");
+    const hasMeaningfulChange = modifiedFields.length > 0
+      ? modifiedFields.map(([key]) => `${key} IS NOT ?`).join(" OR ")
+      : "0";
+    db.prepare(`
+      UPDATE book_sources SET ${setClauses},
+        last_modified_at = CASE WHEN ${hasMeaningfulChange} THEN datetime('now') ELSE last_modified_at END
+      WHERE id = ?
+    `).run(...Object.values(fields), ...modifiedFields.map(([, value]) => value), existing.id);
     return existing.id;
   } else {
     const cols = ["source_type", "source_instance_id", "external_id", ...Object.keys(fields)].join(", ");

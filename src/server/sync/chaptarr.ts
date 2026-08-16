@@ -65,6 +65,21 @@ function getIdentifierLookup(index: Map<string, number>, value: string | number 
   return normalized ? index.get(normalized) : undefined;
 }
 
+/**
+ * A Hardcover work ID can deliberately be shared by distinct local media
+ * identities (for example, an ebook and its audiobook). A path match keeps
+ * those canonicals separate, so seeing the same upstream ID on both is not an
+ * ID mismatch by itself.
+ */
+export function hasKnownHardcoverIdentity(
+  hardcoverIdsByBookId: ReadonlyMap<number, ReadonlySet<string>>,
+  bookId: number,
+  candidateId: string | number | null | undefined
+): boolean {
+  const normalized = normalizeExternalId(candidateId);
+  return normalized !== null && hardcoverIdsByBookId.get(bookId)?.has(normalized) === true;
+}
+
 function stripPrefix(value: string | null, prefix: string): string | null {
   if (!value) return null;
   return value.toLowerCase().startsWith(prefix) ? value.slice(prefix.length) : value;
@@ -310,12 +325,18 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
   const byRelaxedTitle = new Map<string, number>();
   const byGrimmoryFilePath = new Map<string, number | null>();
   const titleByBookId = new Map<number, string>();
+  const hardcoverIdsByBookId = new Map<number, Set<string>>();
 
   for (const row of rows) {
     if (row.title) titleByBookId.set(row.book_id, row.title);
     setIdentifierLookup(byHardcoverId, row.hardcover_book_id, row.book_id);
     setIdentifierLookup(byHardcoverId, row.grimmory_hardcover_book_id, row.book_id);
     setIdentifierLookup(byHardcoverId, row.source_hardcover_book_id, row.book_id);
+    const knownHardcoverIds = hardcoverIdsByBookId.get(row.book_id) ?? new Set<string>();
+    for (const value of [row.hardcover_book_id, row.grimmory_hardcover_book_id, row.source_hardcover_book_id]) {
+      for (const identifier of identifierVariants(value)) knownHardcoverIds.add(identifier);
+    }
+    hardcoverIdsByBookId.set(row.book_id, knownHardcoverIds);
     if (row.hardcover_slug) byHardcoverSlug.set(row.hardcover_slug.toLowerCase(), row.book_id);
     if (row.source_hardcover_slug) byHardcoverSlug.set(row.source_hardcover_slug.toLowerCase(), row.book_id);
     setIdentifierLookup(byGoodreadsId, row.goodreads_book_id, row.book_id);
@@ -356,9 +377,9 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
       source_goodreads_edition_id, source_edition_id, source_media_type, source_edition_format,
       source_narrator, source_asin, source_audible_asin,
       chaptarr_monitored, chaptarr_has_file, chaptarr_id_mismatch, chaptarr_primary_file_path,
-      last_modified_at
+      last_sync_at, last_modified_at
     )
-    VALUES (?, 'chaptarr', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    VALUES (?, 'chaptarr', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
     ON CONFLICT(source_type, source_instance_id, external_id) DO UPDATE SET
       book_id                    = excluded.book_id,
       title                      = excluded.title,
@@ -379,7 +400,28 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
       chaptarr_has_file          = excluded.chaptarr_has_file,
       chaptarr_id_mismatch       = excluded.chaptarr_id_mismatch,
       chaptarr_primary_file_path = excluded.chaptarr_primary_file_path,
-      last_modified_at           = datetime('now')
+      last_sync_at               = excluded.last_sync_at,
+      last_modified_at = CASE WHEN
+        book_id IS NOT excluded.book_id
+        OR title IS NOT excluded.title
+        OR author IS NOT excluded.author
+        OR series_name IS NOT excluded.series_name
+        OR series_number IS NOT excluded.series_number
+        OR source_hardcover_book_id IS NOT excluded.source_hardcover_book_id
+        OR source_goodreads_book_id IS NOT excluded.source_goodreads_book_id
+        OR source_goodreads_work_id IS NOT excluded.source_goodreads_work_id
+        OR source_goodreads_edition_id IS NOT excluded.source_goodreads_edition_id
+        OR source_edition_id IS NOT excluded.source_edition_id
+        OR source_media_type IS NOT excluded.source_media_type
+        OR source_edition_format IS NOT excluded.source_edition_format
+        OR source_narrator IS NOT excluded.source_narrator
+        OR source_asin IS NOT excluded.source_asin
+        OR source_audible_asin IS NOT excluded.source_audible_asin
+        OR chaptarr_monitored IS NOT excluded.chaptarr_monitored
+        OR chaptarr_has_file IS NOT excluded.chaptarr_has_file
+        OR chaptarr_id_mismatch IS NOT excluded.chaptarr_id_mismatch
+        OR chaptarr_primary_file_path IS NOT excluded.chaptarr_primary_file_path
+      THEN datetime('now') ELSE last_modified_at END
   `);
 
   const matchedChaptarrIds = new Set<string>();
@@ -418,7 +460,7 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
 
     let bookId: number | undefined;
     let rejectedIdCandidate: number | undefined;
-    const titleValidatedIdCandidates = new Set<number>();
+    const titleValidatedIdCandidates = new Map<number, string>();
 
     // Preserve the mismatch signal even when the local path wins matching. The
     // path is authoritative for canonical assignment, but a stale Chaptarr
@@ -427,7 +469,7 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
       if (!candidateId) continue;
       const candidate = getIdentifierLookup(byHardcoverId, candidateId);
       if (candidate !== undefined && titleMatchesBook(title, candidate)) {
-        titleValidatedIdCandidates.add(candidate);
+        titleValidatedIdCandidates.set(candidate, candidateId);
       } else if (candidate !== undefined) {
         rejectedIdCandidate ??= candidate;
         logger.info("Chaptarr upstream ID match rejected: title mismatch", {
@@ -454,7 +496,9 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
     }
     if (bookId !== undefined) {
       logger.info("Chaptarr book matched via file path", { profileId, chaptarrId, title, filePath: matchedFilePath });
-      const conflictingIdCandidate = [...titleValidatedIdCandidates].find((candidate) => candidate !== bookId);
+      const conflictingIdCandidate = [...titleValidatedIdCandidates]
+        .find(([candidate, candidateId]) => candidate !== bookId && !hasKnownHardcoverIdentity(hardcoverIdsByBookId, bookId!, candidateId))
+        ?.[0];
       if (conflictingIdCandidate !== undefined) {
         // Path remains the assignment authority: it distinguishes local ebook
         // and audiobook siblings. Mark any independently title-validated ID

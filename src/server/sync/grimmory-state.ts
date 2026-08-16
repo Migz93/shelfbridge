@@ -1,12 +1,11 @@
 import { logger } from "../logger.js";
 import { grimmoryRating } from "./grimmory.js";
-import { normalizeExternalId } from "../identifiers.js";
 import { getBookSource } from "./repository.js";
 export async function syncGrimmoryState(context: any): Promise<void> {
   const { db, profileId, runId, grimmoryBooks, grimmoryAvailable, counters, recordEvent,
     getUserState, hasMeaningfulGrChange, dryRun, hasGrimmoryUserActivity,
     matchedGrimmoryIds, hardcoverFieldsFromGrimmory, grimmoryToHardcoverRating,
-    shouldBookProgressOwnSharedHardcover, absOwnedHardcoverBookIds, hasHardcover,
+    shouldActiveSiblingOwnSharedHardcover, shouldAbsAudiobookOwnSharedHardcover, absOwnedHardcoverBookIds, hasHardcover,
     profile, adapters, hardcoverToken, pruneGrimmoryUserStatesMissingFromFetch,
     pruneGrimmorySourcesMissingFromFetch, grimmorySnapshotStatus } = context;
 // ── Phase G: Grimmory user states ────────────────────────────────────────
@@ -88,24 +87,14 @@ if (grimmoryAvailable) {
       const hardcoverBookId = grBook.hardcoverBookId ? Number.parseInt(grBook.hardcoverBookId, 10) : NaN;
       const hardcoverFields = hardcoverFieldsFromGrimmory(grBook);
       const hardcoverRat = grimmoryToHardcoverRating(grimmoryRating(grBook));
-      const bookOwnsSharedHardcover = grBook.mediaType === "audiobook"
-        && shouldBookProgressOwnSharedHardcover(grimmoryBooks, grBook.hardcoverBookId);
-      // Print/ebook siblings of an ABS-owned audiobook must never push their
-      // own status into the Hardcover book they share — that book's status
-      // is owned entirely by Phase N's ABS-derived writes. Without this,
-      // this print sibling (unmatched via the main HC loop because the
-      // shared Hardcover book was routed to its audiobook sibling instead)
-      // would insert/overwrite the shared user_book with the print's status,
-      // fighting Phase N's audiobook progress on every run.
-      const audiobookSiblingOwnsSharedHardcover = grBook.mediaType !== "audiobook"
-        && absOwnedHardcoverBookIds.has(normalizeExternalId(grBook.hardcoverBookId) ?? "");
-      if (bookOwnsSharedHardcover || audiobookSiblingOwnsSharedHardcover) {
-        logger.info("Skipped Grimmory-to-Hardcover status write because a sibling edition owns shared Hardcover progress", {
+      if (shouldActiveSiblingOwnSharedHardcover(grimmoryBooks, grBook)
+        || shouldAbsAudiobookOwnSharedHardcover(grimmoryBooks, grBook, absOwnedHardcoverBookIds)) {
+        logger.info("Skipped Grimmory-to-Hardcover status write because an active sibling owns the shared Hardcover record", {
           profileId,
           grimmoryBookId: grBook.id,
           hardcoverBookId: Number.isInteger(hardcoverBookId) ? hardcoverBookId : null
         });
-        recordEvent(db, runId, profileId, grBook.title ?? "", "skipped_no_change", "grimmory_to_hardcover", "book_progress_wins_shared_hardcover", {
+        recordEvent(db, runId, profileId, grBook.title ?? "", "skipped_no_change", "grimmory_to_hardcover", "active_sibling_owns_shared_hardcover", {
           grimmoryBookId: grBook.id,
           hardcoverBookId: Number.isInteger(hardcoverBookId) ? hardcoverBookId : null
         });
