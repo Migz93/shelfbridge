@@ -10,6 +10,7 @@ import { normalizeIsbn } from "../../src/server/identifiers.js";
 import {
   activeGrimmorySiblingsForHardcover,
   hardcoverProgressPercent,
+  hasActiveBookSiblingForHardcover,
   latestHardcoverRead,
   shouldAbsAudiobookOwnSharedHardcover,
   shouldActiveSiblingOwnSharedHardcover,
@@ -72,7 +73,7 @@ test("latestHardcoverRead prefers a progressed read over a blank duplicate on th
   assert.equal(latestHardcoverRead(book as any, 7)?.id, 1);
 });
 
-test("shared Hardcover progress belongs to an active book sibling only when the audiobook is active too", () => {
+test("shared Hardcover progress gives an active book sibling precedence over Audiobookshelf", () => {
   const book = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READING" };
   const inactiveAudio = { id: 2, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "UNREAD" };
   const activeAudio = { ...inactiveAudio, readStatus: "READING" };
@@ -84,6 +85,8 @@ test("shared Hardcover progress belongs to an active book sibling only when the 
   assert.equal(shouldActiveSiblingOwnSharedHardcover([completedBook, activeAudio] as any, activeAudio as any), false);
   assert.equal(shouldAbsAudiobookOwnSharedHardcover([completedBook, inactiveAudio] as any, completedBook as any, new Set(["42"])), true);
   assert.equal(shouldAbsAudiobookOwnSharedHardcover([book, inactiveAudio] as any, book as any, new Set(["42"])), false);
+  assert.equal(hasActiveBookSiblingForHardcover([book, inactiveAudio] as any, "42"), true);
+  assert.equal(hasActiveBookSiblingForHardcover([inactiveAudio] as any, "42"), false);
   assert.equal(activeGrimmorySiblingsForHardcover([book, activeAudio] as any, "42").book?.id, 1);
 });
 

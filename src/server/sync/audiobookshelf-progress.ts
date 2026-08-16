@@ -12,7 +12,7 @@ export async function syncAudiobookshelfProgress(context: any): Promise<void> {
     absBaseUrl, absApiKey, baseUrl, grimmoryToken, hardcoverToken,
     dryRun, counters, grimmoryBooks, grimmoryProgressById, hcBooks, recordEvent,
     meaningfulProgress, effectiveAbsCurrentTimeSeconds, persistResolvedHardcoverAudioEdition,
-    clampPercent, shouldBookProgressOwnSharedHardcover, todayDate
+    clampPercent, hasActiveBookSiblingForHardcover, localGrimmoryBookForBookId, todayDate
   } = context;
 // ── Phase N: Audiobookshelf progress sync ────────────────────────────────
 // ABS is the source of truth for audiobook listening progress.
@@ -98,19 +98,30 @@ if (hasAbs && (hasHardcover || grimmoryAvailable)) {
       const grimmoryBookId = grimmoryIdByBookId.get(absSource.book_id) ?? null;
       const grimProgressData = grimmoryBookId !== null ? grimmoryProgressById.get(grimmoryBookId) : undefined;
       const grBook = grimmoryBookId !== null ? grimmoryBooks.find((b: any) => b.id === grimmoryBookId) : undefined;
+      const localIdentityGrBook = grBook ?? localGrimmoryBookForBookId(db, profileId, absSource.book_id, grimmoryBooks);
+      const sharedHardcoverSource = db.prepare(`
+        SELECT source_hardcover_book_id
+        FROM book_sources
+        WHERE book_id = ? AND source_instance_id = ? AND source_hardcover_book_id IS NOT NULL
+        ORDER BY CASE source_type WHEN 'grimmory' THEN 0 WHEN 'chaptarr' THEN 1 ELSE 2 END
+        LIMIT 1
+      `).get(absSource.book_id, profileId) as { source_hardcover_book_id: string | null } | undefined;
       // An audiobook canonical may intentionally have no direct Hardcover
       // source row when it shares the Hardcover work with an ebook/print
       // canonical. Fall back to Grimmory's shared work ID so live Hardcover
       // status can still correct a stale local audio state.
       const liveHardcoverBookId = hcAudioSecondsRow?.external_id
-        ?? grBook?.hardcoverBookId
+        ?? localIdentityGrBook?.hardcoverBookId
+        ?? sharedHardcoverSource?.source_hardcover_book_id
         ?? null;
       const liveHcBookForEdition = liveHardcoverBookId
         ? hcBooks.find((b: any) => String(b.book.id) === String(liveHardcoverBookId))
         : undefined;
       const grProgress = meaningfulProgress(grimProgressData?.readProgress ?? null); // 0–100
-      const bookOwnsSharedHardcover = grBook?.mediaType === "audiobook"
-        && shouldBookProgressOwnSharedHardcover(grimmoryBooks, grBook.hardcoverBookId);
+      // An active ebook/print sibling always owns a shared Hardcover work.
+      // This must not depend on Grimmory having caught up with the audiobook:
+      // ABS can otherwise overwrite the book's current progress on first sync.
+      const bookOwnsSharedHardcover = hasActiveBookSiblingForHardcover(grimmoryBooks, liveHardcoverBookId);
 
       const absDuration = absSource.abs_duration ?? (absProgress?.duration ?? null);
       const hcProgressPct = hcState?.progress_seconds && absDuration && absDuration > 0

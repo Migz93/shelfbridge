@@ -56,7 +56,7 @@ interface SyncCounters {
   sourceFailures: number;
 }
 
-const { sameNumber, positiveRating, grimmoryToHardcoverRating, hardcoverToGrimmoryRating, hasMeaningfulHcChange, hasMeaningfulGrChange, hasMeaningfulGoodreadsChange, hardcoverDate, hardcoverPages, firstHardcoverSeries, latestHardcoverRead, cleanupDuplicateBlankHardcoverReads, meaningfulProgress, audiobookRuntimeForBook, hardcoverProgressPercent, effectiveAbsCurrentTimeSeconds, persistResolvedHardcoverAudioEdition, progressPagesFromPercent, todayDate, sqliteNow, sourceTagName, hardcoverFieldsFromGrimmory, activeGrimmorySiblingsForHardcover, shouldBookProgressOwnSharedHardcover, shouldActiveSiblingOwnSharedHardcover, shouldAbsAudiobookOwnSharedHardcover, normalizeEditionFormat, inferHardcoverMediaType, hasGrimmoryUserActivity, clampPercent } = syncUtils;
+const { sameNumber, positiveRating, grimmoryToHardcoverRating, hardcoverToGrimmoryRating, hasMeaningfulHcChange, hasMeaningfulGrChange, hasMeaningfulGoodreadsChange, hardcoverDate, hardcoverPages, firstHardcoverSeries, latestHardcoverRead, cleanupDuplicateBlankHardcoverReads, meaningfulProgress, audiobookRuntimeForBook, hardcoverProgressPercent, effectiveAbsCurrentTimeSeconds, persistResolvedHardcoverAudioEdition, progressPagesFromPercent, todayDate, sqliteNow, sourceTagName, hardcoverFieldsFromGrimmory, activeGrimmorySiblingsForHardcover, shouldBookProgressOwnSharedHardcover, hasActiveBookSiblingForHardcover, shouldActiveSiblingOwnSharedHardcover, shouldAbsAudiobookOwnSharedHardcover, normalizeEditionFormat, inferHardcoverMediaType, hasGrimmoryUserActivity, clampPercent } = syncUtils;
 // Serialise all profile syncs because identity reconciliation mutates shared state.
 let syncQueue = Promise.resolve();
 const activeSyncRuns = new Map<number, { profileId: number; startedAt: string }>();
@@ -230,7 +230,7 @@ export async function runSyncImpl(
       sameNumber, meaningfulProgress, effectiveAbsCurrentTimeSeconds,
       audiobookRuntimeForBook, hardcoverProgressPercent, progressPagesFromPercent,
       persistResolvedHardcoverAudioEdition, latestHardcoverRead, clampPercent,
-      shouldBookProgressOwnSharedHardcover, hardcoverPages, todayDate
+      hasActiveBookSiblingForHardcover, hardcoverPages, todayDate
     });
 
     // ── Phase L: Final reconcile ─────────────────────────────────────────────

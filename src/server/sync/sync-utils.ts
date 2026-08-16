@@ -392,6 +392,14 @@ export function shouldBookProgressOwnSharedHardcover(grimmoryBooks: GrimmoryBook
   return siblings.book !== null && siblings.audiobook !== null;
 }
 
+export function hasActiveBookSiblingForHardcover(
+  grimmoryBooks: GrimmoryBook[],
+  hardcoverBookId: number | string | null | undefined
+): boolean {
+  return hardcoverBookId !== null && hardcoverBookId !== undefined
+    && activeGrimmorySiblingsForHardcover(grimmoryBooks, hardcoverBookId).book !== null;
+}
+
 export function shouldActiveSiblingOwnSharedHardcover(grimmoryBooks: GrimmoryBook[], grBook: GrimmoryBook): boolean {
   if (grBook.hardcoverBookId === null || grBook.hardcoverBookId === undefined) return false;
   const siblings = activeGrimmorySiblingsForHardcover(grimmoryBooks, grBook.hardcoverBookId);
