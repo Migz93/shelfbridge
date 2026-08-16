@@ -273,7 +273,7 @@ if (hasAbs && (hasHardcover || grimmoryAvailable)) {
       // otherwise a wrong status can never self-correct once progress settles.
       const hcStatusNeedsCorrection = hasHardcover
         && (hcState?.hardcover_status_id !== absDesiredStatusId
-          || liveHcBookForEdition?.status_id !== absDesiredStatusId);
+          || (liveHcBookForEdition !== undefined && liveHcBookForEdition.status_id !== absDesiredStatusId));
       // Also re-enter when Hardcover's "current edition" pointer for this
       // shared book has drifted off the audio edition (e.g. touching any
       // other read on it flips this) even though progress/status content

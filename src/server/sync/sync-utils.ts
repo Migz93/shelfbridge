@@ -402,6 +402,19 @@ export function shouldActiveSiblingOwnSharedHardcover(grimmoryBooks: GrimmoryBoo
   return owner !== null && owner.id !== grBook.id;
 }
 
+export function shouldAbsAudiobookOwnSharedHardcover(
+  grimmoryBooks: GrimmoryBook[],
+  grBook: GrimmoryBook,
+  absOwnedHardcoverBookIds: ReadonlySet<string>
+): boolean {
+  const hardcoverBookId = hardcoverIdForGrimmoryBook(grBook);
+  if (grBook.mediaType === "audiobook" || !hardcoverBookId || !absOwnedHardcoverBookIds.has(hardcoverBookId)) return false;
+  // An actively read book deliberately overrides an ABS audiobook. Otherwise,
+  // retain ABS ownership even after the audiobook has completed, so an
+  // inactive print/ebook sibling cannot resurrect and overwrite its record.
+  return activeGrimmorySiblingsForHardcover(grimmoryBooks, hardcoverBookId).book === null;
+}
+
 export function normalizeEditionFormat(value: string | null | undefined): string | null {
   const text = value?.trim();
   return text ? text : null;

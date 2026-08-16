@@ -1,7 +1,8 @@
 import { logger } from "../logger.js";
+import { normalizeExternalId } from "../identifiers.js";
 export async function persistHardcoverSources(context: any): Promise<void> {
   const { db, profileId, hcBooks, hcEditions, grimmoryAvailable, upsertBookSource, cacheSourceCover, sqliteNow,
-    hasHardcover, activeGrimmorySiblingsForHardcover, grimmoryBooks,
+    hasHardcover, activeGrimmorySiblingsForHardcover, grimmoryBooks, absOwnedHardcoverBookIds,
     inferHardcoverMediaType, firstHardcoverSeries, normalizeEditionFormat, enqueueImageCacheTask,
     pruneHardcoverUserStatesMissingFromFetch, pruneHardcoverSourcesMissingFromFetch, hardcoverSnapshotStatus } = context;
 // ── Phase C: Write HC book_sources ─────────────────────────────────────
@@ -12,6 +13,8 @@ if (hasHardcover) {
       ? activeGrimmorySiblingsForHardcover(grimmoryBooks, hcBook.book.id)
       : { book: null, audiobook: null };
     const bookOwnsSharedHardcover = preferredSiblings.book !== null && preferredSiblings.audiobook !== null;
+    const absOwnsThisHardcoverBook = preferredSiblings.book === null
+      && absOwnedHardcoverBookIds.has(normalizeExternalId(hcBook.book.id) ?? String(hcBook.book.id));
     const inferredMediaType = inferHardcoverMediaType(hcBook, userEdition);
     // Hardcover uses one book ID for multiple active editions, while our
     // book_sources row is keyed by that book ID. Keep the row in the book
@@ -19,6 +22,8 @@ if (hasHardcover) {
     // flip the local identity between book and audiobook.
     const mediaType = bookOwnsSharedHardcover
       ? "physical"
+      : absOwnsThisHardcoverBook
+        ? "audiobook"
       : inferredMediaType;
     // Only trust Hardcover's live "current edition" data for audio-specific
     // fields (edition id, format, audio seconds, ASIN) when the current

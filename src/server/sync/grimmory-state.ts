@@ -5,7 +5,7 @@ export async function syncGrimmoryState(context: any): Promise<void> {
   const { db, profileId, runId, grimmoryBooks, grimmoryAvailable, counters, recordEvent,
     getUserState, hasMeaningfulGrChange, dryRun, hasGrimmoryUserActivity,
     matchedGrimmoryIds, hardcoverFieldsFromGrimmory, grimmoryToHardcoverRating,
-    shouldActiveSiblingOwnSharedHardcover, hasHardcover,
+    shouldActiveSiblingOwnSharedHardcover, shouldAbsAudiobookOwnSharedHardcover, absOwnedHardcoverBookIds, hasHardcover,
     profile, adapters, hardcoverToken, pruneGrimmoryUserStatesMissingFromFetch,
     pruneGrimmorySourcesMissingFromFetch, grimmorySnapshotStatus } = context;
 // ── Phase G: Grimmory user states ────────────────────────────────────────
@@ -87,7 +87,8 @@ if (grimmoryAvailable) {
       const hardcoverBookId = grBook.hardcoverBookId ? Number.parseInt(grBook.hardcoverBookId, 10) : NaN;
       const hardcoverFields = hardcoverFieldsFromGrimmory(grBook);
       const hardcoverRat = grimmoryToHardcoverRating(grimmoryRating(grBook));
-      if (shouldActiveSiblingOwnSharedHardcover(grimmoryBooks, grBook)) {
+      if (shouldActiveSiblingOwnSharedHardcover(grimmoryBooks, grBook)
+        || shouldAbsAudiobookOwnSharedHardcover(grimmoryBooks, grBook, absOwnedHardcoverBookIds)) {
         logger.info("Skipped Grimmory-to-Hardcover status write because an active sibling owns the shared Hardcover record", {
           profileId,
           grimmoryBookId: grBook.id,

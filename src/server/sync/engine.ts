@@ -56,7 +56,7 @@ interface SyncCounters {
   sourceFailures: number;
 }
 
-const { sameNumber, positiveRating, grimmoryToHardcoverRating, hardcoverToGrimmoryRating, hasMeaningfulHcChange, hasMeaningfulGrChange, hasMeaningfulGoodreadsChange, hardcoverDate, hardcoverPages, firstHardcoverSeries, latestHardcoverRead, cleanupDuplicateBlankHardcoverReads, meaningfulProgress, audiobookRuntimeForBook, hardcoverProgressPercent, effectiveAbsCurrentTimeSeconds, persistResolvedHardcoverAudioEdition, progressPagesFromPercent, todayDate, sqliteNow, sourceTagName, hardcoverFieldsFromGrimmory, activeGrimmorySiblingsForHardcover, shouldBookProgressOwnSharedHardcover, shouldActiveSiblingOwnSharedHardcover, normalizeEditionFormat, inferHardcoverMediaType, hasGrimmoryUserActivity, clampPercent } = syncUtils;
+const { sameNumber, positiveRating, grimmoryToHardcoverRating, hardcoverToGrimmoryRating, hasMeaningfulHcChange, hasMeaningfulGrChange, hasMeaningfulGoodreadsChange, hardcoverDate, hardcoverPages, firstHardcoverSeries, latestHardcoverRead, cleanupDuplicateBlankHardcoverReads, meaningfulProgress, audiobookRuntimeForBook, hardcoverProgressPercent, effectiveAbsCurrentTimeSeconds, persistResolvedHardcoverAudioEdition, progressPagesFromPercent, todayDate, sqliteNow, sourceTagName, hardcoverFieldsFromGrimmory, activeGrimmorySiblingsForHardcover, shouldBookProgressOwnSharedHardcover, shouldActiveSiblingOwnSharedHardcover, shouldAbsAudiobookOwnSharedHardcover, normalizeEditionFormat, inferHardcoverMediaType, hasGrimmoryUserActivity, clampPercent } = syncUtils;
 // Serialise all profile syncs because identity reconciliation mutates shared state.
 let syncQueue = Promise.resolve();
 const activeSyncRuns = new Map<number, { profileId: number; startedAt: string }>();
@@ -141,14 +141,14 @@ export async function runSyncImpl(
 
     const counters: SyncCounters = { written: 0, skipped: 0, superseded: 0, sourceFailures: 0 };
     const recordEvent = recordSyncEvent;
-    const { hcBooks, hcEditions, hcLists, hardcoverSnapshotStatus, grimmoryBooks, grimmoryAvailable, grimmorySnapshotStatus, grimmoryToken, absOwnedBookIds, grimmoryProgressById } = await fetchSourceSnapshots({
+    const { hcBooks, hcEditions, hcLists, hardcoverSnapshotStatus, grimmoryBooks, grimmoryAvailable, grimmorySnapshotStatus, grimmoryToken, absOwnedBookIds, absOwnedHardcoverBookIds, grimmoryProgressById } = await fetchSourceSnapshots({
       db, profileId, runId, profile, adapters, counters, recordEvent,
       hasHardcover, hardcoverToken, baseUrl, username, password, hasGrimmory
     });
     await persistGrimmorySources({ db, profileId, grimmoryAvailable, grimmoryBooks, upsertBookSource, enqueueImageCacheTask, cacheSourceCover, sqliteNow, grimmoryToken, cacheGrimmoryCover, baseUrl });
 
     await persistHardcoverSources({ db, profileId, hcBooks, hcEditions, grimmoryAvailable, upsertBookSource, cacheSourceCover, sqliteNow,
-      hasHardcover, activeGrimmorySiblingsForHardcover, grimmoryBooks,
+      hasHardcover, activeGrimmorySiblingsForHardcover, grimmoryBooks, absOwnedHardcoverBookIds,
       inferHardcoverMediaType, firstHardcoverSeries, normalizeEditionFormat, enqueueImageCacheTask,
       pruneHardcoverUserStatesMissingFromFetch, pruneHardcoverSourcesMissingFromFetch, hardcoverSnapshotStatus });
 
@@ -198,7 +198,7 @@ export async function runSyncImpl(
       db, profileId, runId, grimmoryBooks, grimmoryAvailable, counters, recordEvent,
       getUserState, hasMeaningfulGrChange, dryRun, hasGrimmoryUserActivity,
       matchedGrimmoryIds, hardcoverFieldsFromGrimmory, grimmoryToHardcoverRating,
-      shouldActiveSiblingOwnSharedHardcover, hasHardcover,
+      shouldActiveSiblingOwnSharedHardcover, shouldAbsAudiobookOwnSharedHardcover, absOwnedHardcoverBookIds, hasHardcover,
       profile, adapters, hardcoverToken, pruneGrimmoryUserStatesMissingFromFetch,
       pruneGrimmorySourcesMissingFromFetch, grimmorySnapshotStatus
     });

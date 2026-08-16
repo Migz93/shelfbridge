@@ -11,6 +11,7 @@ import {
   activeGrimmorySiblingsForHardcover,
   hardcoverProgressPercent,
   latestHardcoverRead,
+  shouldAbsAudiobookOwnSharedHardcover,
   shouldActiveSiblingOwnSharedHardcover,
   shouldBookProgressOwnSharedHardcover
 } from "../../src/server/sync/sync-utils.js";
@@ -81,6 +82,8 @@ test("shared Hardcover progress belongs to an active book sibling only when the 
   const completedBook = { ...book, readStatus: "READ" };
   assert.equal(shouldActiveSiblingOwnSharedHardcover([completedBook, activeAudio] as any, completedBook as any), true);
   assert.equal(shouldActiveSiblingOwnSharedHardcover([completedBook, activeAudio] as any, activeAudio as any), false);
+  assert.equal(shouldAbsAudiobookOwnSharedHardcover([completedBook, inactiveAudio] as any, completedBook as any, new Set(["42"])), true);
+  assert.equal(shouldAbsAudiobookOwnSharedHardcover([book, inactiveAudio] as any, book as any, new Set(["42"])), false);
   assert.equal(activeGrimmorySiblingsForHardcover([book, activeAudio] as any, "42").book?.id, 1);
 });
 
