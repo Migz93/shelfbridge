@@ -12,7 +12,10 @@ if (hasHardcover) {
     const preferredSiblings = grimmoryAvailable
       ? activeGrimmorySiblingsForHardcover(grimmoryBooks, hcBook.book.id)
       : { book: null, audiobook: null };
-    const bookOwnsSharedHardcover = preferredSiblings.book !== null && preferredSiblings.audiobook !== null;
+    // An active ebook/print sibling wins regardless of whether Grimmory has
+    // observed an active audiobook sibling. This keeps Hardcover's shared row
+    // in the book identity bucket when its current-edition pointer drifts.
+    const bookOwnsSharedHardcover = preferredSiblings.book !== null;
     const absOwnsThisHardcoverBook = preferredSiblings.book === null
       && absOwnedHardcoverBookIds.has(normalizeExternalId(hcBook.book.id) ?? String(hcBook.book.id));
     const inferredMediaType = inferHardcoverMediaType(hcBook, userEdition);
