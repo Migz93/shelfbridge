@@ -27,6 +27,11 @@ test("normalizeTitle strips parenthetical series info, case, and punctuation", (
   assert.equal(normalizeTitle("  Extra   Spaces  "), "extra spaces");
 });
 
+test("normalizeTitle preserves non-Latin scripts instead of stripping them to an empty string", () => {
+  assert.equal(normalizeTitle("Преступление и наказание"), "преступление и наказание");
+  assert.equal(normalizeTitle("三体"), "三体");
+});
+
 test("normalizeSeriesNumber extracts the leading numeric portion", () => {
   assert.equal(normalizeSeriesNumber("Book 2.5"), "2.5");
   assert.equal(normalizeSeriesNumber(3), "3");

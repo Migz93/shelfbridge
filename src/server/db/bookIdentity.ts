@@ -89,7 +89,9 @@ function normalizeTitle(value: string | null | undefined): string | null {
   const text = clean(value)
     ?.toLowerCase()
     .replace(/\s*\(.*?\)\s*/g, " ")
-    .replace(/[^a-z0-9\s]/g, " ")
+    // Unicode-aware: an ASCII-only character class would strip a non-Latin
+    // title down to nothing, defeating title-based matching for it entirely.
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim() ?? null;
   return text && text.length > 0 ? text : null;
