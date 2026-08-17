@@ -183,6 +183,11 @@ if (grimmoryAvailable && grimmoryToken && profile["sync_progress_enabled"] !== 0
       grimmoryProgressById.set(grBook.id, progress);
       grBook.readProgress = progress.readProgress;
       grBook.lastReadTime = progress.lastReadTime ?? grBook.lastReadTime ?? null;
+      // The bulk library fetch's readStatus can lag behind this per-book
+      // endpoint (e.g. a book just marked READING before the library list
+      // was cached) — apply it here too so ownership resolution and every
+      // other consumer of grBook.readStatus see the freshest value.
+      grBook.readStatus = progress.readStatus ?? grBook.readStatus ?? null;
     } catch (err) {
       logger.warn("Failed to fetch Grimmory progress", { profileId, grimmoryBookId: grBook.id, error: err });
     }

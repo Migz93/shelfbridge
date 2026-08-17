@@ -9,6 +9,23 @@ function hardcoverIdForGrimmoryBook(book: GrimmoryBook): string | null {
   return normalizeExternalId(book.hardcoverBookId) ?? null;
 }
 
+/**
+ * Deterministic tie-break between two actively-reading siblings of the same
+ * format sharing one Hardcover record (e.g. two separate Grimmory entries
+ * for the same audiobook). Picks whichever was read more recently; when
+ * neither or both lack a usable lastReadTime, falls back to the higher
+ * Grimmory book id so the result never depends on fetch/array order.
+ */
+function preferMoreRecentlyActive(a: GrimmoryBook, b: GrimmoryBook): GrimmoryBook {
+  const aTime = a.lastReadTime ? Date.parse(a.lastReadTime) : NaN;
+  const bTime = b.lastReadTime ? Date.parse(b.lastReadTime) : NaN;
+  const aValid = Number.isFinite(aTime);
+  const bValid = Number.isFinite(bTime);
+  if (aValid && bValid && aTime !== bTime) return aTime > bTime ? a : b;
+  if (aValid !== bValid) return aValid ? a : b;
+  return a.id >= b.id ? a : b;
+}
+
 export type SharedHardcoverOwner =
   | { kind: "book"; grimmoryBookId: number; reason: "active_book_sibling" }
   | { kind: "audiobook"; grimmoryBookId: number; reason: "active_audiobook_sibling" }
@@ -43,7 +60,10 @@ export type SharedHardcoverOwnership = ReadonlyMap<string, SharedHardcoverRecord
  * Precedence: an actively-reading book/print sibling always wins, then an
  * actively-reading audiobook sibling, then ABS-reported listening activity
  * on a runtime-validated audiobook match. A finished or untouched sibling
- * never owns the record.
+ * never owns the record. When two siblings of the same format are both
+ * actively reading (e.g. duplicate Grimmory entries for the same book), the
+ * more recently read one wins, falling back to the higher Grimmory book id
+ * so the result never depends on fetch/array order.
  */
 export function resolveSharedHardcoverOwnership(
   grimmoryBooks: GrimmoryBook[],
@@ -73,9 +93,11 @@ export function resolveSharedHardcoverOwnership(
     const record = recordFor(hardcoverBookId);
     if (book.mediaType === "audiobook") {
       record.hasAudiobookSibling = true;
-      if (!record.activeAudiobook && isActivelyReadingStatus(book.readStatus)) record.activeAudiobook = book;
-    } else if (!record.activeBook && isActivelyReadingStatus(book.readStatus)) {
-      record.activeBook = book;
+      if (isActivelyReadingStatus(book.readStatus)) {
+        record.activeAudiobook = record.activeAudiobook ? preferMoreRecentlyActive(record.activeAudiobook, book) : book;
+      }
+    } else if (isActivelyReadingStatus(book.readStatus)) {
+      record.activeBook = record.activeBook ? preferMoreRecentlyActive(record.activeBook, book) : book;
     }
   }
 

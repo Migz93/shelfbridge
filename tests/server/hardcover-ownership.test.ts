@@ -74,3 +74,25 @@ test("no record exists for a Hardcover ID nobody references", () => {
   assert.equal(sharedHardcoverRecordFor(ownership, "42"), null);
   assert.equal(isOwnedBySomeoneElse(ownership, { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READ" } as any), false);
 });
+
+test("two active siblings of the same format tie-break on recency, independent of input order", () => {
+  const older = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READING", lastReadTime: "2026-01-01T00:00:00Z" };
+  const newer = { id: 2, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READING", lastReadTime: "2026-06-01T00:00:00Z" };
+
+  const forward = resolveSharedHardcoverOwnership([older, newer] as any, new Set());
+  const reversed = resolveSharedHardcoverOwnership([newer, older] as any, new Set());
+
+  assert.equal(sharedHardcoverRecordFor(forward, "42")?.activeBook?.id, 2);
+  assert.equal(sharedHardcoverRecordFor(reversed, "42")?.activeBook?.id, 2);
+});
+
+test("a tie-break with no usable lastReadTime falls back to the higher Grimmory book id, independent of input order", () => {
+  const a = { id: 5, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "READING", lastReadTime: null };
+  const b = { id: 9, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "READING", lastReadTime: "not-a-date" };
+
+  const forward = resolveSharedHardcoverOwnership([a, b] as any, new Set());
+  const reversed = resolveSharedHardcoverOwnership([b, a] as any, new Set());
+
+  assert.equal(sharedHardcoverRecordFor(forward, "42")?.activeAudiobook?.id, 9);
+  assert.equal(sharedHardcoverRecordFor(reversed, "42")?.activeAudiobook?.id, 9);
+});

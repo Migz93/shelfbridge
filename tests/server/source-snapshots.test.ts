@@ -50,6 +50,25 @@ test("a runtime-validated ABS link with no listening activity does not claim own
   } finally { cleanup(); }
 });
 
+test("the per-book Grimmory progress fetch refreshes a stale readStatus from the bulk library fetch", async () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const adapters: Partial<SyncAdapters> = {
+      testGrimmoryLogin: async () => ({ ok: true, accessToken: "token" }),
+      fetchGrimmoryBooks: async () => [{
+        id: 1, title: "Stale Status Book", hardcoverBookId: "42", mediaType: "ebook", readStatus: "UNREAD"
+      }],
+      fetchGrimmoryProgress: async () => ({ readProgress: 40, lastReadTime: "2026-01-01T00:00:00Z", readStatus: "READING" })
+    };
+    const result = await fetchSourceSnapshots(context(db, profileId, {
+      hasGrimmory: true, baseUrl: "https://grimmory.example.com", username: "user", password: "pass",
+      profile: { sync_progress_enabled: 1 }, adapters
+    }));
+    assert.equal(result.grimmoryBooks[0]?.readStatus, "READING");
+  } finally { cleanup(); }
+});
+
 test("Hardcover detail fetch preserves list-only edition metadata", async () => {
   const { db, cleanup } = createTestDatabase();
   try {
