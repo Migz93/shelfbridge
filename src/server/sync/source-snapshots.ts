@@ -6,6 +6,7 @@ import { normalizeExternalId } from "../identifiers.js";
 import type { getDb } from "../db/index.js";
 import type { SourceSnapshotStatus } from "./pruning.js";
 import { mapWithConcurrency } from "./concurrency.js";
+import { resolveSharedHardcoverOwnership, type SharedHardcoverOwnership } from "./hardcover-ownership.js";
 
 const GRIMMORY_PROGRESS_FETCH_CONCURRENCY = 8;
 
@@ -37,6 +38,7 @@ export interface SourceSnapshots {
   grimmoryToken: string | null;
   absOwnedBookIds: Set<number>;
   absOwnedHardcoverBookIds: Set<string>;
+  sharedHardcoverOwnership: SharedHardcoverOwnership;
   grimmoryProgressById: Map<number, { readProgress: number | null; lastReadTime: string | null; readStatus: string | null }>;
 }
 
@@ -249,5 +251,11 @@ if (absOwnedBookIds.size > 0) {
   }
 }
 
-  return { hcBooks, hcEditions, hcLists, hardcoverSnapshotStatus, grimmoryBooks, grimmoryAvailable, grimmorySnapshotStatus, grimmoryToken, absOwnedBookIds, absOwnedHardcoverBookIds, grimmoryProgressById };
+  // Resolved once here — after the Grimmory/ABS-activity snapshots are both
+  // known — so every later phase agrees on who owns a shared Hardcover
+  // record instead of each re-deriving its own answer from a different
+  // subset of this same data.
+  const sharedHardcoverOwnership = resolveSharedHardcoverOwnership(grimmoryBooks, absOwnedHardcoverBookIds);
+
+  return { hcBooks, hcEditions, hcLists, hardcoverSnapshotStatus, grimmoryBooks, grimmoryAvailable, grimmorySnapshotStatus, grimmoryToken, absOwnedBookIds, absOwnedHardcoverBookIds, sharedHardcoverOwnership, grimmoryProgressById };
 }

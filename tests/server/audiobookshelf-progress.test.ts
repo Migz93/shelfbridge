@@ -4,12 +4,14 @@ import { syncAudiobookshelfProgress } from "../../src/server/sync/audiobookshelf
 import {
   clampPercent,
   effectiveAbsCurrentTimeSeconds,
-  hasActiveBookSiblingForHardcover,
   meaningfulProgress,
   persistResolvedHardcoverAudioEdition,
   todayDate
 } from "../../src/server/sync/sync-utils.js";
+import { resolveSharedHardcoverOwnership } from "../../src/server/sync/hardcover-ownership.js";
 import { createTestDatabase } from "./test-db.js";
+
+const noSharedHardcoverOwnership = resolveSharedHardcoverOwnership([], new Set());
 
 test("Audiobookshelf repairs a blank live Hardcover read when cached progress is stale", async (t) => {
   const { db, cleanup } = createTestDatabase();
@@ -69,7 +71,7 @@ test("Audiobookshelf repairs a blank live Hardcover read when cached progress is
     effectiveAbsCurrentTimeSeconds,
     persistResolvedHardcoverAudioEdition,
     clampPercent,
-    hasActiveBookSiblingForHardcover,
+    sharedHardcoverOwnership: noSharedHardcoverOwnership,
     localGrimmoryBookForBookId: () => undefined,
     todayDate
   });
@@ -132,7 +134,7 @@ test("Audiobookshelf creates a Hardcover read from a Chaptarr-only shared work m
     effectiveAbsCurrentTimeSeconds,
     persistResolvedHardcoverAudioEdition,
     clampPercent,
-    hasActiveBookSiblingForHardcover,
+    sharedHardcoverOwnership: noSharedHardcoverOwnership,
     localGrimmoryBookForBookId: () => undefined,
     todayDate
   });
@@ -203,7 +205,7 @@ test("one book throwing during Hardcover write does not abort the rest of the Au
       events.push({ eventType, decision });
     },
     meaningfulProgress, effectiveAbsCurrentTimeSeconds, persistResolvedHardcoverAudioEdition,
-    clampPercent, hasActiveBookSiblingForHardcover,
+    clampPercent, sharedHardcoverOwnership: noSharedHardcoverOwnership,
     // Throws only for the poisoned book — simulates an unexpected failure in a
     // code path that isn't already wrapped by one of this phase's own
     // per-write try/catches (e.g. a bug, not an API failure), which is exactly

@@ -1,6 +1,7 @@
 import { logger } from "../logger.js";
 import { HARDCOVER_TO_GRIMMORY } from "./matcher.js";
 import type { HardcoverReadFields } from "./hardcover.js";
+import { hasActiveOwningBook } from "./hardcover-ownership.js";
 
 /**
  * Runs Audiobookshelf's three-way progress propagation. The explicit context
@@ -12,7 +13,7 @@ export async function syncAudiobookshelfProgress(context: any): Promise<void> {
     absBaseUrl, absApiKey, baseUrl, grimmoryToken, hardcoverToken,
     dryRun, counters, grimmoryBooks, grimmoryProgressById, hcBooks, recordEvent,
     meaningfulProgress, effectiveAbsCurrentTimeSeconds, persistResolvedHardcoverAudioEdition,
-    clampPercent, hasActiveBookSiblingForHardcover, localGrimmoryBookForBookId, todayDate
+    clampPercent, sharedHardcoverOwnership, localGrimmoryBookForBookId, todayDate
   } = context;
 // ── Phase N: Audiobookshelf progress sync ────────────────────────────────
 // ABS is the source of truth for audiobook listening progress.
@@ -141,7 +142,7 @@ if (hasAbs && absApiKey && (hasHardcover || grimmoryAvailable)) {
       // An active ebook/print sibling always owns a shared Hardcover work.
       // This must not depend on Grimmory having caught up with the audiobook:
       // ABS can otherwise overwrite the book's current progress on first sync.
-      const bookOwnsSharedHardcover = hasActiveBookSiblingForHardcover(grimmoryBooks, liveHardcoverBookId);
+      const bookOwnsSharedHardcover = hasActiveOwningBook(sharedHardcoverOwnership, liveHardcoverBookId);
 
       const absDuration = absSource.abs_duration ?? (absProgress?.duration ?? null);
       const hcProgressPct = hcState?.progress_seconds && absDuration && absDuration > 0

@@ -7,7 +7,6 @@ import { logger } from "../logger.js";
 import type { HardcoverEdition, HardcoverUserBook } from "./hardcover.js";
 import type { GrimmoryBook } from "./grimmory.js";
 import { GRIMMORY_TO_HARDCOVER } from "./matcher.js";
-import { normalizeExternalId } from "../identifiers.js";
 import type { UserStateSnapshot } from "./repository.js";
 import { newerSource } from "./time-order.js";
 export interface SyncCounters { written: number; skipped: number; superseded: number; sourceFailures: number; }
@@ -364,76 +363,10 @@ export function hardcoverFieldsFromGrimmory(grBook: GrimmoryBook): { status_id?:
   };
 }
 
-export function isActivelyReadingStatus(status: string | null | undefined): boolean {
-  return status === "READING" || status === "RE_READING" || status === "PARTIALLY_READ";
-}
-
-export function hardcoverIdForGrimmoryBook(book: GrimmoryBook): string | null {
-  return normalizeExternalId(book.hardcoverBookId) ?? null;
-}
-
-export function activeGrimmorySiblingsForHardcover(grimmoryBooks: GrimmoryBook[], hardcoverBookId: number | string): {
-  book: GrimmoryBook | null;
-  audiobook: GrimmoryBook | null;
-} {
-  const normalizedHardcoverId = normalizeExternalId(hardcoverBookId);
-  if (!normalizedHardcoverId) return { book: null, audiobook: null };
-
-  const active = grimmoryBooks.filter((book) =>
-    hardcoverIdForGrimmoryBook(book) === normalizedHardcoverId
-      && isActivelyReadingStatus(book.readStatus)
-  );
-
-  return {
-    book: active.find((book) => book.mediaType !== "audiobook") ?? null,
-    audiobook: active.find((book) => book.mediaType === "audiobook") ?? null
-  };
-}
-
-export function hasActiveBookSiblingForHardcover(
-  grimmoryBooks: GrimmoryBook[],
-  hardcoverBookId: number | string | null | undefined
-): boolean {
-  return hardcoverBookId !== null && hardcoverBookId !== undefined
-    && activeGrimmorySiblingsForHardcover(grimmoryBooks, hardcoverBookId).book !== null;
-}
-
-/** An active book owns a Hardcover work only when a distinct audiobook shares it. */
-export function hasActiveBookSiblingForSharedHardcover(
-  grimmoryBooks: GrimmoryBook[],
-  hardcoverBookId: number | string | null | undefined
-): boolean {
-  if (hardcoverBookId === null || hardcoverBookId === undefined) return false;
-  const normalizedHardcoverId = normalizeExternalId(hardcoverBookId);
-  return normalizedHardcoverId !== null
-    && activeGrimmorySiblingsForHardcover(grimmoryBooks, hardcoverBookId).book !== null
-    && grimmoryBooks.some((book) =>
-      book.mediaType === "audiobook" && hardcoverIdForGrimmoryBook(book) === normalizedHardcoverId
-    );
-}
-
-export function shouldActiveSiblingOwnSharedHardcover(grimmoryBooks: GrimmoryBook[], grBook: GrimmoryBook): boolean {
-  if (grBook.hardcoverBookId === null || grBook.hardcoverBookId === undefined) return false;
-  const siblings = activeGrimmorySiblingsForHardcover(grimmoryBooks, grBook.hardcoverBookId);
-  // A shared Hardcover work only has one mutable user-book record. If both
-  // formats are active, reading takes precedence; otherwise the sole active
-  // sibling owns it. Completed/inactive siblings must never overwrite it.
-  const owner = siblings.book ?? siblings.audiobook;
-  return owner !== null && owner.id !== grBook.id;
-}
-
-export function shouldAbsAudiobookOwnSharedHardcover(
-  grimmoryBooks: GrimmoryBook[],
-  grBook: GrimmoryBook,
-  absOwnedHardcoverBookIds: ReadonlySet<string>
-): boolean {
-  const hardcoverBookId = hardcoverIdForGrimmoryBook(grBook);
-  if (grBook.mediaType === "audiobook" || !hardcoverBookId || !absOwnedHardcoverBookIds.has(hardcoverBookId)) return false;
-  // An actively read book deliberately overrides an ABS audiobook. Otherwise,
-  // retain ABS ownership even after the audiobook has completed, so an
-  // inactive print/ebook sibling cannot resurrect and overwrite its record.
-  return activeGrimmorySiblingsForHardcover(grimmoryBooks, hardcoverBookId).book === null;
-}
+// Shared-Hardcover-record ownership (which sibling format may write
+// status/progress/rating to a Hardcover book multiple local editions map
+// to) lives in ./hardcover-ownership.js — resolved once per sync run
+// instead of re-derived independently at each call site.
 
 export function normalizeEditionFormat(value: string | null | undefined): string | null {
   const text = value?.trim();
