@@ -16,6 +16,7 @@ process.env["DATA_DIR"] = dataDir;
 const booksRouter = (await import("../../src/server/routes/books.js")).default;
 const { getDb } = await import("../../src/server/db/index.js");
 const { seedProfile } = await import("./test-helpers.js");
+const { probableDuplicateTitleKey, probableDuplicateAuthorKey } = await import("../../src/server/db/duplicateKeys.js");
 
 const db = getDb();
 
@@ -24,8 +25,15 @@ test.after(() => {
   rmSync(dataDir, { recursive: true, force: true });
 });
 
+// duplicate_title_key/duplicate_author_key are normally populated by
+// bookIdentity.ts's insertBook/updateBook whenever a books row is created —
+// this test inserts rows directly, bypassing that path, so it must populate
+// them itself to keep the same invariant real book rows always have.
 function insertBook(title: string, author: string): number {
-  return Number(db.prepare("INSERT INTO books (title, author) VALUES (?, ?)").run(title, author).lastInsertRowid);
+  return Number(db.prepare(`
+    INSERT INTO books (title, author, duplicate_title_key, duplicate_author_key)
+    VALUES (?, ?, ?, ?)
+  `).run(title, author, probableDuplicateTitleKey(title), probableDuplicateAuthorKey(author)).lastInsertRowid);
 }
 
 function insertGrimmorySource(bookId: number, profileId: number, externalId: string): void {

@@ -355,7 +355,47 @@ const migration2: Migration = {
   }
 };
 
-export const migrations: Migration[] = [migration1, migration2];
+// Backs indexed identity-key lookups so reconciliation can scope its reads to
+// rows sharing a key with the changed set instead of scanning every book_sources
+// row on every call (see reconcileBookIdentities in bookIdentity.ts).
+const migration3: Migration = {
+  version: 3,
+  description: "Indexes for identifier-based reconciliation and duplicate lookups",
+  up(db: Database.Database): void {
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_books_author ON books(author);
+      CREATE INDEX IF NOT EXISTS idx_books_series ON books(series_name, series_number);
+      CREATE INDEX IF NOT EXISTS idx_books_isbn13 ON books(isbn13);
+      CREATE INDEX IF NOT EXISTS idx_books_isbn10 ON books(isbn10);
+      CREATE INDEX IF NOT EXISTS idx_book_sources_isbn13 ON book_sources(isbn13);
+      CREATE INDEX IF NOT EXISTS idx_book_sources_isbn10 ON book_sources(isbn10);
+      CREATE INDEX IF NOT EXISTS idx_book_sources_hardcover_book_id ON book_sources(source_hardcover_book_id);
+      CREATE INDEX IF NOT EXISTS idx_book_sources_goodreads_book_id ON book_sources(source_goodreads_book_id);
+      CREATE INDEX IF NOT EXISTS idx_book_sources_asin ON book_sources(source_asin);
+      CREATE INDEX IF NOT EXISTS idx_book_identity_keys_value ON book_identity_keys(key_value);
+    `);
+  }
+};
+
+// Backs the duplicate-candidate lookup in routes/books.ts so it can do an
+// indexed WHERE match instead of scanning every books row per request. No
+// backfill UPDATE needed here: initSchema() always runs a full, unscoped
+// reconcileBookIdentities(db) right after migrations (schema.ts:30), and that
+// touches every book row via insertBook/updateBook, populating these columns
+// on the same startup this migration applies on.
+const migration4: Migration = {
+  version: 4,
+  description: "Duplicate-detection key columns on books",
+  up(db: Database.Database): void {
+    db.exec(`
+      ALTER TABLE books ADD COLUMN duplicate_title_key TEXT;
+      ALTER TABLE books ADD COLUMN duplicate_author_key TEXT;
+      CREATE INDEX IF NOT EXISTS idx_books_duplicate_key ON books(duplicate_title_key, duplicate_author_key);
+    `);
+  }
+};
+
+export const migrations: Migration[] = [migration1, migration2, migration3, migration4];
 
 // Guards against a typo'd version number: a duplicate would let two migrations
 // silently race to apply at the same version, and a gap (e.g. 1, 3 — skipping

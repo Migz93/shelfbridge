@@ -146,9 +146,21 @@ export async function runSyncImpl(
       db, profileId, runId, profile, adapters, counters, recordEvent,
       hasHardcover, hardcoverToken, baseUrl, username, password, hasGrimmory
     });
-    await persistGrimmorySources({ db, profileId, grimmoryAvailable, grimmoryBooks, upsertBookSource, enqueueImageCacheTask, cacheSourceCover, sqliteNow, grimmoryToken, cacheGrimmoryCover, baseUrl });
+    // Tracks every book_sources row upserted by the two persist calls below, so
+    // Phase D's reconcile can be scoped to just what this profile's sync touched
+    // instead of the whole catalog. upsertBookSource is injected as plain context
+    // data by both persist* functions (see grimmory-sources.ts/hardcover-sources.ts),
+    // so wrapping it here needs no changes to either.
+    const phaseDTouchedSourceIds: number[] = [];
+    const trackingUpsertBookSource: typeof upsertBookSource = (db, sourceType, instanceId, externalId, fields) => {
+      const id = upsertBookSource(db, sourceType, instanceId, externalId, fields);
+      phaseDTouchedSourceIds.push(id);
+      return id;
+    };
 
-    await persistHardcoverSources({ db, profileId, hcBooks, hcEditions, upsertBookSource, cacheSourceCover, sqliteNow,
+    await persistGrimmorySources({ db, profileId, grimmoryAvailable, grimmoryBooks, upsertBookSource: trackingUpsertBookSource, enqueueImageCacheTask, cacheSourceCover, sqliteNow, grimmoryToken, cacheGrimmoryCover, baseUrl });
+
+    await persistHardcoverSources({ db, profileId, hcBooks, hcEditions, upsertBookSource: trackingUpsertBookSource, cacheSourceCover, sqliteNow,
       hasHardcover, sharedHardcoverOwnership,
       inferHardcoverMediaType, firstHardcoverSeries, normalizeEditionFormat, enqueueImageCacheTask,
       pruneHardcoverUserStatesMissingFromFetch, pruneHardcoverSourcesMissingFromFetch, hardcoverSnapshotStatus });
@@ -157,7 +169,7 @@ export async function runSyncImpl(
     // Now that both Grimmory and HC sources are written, reconcile so every
     // book_sources row gets a book_id. This is what links HC sources to
     // Grimmory sources for the HC sync loop below.
-    reconcileBookIdentities(db);
+    reconcileBookIdentities(db, { sourceIds: phaseDTouchedSourceIds });
     if (hasHardcover) pruneOrphanedHardcoverUserStates(db, profileId);
 
     // ── Phase E: Build Grimmory in-memory match index (for HC loop) ─────────

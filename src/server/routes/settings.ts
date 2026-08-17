@@ -182,6 +182,15 @@ router.get("/jobs", (_req, res) => {
       nextRunAt: scheduler.getNextRunAt("image-cache-refresh"),
       lastRunAt: scheduler.getLastRunAt("image-cache-refresh"),
       lastRunStatus: scheduler.getLastRunStatus("image-cache-refresh")
+    },
+    {
+      id: "full-reconcile",
+      name: "Full Reconciliation",
+      intervalDescription: "Daily at 4:00 AM",
+      isRunning: scheduler.isRunning("full-reconcile"),
+      nextRunAt: scheduler.getNextRunAt("full-reconcile"),
+      lastRunAt: scheduler.getLastRunAt("full-reconcile"),
+      lastRunStatus: scheduler.getLastRunStatus("full-reconcile")
     }
   ];
 
@@ -190,7 +199,7 @@ router.get("/jobs", (_req, res) => {
 
 router.post("/jobs/:id/run", (req, res) => {
   const { id } = req.params;
-  const known = ["profile-sync", "maintenance", "image-cache-refresh"];
+  const known = ["profile-sync", "maintenance", "image-cache-refresh", "full-reconcile"];
   if (!known.includes(id)) {
     res.status(404).json({ error: "Unknown job." });
     return;

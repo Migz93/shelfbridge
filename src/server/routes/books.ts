@@ -18,6 +18,7 @@ import { reconcileBookIdentities } from "../db/bookIdentity.js";
 import { normalizeExternalId, identifiersEqual } from "../identifiers.js";
 import { validationErrorResponse, writeGrimmoryIdSchema } from "../validation.js";
 import { hasIdentityReviewConflict } from "../sync/identity-review.js";
+import { normalizeReviewText, probableDuplicateTitleKey, normalizeDuplicateSeriesNumber } from "../db/duplicateKeys.js";
 
 const router = Router();
 
@@ -183,34 +184,15 @@ function hasNeedsIdReview(row: Pick<DbBookRow,
     || (sourceHardcoverId !== null && !identifiersEqual(grimmoryHardcoverId, sourceHardcoverId));
 }
 
-function normalizeReviewText(value: string | null | undefined): string | null {
-  const text = value
-    ?.toLowerCase()
-    .replace(/\s*\(.*?\)\s*/g, " ")
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim() ?? null;
-  return text || null;
-}
-
-function probableDuplicateTitleKey(value: string | null | undefined): string | null {
-  const stripped = value?.split(/:|\s+-\s+/)[0]?.trim();
-  return normalizeReviewText(stripped);
-}
-
-function normalizeSeriesNumber(value: string | null | undefined): string | null {
-  const text = normalizeReviewText(value);
-  if (!text) return null;
-  return text.match(/\d+(?:\.\d+)?/)?.[0] ?? text;
-}
-
 type DuplicateMatchRow = Pick<DbBookRow, "book_id" | "book_title" | "book_author" | "book_series_name" | "book_series_number">;
 
 // Duplicate matching only compares book-level title/author/series fields, so this
-// scans the small `books` table directly instead of the much heavier fetchRows()
-// join (books x profiles x every source/user-state table).
-function fetchDuplicateMatchRows(): DuplicateMatchRow[] {
-  return getDb().prepare(`
+// looks up candidates via the indexed duplicate_title_key/duplicate_author_key
+// columns (populated on every books write, see bookIdentity.ts's insertBook/
+// updateBook) instead of scanning every row in the `books` table.
+function fetchDuplicateMatchRows(targetBookId: number): DuplicateMatchRow[] {
+  const db = getDb();
+  const baseSelect = `
     SELECT
       id AS book_id,
       title AS book_title,
@@ -218,7 +200,16 @@ function fetchDuplicateMatchRows(): DuplicateMatchRow[] {
       series_name AS book_series_name,
       series_number AS book_series_number
     FROM books
-  `).all() as DuplicateMatchRow[];
+  `;
+  const target = db.prepare(`SELECT duplicate_title_key, duplicate_author_key FROM books WHERE id = ?`)
+    .get(targetBookId) as { duplicate_title_key: string | null; duplicate_author_key: string | null } | undefined;
+  if (!target || target.duplicate_title_key === null || target.duplicate_author_key === null) {
+    // No key means the title/author couldn't normalize to anything comparable
+    // (e.g. blank) — no book can share a duplicate group with it.
+    return db.prepare(`${baseSelect} WHERE id = ?`).all(targetBookId) as DuplicateMatchRow[];
+  }
+  return db.prepare(`${baseSelect} WHERE id = ? OR (duplicate_title_key = ? AND duplicate_author_key = ?)`)
+    .all(targetBookId, target.duplicate_title_key, target.duplicate_author_key) as DuplicateMatchRow[];
 }
 
 function hasDistinctSeriesPosition(a: DuplicateMatchRow, b: DuplicateMatchRow): boolean {
@@ -226,8 +217,8 @@ function hasDistinctSeriesPosition(a: DuplicateMatchRow, b: DuplicateMatchRow): 
   const seriesB = normalizeReviewText(b.book_series_name);
   if (!seriesA || !seriesB || seriesA !== seriesB) return false;
 
-  const numberA = normalizeSeriesNumber(a.book_series_number);
-  const numberB = normalizeSeriesNumber(b.book_series_number);
+  const numberA = normalizeDuplicateSeriesNumber(a.book_series_number);
+  const numberB = normalizeDuplicateSeriesNumber(b.book_series_number);
   return Boolean(numberA && numberB && numberA !== numberB);
 }
 
@@ -1060,7 +1051,7 @@ router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
   if (bookId === null || duplicateId === null || bookId === duplicateId) {
     res.status(400).json({ error: "Invalid duplicate pair" }); return;
   }
-  if (!isLiveProbableDuplicatePair(fetchDuplicateMatchRows(), bookId, duplicateId)) {
+  if (!isLiveProbableDuplicatePair(fetchDuplicateMatchRows(bookId), bookId, duplicateId)) {
     res.status(400).json({ error: "Merge requires a live probable-duplicate pair" }); return;
   }
   const plans = duplicateMergePlans(db, bookId, duplicateId);
@@ -1121,7 +1112,8 @@ router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
     let reconciled: { book_id: number } | undefined;
     try {
       db.transaction(() => {
-        reconcileBookIdentities(db);
+        const touchedSourceIds = (db.prepare("SELECT id FROM book_sources WHERE book_id IN (?, ?)").all(bookId, duplicateId) as { id: number }[]).map((row) => row.id);
+        reconcileBookIdentities(db, { sourceIds: touchedSourceIds });
       })();
       reconciled = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(plans[0]!.grimmory.id) as { book_id: number } | undefined;
       if (!reconciled) throw new Error("Reconciled Grimmory record could not be found");
@@ -1275,7 +1267,8 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
       logger.info("Wrote Hardcover ID to Grimmory metadata", { bookId, profileId, grimmoryBookId, hardcoverBookId, hardcoverId });
     }
 
-    reconcileBookIdentities(db);
+    const touchedSourceIds = (db.prepare("SELECT id FROM book_sources WHERE book_id = ?").all(bookId) as { id: number }[]).map((row) => row.id);
+    reconcileBookIdentities(db, { sourceIds: touchedSourceIds });
     res.json({ ok: true });
   } catch (err) {
     logger.warn("Failed to write external ID to Grimmory", { bookId, profileId, source, error: err });
@@ -1286,10 +1279,11 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
 // GET /api/books/:id
 router.get("/:id", (req, res) => {
   const id = parseInt(req.params["id"] ?? "0", 10);
-  // Duplicate matching only needs title/author/series, so it's computed over a
-  // lightweight scan of the whole `books` table; the heavier fetchRows() join is
-  // then scoped to just this book and its candidates instead of the full catalog.
-  const duplicateIds = probableDuplicateCandidateIds(fetchDuplicateMatchRows(), id);
+  // Duplicate matching only needs title/author/series, so candidates are looked
+  // up via the indexed duplicate_title_key/duplicate_author_key columns instead
+  // of scanning the whole `books` table; the heavier fetchRows() join is then
+  // scoped to just this book and its candidates.
+  const duplicateIds = probableDuplicateCandidateIds(fetchDuplicateMatchRows(id), id);
   const allRows = fetchRows([id, ...duplicateIds]);
   const rows = allRows.filter((row) => row.book_id === id);
   if (rows.length === 0) { res.status(404).json({ error: "Not found" }); return; }

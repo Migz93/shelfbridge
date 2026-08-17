@@ -15,19 +15,21 @@ function insertSource(
     author?: string;
     isbn13?: string;
     sourceHardcoverBookId?: string;
+    sourceGoodreadsBookId?: string;
   }
-): void {
-  db.prepare(`
-    INSERT INTO book_sources (source_type, external_id, title, author, isbn13, source_media_type, source_hardcover_book_id)
-    VALUES (@sourceType, @externalId, @title, @author, @isbn13, 'book', @sourceHardcoverBookId)
+): number {
+  return Number(db.prepare(`
+    INSERT INTO book_sources (source_type, external_id, title, author, isbn13, source_media_type, source_hardcover_book_id, source_goodreads_book_id)
+    VALUES (@sourceType, @externalId, @title, @author, @isbn13, 'book', @sourceHardcoverBookId, @sourceGoodreadsBookId)
   `).run({
     sourceType: fields.sourceType,
     externalId: fields.externalId,
     title: fields.title,
     author: fields.author ?? "Author",
     isbn13: fields.isbn13 ?? null,
-    sourceHardcoverBookId: fields.sourceHardcoverBookId ?? null
-  });
+    sourceHardcoverBookId: fields.sourceHardcoverBookId ?? null,
+    sourceGoodreadsBookId: fields.sourceGoodreadsBookId ?? null
+  }).lastInsertRowid);
 }
 
 function booksByTitle(db: ReturnType<typeof createTestDatabase>["db"]) {
@@ -444,6 +446,102 @@ test("reconcileBookIdentities does not let a single crossing path fill the aggre
     assert.equal(samplesForPath.length, 1, "a path shared by two rows within the same skipped group must appear once in the sample, not once per row");
   } finally {
     (logger as unknown as { warn: typeof logger.warn }).warn = originalWarn;
+    cleanup();
+  }
+});
+
+test("scoped reconcileBookIdentities merges a newly-scoped source into an existing, unrelated-looking book via a shared ISBN", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    // Establish an existing canonical book from a prior (unscoped) reconcile —
+    // this is the "unrelated-looking" existing catalog the scoped call must
+    // still be able to find and merge into, without scanning it.
+    insertSource(db, { sourceType: "hardcover", externalId: "hc-1", title: "Dune", isbn13: "9780441013593" });
+    reconcileBookIdentities(db);
+    const existingBooks = booksByTitle(db);
+    assert.equal(existingBooks.length, 1);
+    const existingBookId = existingBooks[0]!.id;
+
+    // A fresh sync discovers a Grimmory row sharing that ISBN. Only this new
+    // source id is in scope — the scoped call must still find and merge into
+    // the existing book via the shared ISBN key, not create a duplicate.
+    const newSourceId = insertSource(db, { sourceType: "grimmory", externalId: "gr-1", title: "Dune", isbn13: "9780441013593" });
+    reconcileBookIdentities(db, { sourceIds: [newSourceId] });
+
+    const booksAfter = booksByTitle(db);
+    assert.equal(booksAfter.length, 1, "scoped reconcile must merge the new source into the existing book, not create a duplicate");
+    assert.equal(booksAfter[0]!.id, existingBookId);
+    const newSourceRow = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(newSourceId) as { book_id: number };
+    assert.equal(newSourceRow.book_id, existingBookId);
+  } finally {
+    cleanup();
+  }
+});
+
+test("scoped reconcileBookIdentities bridges two previously-separate existing books when a new source shares a key with each", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    insertSource(db, { sourceType: "hardcover", externalId: "hc-1", title: "Book A", isbn13: "9780000000019" });
+    insertSource(db, { sourceType: "goodreads", externalId: "gr-1", title: "Book B", sourceGoodreadsBookId: "gr-1" });
+    reconcileBookIdentities(db);
+    const before = booksByTitle(db);
+    assert.equal(before.length, 2, "the two books must start out separate");
+
+    // A new Grimmory row corroborates both: it shares Book A's ISBN and also
+    // carries Book B's Goodreads id. Discovering this requires pulling in ALL
+    // of Book A's and Book B's existing rows (not just the ones with a
+    // directly-matching key) so the real merge algorithm has full context.
+    const bridgeSourceId = insertSource(db, {
+      sourceType: "grimmory", externalId: "gr-bridge", title: "Book A", isbn13: "9780000000019", sourceGoodreadsBookId: "gr-1"
+    });
+    reconcileBookIdentities(db, { sourceIds: [bridgeSourceId] });
+
+    const after = booksByTitle(db);
+    assert.equal(after.length, 1, "scoped reconcile must bridge both existing books through the new corroborating row");
+  } finally {
+    cleanup();
+  }
+});
+
+test("scoped reconcileBookIdentities does not touch or merge an unrelated existing book outside the scope", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    insertSource(db, { sourceType: "hardcover", externalId: "hc-1", title: "Book A", isbn13: "9780000000019" });
+    insertSource(db, { sourceType: "hardcover", externalId: "hc-2", title: "Book B", isbn13: "9780000000026" });
+    reconcileBookIdentities(db);
+    const before = db.prepare("SELECT id, title, last_modified_at FROM books ORDER BY id").all() as
+      { id: number; title: string; last_modified_at: string }[];
+    assert.equal(before.length, 2);
+    const bookB = before.find((b) => b.title === "Book B")!;
+
+    // Only Book A gets a new, unrelated source. Book B must be left completely
+    // alone — both as a correctness guard (no accidental merge) and as proof
+    // the scoped pass isn't rewriting rows it has no reason to touch.
+    const newSourceId = insertSource(db, { sourceType: "grimmory", externalId: "gr-1", title: "Book A", isbn13: "9780000000019" });
+    reconcileBookIdentities(db, { sourceIds: [newSourceId] });
+
+    const after = db.prepare("SELECT id, title, last_modified_at FROM books ORDER BY id").all() as
+      { id: number; title: string; last_modified_at: string }[];
+    assert.equal(after.length, 2, "unrelated books must not be merged");
+    const bookBAfter = after.find((b) => b.id === bookB.id)!;
+    assert.equal(bookBAfter.title, bookB.title);
+    assert.equal(bookBAfter.last_modified_at, bookB.last_modified_at, "an out-of-scope book must not be rewritten");
+  } finally {
+    cleanup();
+  }
+});
+
+test("reconcileBookIdentities with an empty scope is a no-op", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    insertSource(db, { sourceType: "hardcover", externalId: "hc-1", title: "Dune", isbn13: "9780441013593" });
+    reconcileBookIdentities(db);
+    const before = booksByTitle(db);
+
+    reconcileBookIdentities(db, { sourceIds: [] });
+
+    assert.deepEqual(booksByTitle(db), before);
+  } finally {
     cleanup();
   }
 });

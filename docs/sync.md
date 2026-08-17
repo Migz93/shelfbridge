@@ -270,10 +270,14 @@ book-style Grimmory fallback when Hardcover has the correct square audiobook art
 `cover_cache_path` in `book_sources` is updated after a successful cache write
 and is the only cover path returned to API clients.
 
-After identity reconciliation, ShelfBridge removes orphaned `image_cache` rows
-whose `entity_id` no longer points at an existing `book_sources.id`. The cached
-file is deleted only when no other cache row references it and the file path is
-inside `DATA_DIR/image-cache/`.
+After a full (unscoped) identity reconciliation, ShelfBridge removes orphaned
+`image_cache` rows whose `entity_id` no longer points at an existing
+`book_sources.id`. The cached file is deleted only when no other cache row
+references it and the file path is inside `DATA_DIR/image-cache/`. This cleanup
+scans the whole `image_cache` table, so it does not run after the scoped
+reconciles that follow individual syncs and book writes (see below) — it runs
+at startup and as part of the daily `full-reconcile` maintenance job instead
+(`docs/maintenance.md`).
 
 ---
 
@@ -451,13 +455,21 @@ decorated Goodreads or Hardcover IDs still match their plain numeric source IDs.
    rows store normalised identity metadata when the upstream source provides it:
    title, author, ISBNs, cover, and series fields. Rows that share identity keys
    will be clustered in Phase D.
-6. **Reconciles book identities** (Phase D): `reconcileBookIdentities` runs
-   globally over all `book_sources` rows, assigning canonical `books.id` values
-   using the union-find algorithm. Exact source IDs and ISBNs remain the strongest
-   joins. Title+author joins are allowed only when known series metadata is
-   compatible, so `series_name` narrows candidates and `series_number` can prevent
-   books in different series positions from collapsing together. Books with no
-   HC/GR counterpart become standalone "On Disk" clusters.
+6. **Reconciles book identities** (Phase D): `reconcileBookIdentities` assigns
+   canonical `books.id` values using the union-find algorithm. It runs *scoped*
+   to just the `book_sources` rows this profile's sync upserted in the phases
+   above — expanded to every row of any book that could plausibly merge with
+   one of them, following the same identity keys the merge passes below use
+   (source IDs, ISBN, file path, title+author), not a scan of the whole
+   catalog. See `ReconcileScope` and `expandScopeToRows` in `bookIdentity.ts`
+   for the expansion algorithm and its one documented gap. `initSchema()` at
+   startup and the daily `full-reconcile` maintenance job (`docs/maintenance.md`)
+   still run a full, unscoped pass over every `book_sources` row. Exact source
+   IDs and ISBNs remain the strongest joins. Title+author joins are allowed only
+   when known series metadata is compatible, so `series_name` narrows candidates
+   and `series_number` can prevent books in different series positions from
+   collapsing together. Books with no HC/GR counterpart become standalone
+   "On Disk" clusters.
    
    Canonical reconciliation is now format-aware. Each source row is first bucketed
    into `book`, `audiobook`, or `unknown` using:

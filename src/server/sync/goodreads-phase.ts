@@ -371,8 +371,11 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
     }
 
     // Reconcile once to pick up all new GR sources created above, then write
-    // their user states now that book_id is known.
-    reconcileBookIdentities(db);
+    // their user states now that book_id is known. Scoped to just those new
+    // source rows — they're the only thing that changed in this loop.
+    if (pendingGoodreadsOnly.length > 0) {
+      reconcileBookIdentities(db, { sourceIds: pendingGoodreadsOnly.map((pending) => pending.newSourceId) });
+    }
     for (const pending of pendingGoodreadsOnly) {
       const newSource = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(pending.newSourceId) as { book_id: number } | undefined;
       if (!newSource?.book_id) continue;
