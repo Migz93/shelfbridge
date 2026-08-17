@@ -199,11 +199,14 @@ if (grimmoryAvailable && grimmoryToken && profile["sync_progress_enabled"] !== 0
 // for their listening progress and status (Phase N). A runtime-validated
 // match only means the file was correctly identified — it says nothing
 // about whether the user has ever opened it, so ownership additionally
-// requires a persisted 'audiobookshelf' user_book_states row, which Phase N
-// only creates once ABS reports a real progress entry for the item. Without
-// this, an unstarted audiobook a user merely owns a file for would silently
-// block a finished/in-progress ebook sibling from ever syncing status to
-// their shared Hardcover record.
+// requires a persisted 'audiobookshelf' user_book_states row with an actual
+// positive progress/current-time value. Phase N upserts that row whenever
+// ABS returns a progress entry for the item at all, including one sitting
+// at 0% (e.g. added to a shelf but never opened) — row existence alone
+// isn't proof of listening activity. Without the positive-value check, an
+// unstarted audiobook a user merely owns a file for would silently block a
+// finished/in-progress ebook sibling from ever syncing status to their
+// shared Hardcover record.
 // Computed from the DB as it stood at the end of the previous run — a
 // stable snapshot — rather than anything derived from Hardcover's data
 // this run, because Hardcover's "current edition" on a shared book can
@@ -218,6 +221,10 @@ const absOwnedBookIds = new Set(
       AND EXISTS (
         SELECT 1 FROM user_book_states ubs
         WHERE ubs.book_id = bs.book_id AND ubs.profile_id = ? AND ubs.source_type = 'audiobookshelf'
+          AND (
+            (ubs.progress IS NOT NULL AND ubs.progress > 0)
+            OR (ubs.audiobookshelf_current_time IS NOT NULL AND ubs.audiobookshelf_current_time > 0)
+          )
       )
   `).all(profileId, profileId) as { book_id: number }[]).map((row) => row.book_id)
 );

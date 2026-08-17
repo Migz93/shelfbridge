@@ -50,6 +50,24 @@ test("a runtime-validated ABS link with no listening activity does not claim own
   } finally { cleanup(); }
 });
 
+test("a zero-progress ABS state row does not claim ownership either", async () => {
+  // ABS can upsert a user_book_states row for an item that's merely on a
+  // shelf but sitting at 0% — row existence alone isn't proof of listening
+  // activity, so ownership additionally requires a positive progress or
+  // current-time value.
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const bookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Zero-progress audio')").run().lastInsertRowid);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, audiobookshelf_runtime_validated) VALUES (?, 'audiobookshelf', ?, 'abs-1', 1)").run(bookId, profileId);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, source_media_type, grimmory_hardcover_book_id) VALUES (?, 'grimmory', ?, 'g-1', 'audiobook', '303')").run(bookId, profileId);
+    db.prepare("INSERT INTO user_book_states (book_id, profile_id, source_type, progress, audiobookshelf_current_time) VALUES (?, ?, 'audiobookshelf', 0, 0)").run(bookId, profileId);
+    const result = await fetchSourceSnapshots(context(db, profileId));
+    assert.deepEqual([...result.absOwnedBookIds], []);
+    assert.deepEqual([...result.absOwnedHardcoverBookIds], []);
+  } finally { cleanup(); }
+});
+
 test("the per-book Grimmory progress fetch refreshes a stale readStatus from the bulk library fetch", async () => {
   const { db, cleanup } = createTestDatabase();
   try {

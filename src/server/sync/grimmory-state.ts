@@ -127,7 +127,14 @@ if (grimmoryAvailable) {
       const hardcoverBookId = grBook.hardcoverBookId ? Number.parseInt(grBook.hardcoverBookId, 10) : NaN;
       const hardcoverFields = hardcoverFieldsFromGrimmory(grBook);
       const hardcoverRat = grimmoryToHardcoverRating(grimmoryRating(grBook));
-      if (isOwnedBySomeoneElse(sharedHardcoverOwnership, grBook)) {
+      // Only worth checking (and reporting on) ownership once a write here
+      // would otherwise actually be attempted — evaluating it unconditionally
+      // records a misleading "skipped because of shared ownership" event and
+      // inflates the skip counter even when Hardcover isn't configured, status
+      // sync is off, or there's simply nothing to write.
+      const writeEligible = hasHardcover && profile["sync_status_enabled"] !== 0
+        && Number.isInteger(hardcoverBookId) && !!hardcoverFields?.status_id;
+      if (writeEligible && isOwnedBySomeoneElse(sharedHardcoverOwnership, grBook)) {
         const ownerReason = sharedHardcoverRecordFor(sharedHardcoverOwnership, grBook.hardcoverBookId)?.owner.reason ?? "no_active_owner";
         logger.info("Skipped Grimmory-to-Hardcover status write because another sibling owns the shared Hardcover record", {
           profileId,
@@ -143,7 +150,7 @@ if (grimmoryAvailable) {
         counters.skipped++;
         continue;
       }
-      if (hasHardcover && profile["sync_status_enabled"] !== 0 && Number.isInteger(hardcoverBookId) && hardcoverFields?.status_id) {
+      if (writeEligible) {
         const title = grBook.title ?? "";
         if (dryRun) {
           recordEvent(db, runId, profileId, title, "written", "grimmory_to_hardcover", "would_insert_hardcover_user_book", {
