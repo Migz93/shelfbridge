@@ -31,9 +31,6 @@ This table is the only place the projects differ — when a rule below refers to
 | Test suite | Server tests — `npm test` (also run in CI). Playwright end-to-end suite — `npm run test:e2e` (needs a live instance). |
 | Integrations to flag in review | Audiobookshelf, Hardcover, Grimmory, Chaptarr |
 
-> **Until [#54](https://github.com/Migz93/shelfbridge/issues/54) lands**, a version bump also has to update the hardcoded literal in
-> `src/server/routes/settings.ts`. That issue removes the literal so this table becomes accurate on its own.
-
 ## Before You Start — What To Read
 
 If the task you're about to do appears here, open the matching file **first**.

@@ -4,7 +4,54 @@ import { identifierVariants, normalizeExternalId, normalizeIsbn } from "../ident
 import { enqueueImageCacheTask } from "../image-cache.js";
 import { GOODREADS_TO_GRIMMORY } from "./matcher.js";
 import { normalizeTitle, normalizeSeriesNumber } from "./normalization.js";
-export async function syncGoodreadsEnrichment(context: any): Promise<boolean> {
+import type { getDb } from "../db/index.js";
+import type { SyncAdapters } from "./adapters.js";
+import type { getUserState, upsertBookSource } from "./repository.js";
+import type { cacheSourceCover } from "./covers.js";
+import type { pruneGoodreadsUserStatesMissingFromFetch } from "./pruning.js";
+import type { syncGoodreadsShelvesToGrimmory } from "./shelves.js";
+import type {
+  hardcoverToGrimmoryRating,
+  hasMeaningfulGoodreadsChange,
+  sameNumber,
+  shouldGoodreadsOverwriteGrimmory,
+  sqliteNow,
+  SyncCounters
+} from "./sync-utils.js";
+
+type Db = ReturnType<typeof getDb>;
+type RecordEvent = (db: Db, runId: number, profileId: number, bookTitle: string, eventType: string, direction: string | null, decision: string, details: Record<string, unknown>) => void;
+
+export interface GoodreadsEnrichmentContext {
+  db: Db;
+  profileId: number;
+  runId: number;
+  profile: Record<string, unknown>;
+  adapters: SyncAdapters;
+  counters: SyncCounters;
+  dryRun: boolean;
+  grimmoryAvailable: boolean;
+  hasGrimmory: boolean;
+  baseUrl: string;
+  grimmoryToken: string | null;
+  recordEvent: RecordEvent;
+  pruneGoodreadsUserStatesMissingFromFetch: typeof pruneGoodreadsUserStatesMissingFromFetch;
+  getUserState: typeof getUserState;
+  hardcoverToGrimmoryRating: typeof hardcoverToGrimmoryRating;
+  writeTagEnabled: boolean;
+  taggedSourceGrimmoryIds: Set<number>;
+  taggedSourceTitles: Map<number, string>;
+  goodreadsSourceGrimmoryIds: Set<number>;
+  hasMeaningfulGoodreadsChange: typeof hasMeaningfulGoodreadsChange;
+  upsertBookSource: typeof upsertBookSource;
+  sqliteNow: typeof sqliteNow;
+  cacheSourceCover: typeof cacheSourceCover;
+  shouldGoodreadsOverwriteGrimmory: typeof shouldGoodreadsOverwriteGrimmory;
+  sameNumber: typeof sameNumber;
+  syncGoodreadsShelvesToGrimmory: typeof syncGoodreadsShelvesToGrimmory;
+}
+
+export async function syncGoodreadsEnrichment(context: GoodreadsEnrichmentContext): Promise<boolean> {
   const { db, profileId, runId, profile, adapters, counters, dryRun, grimmoryAvailable, hasGrimmory, baseUrl, grimmoryToken, recordEvent,
     pruneGoodreadsUserStatesMissingFromFetch, getUserState, hardcoverToGrimmoryRating, writeTagEnabled, taggedSourceGrimmoryIds, taggedSourceTitles,
     goodreadsSourceGrimmoryIds, hasMeaningfulGoodreadsChange, upsertBookSource, sqliteNow, cacheSourceCover,
@@ -29,7 +76,7 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
     pruneGoodreadsUserStatesMissingFromFetch(
       db,
       profileId,
-      new Set(goodreadsBooks.map((b: any) => b.goodreadsId)),
+      new Set(goodreadsBooks.map((b) => b.goodreadsId)),
       goodreadsSyncShelfName ? "partial" : "complete"
     );
 

@@ -315,6 +315,7 @@ router.patch("/:id", (req, res) => {
     if (h.enabled === false) {
       db.prepare("DELETE FROM hardcover_connections WHERE profile_id = ?").run(id);
       cleanupHardcoverSourceData(id);
+      logger.info("Removed Hardcover connection", { profileId: id });
     } else {
     const existing = db.prepare("SELECT id FROM hardcover_connections WHERE profile_id = ?").get(id);
     if (existing) {
@@ -338,8 +339,8 @@ router.patch("/:id", (req, res) => {
         VALUES (?, ?, ?, ?, ?)
       `).run(id, h.apiToken ?? "", h.syncListId ? String(h.syncListId) : null, h.syncListName?.trim() || null, h.targetShelfName?.trim() || null);
     }
-    }
     logger.info("Updated Hardcover connection", { profileId: id });
+    }
   }
 
   if (body.goodreads) {
