@@ -69,13 +69,15 @@ export function validateCoverUrl(value: unknown): string {
 function isPrivateIPv4(address: string): boolean {
   const parts = address.split(".").map(Number);
   if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return true;
-  const [a, b] = parts as [number, number, number, number];
+  const [a, b, c] = parts as [number, number, number, number];
   if (a === 0 || a === 10 || a === 127) return true;
   if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT (RFC 6598)
   if (a === 169 && b === 254) return true; // link-local
   if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && (b === 0 || b === 168)) return true; // IETF protocol assignments + private
+  if (a === 192 && (b === 0 || b === 168)) return true; // IETF protocol assignments (also covers TEST-NET-1, 192.0.2.0/24) + private
   if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking (RFC 2544)
+  if (a === 198 && b === 51 && c === 100) return true; // TEST-NET-2 (RFC 5737, not globally reachable)
+  if (a === 203 && b === 0 && c === 113) return true; // TEST-NET-3 (RFC 5737, not globally reachable)
   if (a >= 224) return true; // multicast + reserved
   return false;
 }

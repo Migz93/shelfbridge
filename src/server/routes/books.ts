@@ -1089,11 +1089,24 @@ router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
       return;
     }
 
-    db.transaction(() => {
-      reconcileBookIdentities(db);
-    })();
-    const reconciled = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(plans[0]!.grimmory.id) as { book_id: number } | undefined;
-    if (!reconciled) throw new Error("Reconciled Grimmory record could not be found");
+    // Reconcile/lookup runs after remote writes have already landed for
+    // succeededProfileIds, so a failure here must not report a blank 502 that
+    // erases the fact those writes succeeded — same reasoning as the per-plan
+    // handling above, just one step later in the flow.
+    let reconciled: { book_id: number } | undefined;
+    try {
+      db.transaction(() => {
+        reconcileBookIdentities(db);
+      })();
+      reconciled = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(plans[0]!.grimmory.id) as { book_id: number } | undefined;
+      if (!reconciled) throw new Error("Reconciled Grimmory record could not be found");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn("Duplicate merge finalization failed after partial success", { bookId, duplicateId, succeededProfileIds, failures, error: err });
+      res.status(207).json({ ok: true, bookId: null, succeededProfileIds, failures, finalizationError: message });
+      return;
+    }
+
     logger.info("Merged duplicate by repairing Grimmory authoritative IDs", { bookId, duplicateId, succeededProfileIds, failures, plans: plans.map((plan) => ({ authoritativeBookId: plan.authoritativeBookId, grimmoryBookId: plan.grimmoryBookId, profileId: plan.profileId, goodreads: Boolean(plan.goodreads), hardcover: Boolean(plan.hardcover) })) });
     if (failures.length > 0) {
       res.status(207).json({ ok: true, bookId: reconciled.book_id, succeededProfileIds, failures });

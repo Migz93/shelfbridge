@@ -85,10 +85,15 @@ test("cover image requests are rejected for private targets before any fetch hap
 });
 
 test("isPrivateAddress classifies IPv4 ranges", () => {
-  for (const address of ["127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.1.1", "100.64.0.1", "0.0.0.0", "224.0.0.1"]) {
+  for (const address of [
+    "127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.1.1", "100.64.0.1", "0.0.0.0", "224.0.0.1",
+    // RFC 5737 documentation ranges (TEST-NET-1/2/3) are IANA special-purpose,
+    // not-globally-reachable addresses — not real public destinations.
+    "192.0.2.5", "198.51.100.5", "203.0.113.5"
+  ]) {
     assert.equal(isPrivateAddress(address), true, `${address} should be private`);
   }
-  for (const address of ["8.8.8.8", "1.1.1.1", "172.32.0.1", "172.15.255.255", "203.0.113.5"]) {
+  for (const address of ["8.8.8.8", "1.1.1.1", "172.32.0.1", "172.15.255.255"]) {
     assert.equal(isPrivateAddress(address), false, `${address} should be public`);
   }
 });
@@ -132,7 +137,7 @@ test("cover image requests proceed when DNS resolves a hostname to only public a
   const originalLookup = dns.lookup;
   const originalFetch = globalThis.fetch;
   let fetchCalled = false;
-  (dns as unknown as { lookup: typeof dns.lookup }).lookup = (async () => [{ address: "203.0.113.5", family: 4 }]) as typeof dns.lookup;
+  (dns as unknown as { lookup: typeof dns.lookup }).lookup = (async () => [{ address: "8.8.8.8", family: 4 }]) as typeof dns.lookup;
   globalThis.fetch = async () => { fetchCalled = true; return new Response(null, { status: 204 }); };
 
   try {
