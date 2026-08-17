@@ -29,7 +29,10 @@ test("getRecentLogs clamps a negative or non-finite limit instead of returning t
   assert.deepEqual(getRecentLogs(-5), []);
   assert.deepEqual(getRecentLogs(0), []);
   assert.deepEqual(getRecentLogs(NaN), []);
-  assert.deepEqual(getRecentLogs(Infinity).length >= 0, true);
+  // Infinity is not finite, so clampLimit treats it the same as NaN — an
+  // empty result, not "no limit" (which `array.length >= 0` would let pass
+  // vacuously regardless of the actual returned contents).
+  assert.deepEqual(getRecentLogs(Infinity), []);
 });
 
 test("readRecentMachineLogs clamps a negative limit to an empty result", async () => {

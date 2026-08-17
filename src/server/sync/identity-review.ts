@@ -21,16 +21,21 @@ function distinctComparableIds(
   rows: Array<Pick<IdentityReviewRow, "goodreads_book_id" | "grimmory_goodreads_id" | "hardcover_book_id" | "grimmory_hardcover_book_id">>,
   source: "goodreads" | "hardcover"
 ): string[] {
+  // Only the source's own authoritative ID belongs here — hasAggregateSourceReviewConflict
+  // compares this set against Grimmory's cross-reference ID below. Folding
+  // Grimmory's own ID into this set as well would make that comparison
+  // tautological (the value would always be found "in" the set it came from),
+  // masking real conflicts between the two.
   if (source === "goodreads") {
     const comparableRows = rows.filter((row) => normalizeExternalId(row.goodreads_book_id) !== null);
-    return distinctClean(comparableRows.flatMap((row) => [row.goodreads_book_id, row.grimmory_goodreads_id]));
+    return distinctClean(comparableRows.map((row) => row.goodreads_book_id));
   }
 
   // Only compare Grimmory's stored Hardcover ID when we also have a ShelfBridge
   // Hardcover source row for the canonical book. Grimmory can legitimately carry
   // a Hardcover cross-reference for books that never came from Hardcover.
   const comparableRows = rows.filter((row) => row.hardcover_book_id !== null);
-  return distinctClean(comparableRows.flatMap((row) => [row.hardcover_book_id, row.grimmory_hardcover_book_id]));
+  return distinctClean(comparableRows.map((row) => row.hardcover_book_id));
 }
 
 function hasAggregateSourceReviewConflict(

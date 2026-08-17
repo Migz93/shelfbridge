@@ -1,3 +1,6 @@
+import dns from "node:dns/promises";
+import net from "node:net";
+
 export class UnsafeIntegrationUrlError extends Error {
   constructor(message: string) {
     super(message);
@@ -63,6 +66,71 @@ export function validateCoverUrl(value: unknown): string {
   return url;
 }
 
+function isPrivateIPv4(address: string): boolean {
+  const parts = address.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return true;
+  const [a, b] = parts as [number, number, number, number];
+  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT (RFC 6598)
+  if (a === 169 && b === 254) return true; // link-local
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && (b === 0 || b === 168)) return true; // IETF protocol assignments + private
+  if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking (RFC 2544)
+  if (a >= 224) return true; // multicast + reserved
+  return false;
+}
+
+function isPrivateIPv6(address: string): boolean {
+  const normalized = address.toLowerCase();
+  if (normalized === "::1" || normalized === "::") return true;
+  // fe80::/10 link-local
+  if (/^fe[89ab][0-9a-f]:/.test(normalized)) return true;
+  // fc00::/7 unique local
+  if (/^f[cd][0-9a-f]{2}:/.test(normalized)) return true;
+  // IPv4-mapped (::ffff:a.b.c.d) — re-check the embedded IPv4 address.
+  const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (mapped?.[1]) return isPrivateIPv4(mapped[1]);
+  return false;
+}
+
+export function isPrivateAddress(address: string): boolean {
+  const family = net.isIP(address);
+  if (family === 4) return isPrivateIPv4(address);
+  if (family === 6) return isPrivateIPv6(address);
+  return true; // not a recognizable IP literal — fail closed
+}
+
+// A hostname string passing validateCoverUrl only rules out literal private
+// addresses; a hostname the attacker controls DNS for (e.g. "evil.example.test")
+// can still resolve to a private/loopback address. Resolve it and reject if
+// any returned address is private, closing that SSRF path.
+//
+// This does not fully close DNS rebinding (the record could theoretically
+// change between this check and the fetch() call below) — that needs pinning
+// the HTTP connection to the exact resolved address, which isn't practical
+// with Node's built-in fetch without pulling in undici as a direct dependency
+// purely for its Agent/dispatcher API. The realistic attack this closes is a
+// malicious hostname resolving to a private address, which is the far more
+// practical exploitation path than a precisely-timed DNS rebind.
+async function ensurePublicHostname(url: string): Promise<void> {
+  const { hostname } = new URL(url);
+  if (net.isIP(hostname)) {
+    if (isPrivateAddress(hostname)) {
+      throw new UnsafeIntegrationUrlError("Cover URL must not target a private network address");
+    }
+    return;
+  }
+  let addresses: string[];
+  try {
+    addresses = (await dns.lookup(hostname, { all: true, verbatim: true })).map((entry) => entry.address);
+  } catch {
+    throw new UnsafeIntegrationUrlError(`Cover URL hostname could not be resolved: ${hostname}`);
+  }
+  if (addresses.length === 0 || addresses.some((address) => isPrivateAddress(address))) {
+    throw new UnsafeIntegrationUrlError("Cover URL must not target a private network address");
+  }
+}
+
 const MAX_REDIRECTS = 5;
 
 // Redirects are followed only when they stay on the same origin as the
@@ -91,5 +159,7 @@ export async function fetchIntegration(url: string, init: RequestInit = {}): Pro
 }
 
 export async function fetchCoverImage(url: string, init: RequestInit = {}): Promise<Response> {
-  return fetchFollowingSameOriginRedirects(validateCoverUrl(url), init);
+  const validated = validateCoverUrl(url);
+  await ensurePublicHostname(validated);
+  return fetchFollowingSameOriginRedirects(validated, init);
 }

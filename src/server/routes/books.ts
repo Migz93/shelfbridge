@@ -1043,31 +1043,29 @@ router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
     res.status(400).json({ error: "Merge requires an authoritative Goodreads or Hardcover record and a Grimmory record" }); return;
   }
   try {
-    const resolvedPlans: Array<{ plan: typeof plans[number]; baseUrl: string; token: string; grimmoryLocalId: number }> = [];
-    for (const plan of plans) {
-      const connection = db.prepare("SELECT base_url, username, password FROM grimmory_connections WHERE profile_id = ?").get(plan.profileId) as { base_url: string; username: string; password: string } | undefined;
-      const baseUrl = connection?.base_url?.trim() || getSetting("grimmory.baseUrl", "");
-      const password = connection?.password;
-      if (!baseUrl || !connection?.username || !password) { res.status(400).json({ error: "Grimmory connection is not configured" }); return; }
-      const token = await getGrimmoryToken(baseUrl, connection.username, password);
-      if (!token) { res.status(502).json({ error: "Could not authenticate with Grimmory" }); return; }
-      const grimmoryLocalId = Number(plan.grimmory.external_id);
-      if (!Number.isSafeInteger(grimmoryLocalId) || grimmoryLocalId <= 0) {
-        res.status(400).json({ error: "Grimmory record has a non-numeric local ID" }); return;
-      }
-      resolvedPlans.push({ plan, baseUrl, token, grimmoryLocalId });
-    }
-
     // Each plan writes to a remote Grimmory server first and cannot be rolled
-    // back once that write lands — so a later plan failing must not make this
-    // endpoint report total failure (502) for a request that already partly
-    // applied. Every plan runs regardless of an earlier one's outcome, and the
-    // response reports exactly which profiles succeeded and which didn't.
+    // back once that write lands — so a later plan failing (whether during
+    // setup — connection lookup, auth, local-ID validation — or during the
+    // write itself) must not make this endpoint report total failure (502)
+    // for a request that already partly applied. Every plan is set up and
+    // run regardless of an earlier one's outcome, and the response reports
+    // exactly which profiles succeeded and which didn't.
     const succeededProfileIds: number[] = [];
     const failures: Array<{ profileId: number; error: string }> = [];
-    for (const { plan, baseUrl, token, grimmoryLocalId } of resolvedPlans) {
-      const hardcoverId = plan.hardcover?.hardcover_slug?.trim() || plan.grimmory.grimmory_hardcover_id?.trim() || undefined;
+    for (const plan of plans) {
       try {
+        const connection = db.prepare("SELECT base_url, username, password FROM grimmory_connections WHERE profile_id = ?").get(plan.profileId) as { base_url: string; username: string; password: string } | undefined;
+        const baseUrl = connection?.base_url?.trim() || getSetting("grimmory.baseUrl", "");
+        const password = connection?.password;
+        if (!baseUrl || !connection?.username || !password) throw new Error("Grimmory connection is not configured");
+        const token = await getGrimmoryToken(baseUrl, connection.username, password);
+        if (!token) throw new Error("Could not authenticate with Grimmory");
+        const grimmoryLocalId = Number(plan.grimmory.external_id);
+        if (!Number.isSafeInteger(grimmoryLocalId) || grimmoryLocalId <= 0) {
+          throw new Error("Grimmory record has a non-numeric local ID");
+        }
+
+        const hardcoverId = plan.hardcover?.hardcover_slug?.trim() || plan.grimmory.grimmory_hardcover_id?.trim() || undefined;
         await writeAndPersistDuplicateMergePlan(db, {
           bookId: plan.grimmoryBookId, profileId: plan.profileId,
           goodreadsId: plan.goodreads?.external_id ?? null, hardcoverBookId: plan.hardcover?.external_id ?? null,

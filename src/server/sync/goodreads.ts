@@ -39,8 +39,20 @@ const XML_NAMED_ENTITIES: Record<string, string> = {
 // a second time into "<".
 const MAX_UNICODE_CODEPOINT = 0x10ffff;
 
+// XML 1.0's Char production (https://www.w3.org/TR/xml/#charsets) — excludes
+// NUL and most other control characters, and the surrogate range, which are
+// invalid in an XML document even though they're valid Unicode code points.
+function isValidXmlCodePoint(codePoint: number): boolean {
+  return codePoint === 0x9
+    || codePoint === 0xa
+    || codePoint === 0xd
+    || (codePoint >= 0x20 && codePoint <= 0xd7ff)
+    || (codePoint >= 0xe000 && codePoint <= 0xfffd)
+    || (codePoint >= 0x10000 && codePoint <= MAX_UNICODE_CODEPOINT);
+}
+
 function codePointToChar(codePoint: number, fallback: string): string {
-  if (!Number.isInteger(codePoint) || codePoint < 0 || codePoint > MAX_UNICODE_CODEPOINT) return fallback;
+  if (!Number.isInteger(codePoint) || !isValidXmlCodePoint(codePoint)) return fallback;
   try {
     return String.fromCodePoint(codePoint);
   } catch {
@@ -48,7 +60,7 @@ function codePointToChar(codePoint: number, fallback: string): string {
   }
 }
 
-function decodeXmlEntities(value: string): string {
+export function decodeXmlEntities(value: string): string {
   return value.replace(/&(?:(quot|apos|amp|lt|gt)|#(\d+)|#x([0-9a-f]+));/gi, (fullMatch, name?: string, dec?: string, hex?: string) => {
     if (name) return XML_NAMED_ENTITIES[name.toLowerCase()] ?? fullMatch;
     if (dec) return codePointToChar(Number(dec), fullMatch);
