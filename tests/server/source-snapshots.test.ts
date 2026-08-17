@@ -29,10 +29,24 @@ test("ABS ownership snapshots are scoped to the current profile", async () => {
     for (const [bookId, profileId, externalId, hardcoverId] of [[firstBook, first, "first", "101"], [secondBook, second, "second", "202"]] as const) {
       db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, audiobookshelf_runtime_validated) VALUES (?, 'audiobookshelf', ?, ?, 1)").run(bookId, profileId, externalId);
       db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, source_media_type, grimmory_hardcover_book_id) VALUES (?, 'grimmory', ?, ?, 'audiobook', ?)").run(bookId, profileId, `g-${externalId}`, hardcoverId);
+      db.prepare("INSERT INTO user_book_states (book_id, profile_id, source_type, progress) VALUES (?, ?, 'audiobookshelf', 10)").run(bookId, profileId);
     }
     const result = await fetchSourceSnapshots(context(db, first));
     assert.deepEqual([...result.absOwnedBookIds], [firstBook]);
     assert.deepEqual([...result.absOwnedHardcoverBookIds], ["101"]);
+  } finally { cleanup(); }
+});
+
+test("a runtime-validated ABS link with no listening activity does not claim ownership", async () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const bookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Unstarted audio')").run().lastInsertRowid);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, audiobookshelf_runtime_validated) VALUES (?, 'audiobookshelf', ?, 'abs-1', 1)").run(bookId, profileId);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, source_media_type, grimmory_hardcover_book_id) VALUES (?, 'grimmory', ?, 'g-1', 'audiobook', '303')").run(bookId, profileId);
+    const result = await fetchSourceSnapshots(context(db, profileId));
+    assert.deepEqual([...result.absOwnedBookIds], []);
+    assert.deepEqual([...result.absOwnedHardcoverBookIds], []);
   } finally { cleanup(); }
 });
 
@@ -80,6 +94,7 @@ test("ABS ownership snapshot batches a large audiobook library", async () => {
         const bookId = Number(db.prepare("INSERT INTO books (title) VALUES (?)").run(`Audio ${id}`).lastInsertRowid);
         db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, audiobookshelf_runtime_validated) VALUES (?, 'audiobookshelf', ?, ?, 1)").run(bookId, profileId, `abs-${id}`);
         db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, source_media_type, grimmory_hardcover_book_id) VALUES (?, 'grimmory', ?, ?, 'audiobook', ?)").run(bookId, profileId, `grim-${id}`, String(id));
+        db.prepare("INSERT INTO user_book_states (book_id, profile_id, source_type, progress) VALUES (?, ?, 'audiobookshelf', 10)").run(bookId, profileId);
       }
     });
     insert();

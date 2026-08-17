@@ -187,8 +187,16 @@ if (grimmoryAvailable && grimmoryToken && profile["sync_progress_enabled"] !== 0
   });
 }
 
-// Books with a runtime-validated Audiobookshelf link are ABS-owned: ABS is
-// the source of truth for their listening progress and status (Phase N).
+// Books with a runtime-validated Audiobookshelf link AND at least some
+// ABS-reported listening activity are ABS-owned: ABS is the source of truth
+// for their listening progress and status (Phase N). A runtime-validated
+// match only means the file was correctly identified — it says nothing
+// about whether the user has ever opened it, so ownership additionally
+// requires a persisted 'audiobookshelf' user_book_states row, which Phase N
+// only creates once ABS reports a real progress entry for the item. Without
+// this, an unstarted audiobook a user merely owns a file for would silently
+// block a finished/in-progress ebook sibling from ever syncing status to
+// their shared Hardcover record.
 // Computed from the DB as it stood at the end of the previous run — a
 // stable snapshot — rather than anything derived from Hardcover's data
 // this run, because Hardcover's "current edition" on a shared book can
@@ -197,10 +205,14 @@ if (grimmoryAvailable && grimmoryToken && profile["sync_progress_enabled"] !== 0
 // audiobook and print from one sync to the next.
 const absOwnedBookIds = new Set(
   (db.prepare(`
-    SELECT DISTINCT book_id FROM book_sources
-    WHERE source_type = 'audiobookshelf' AND source_instance_id = ?
-      AND book_id IS NOT NULL AND audiobookshelf_runtime_validated = 1
-  `).all(profileId) as { book_id: number }[]).map((row) => row.book_id)
+    SELECT DISTINCT bs.book_id FROM book_sources bs
+    WHERE bs.source_type = 'audiobookshelf' AND bs.source_instance_id = ?
+      AND bs.book_id IS NOT NULL AND bs.audiobookshelf_runtime_validated = 1
+      AND EXISTS (
+        SELECT 1 FROM user_book_states ubs
+        WHERE ubs.book_id = bs.book_id AND ubs.profile_id = ? AND ubs.source_type = 'audiobookshelf'
+      )
+  `).all(profileId, profileId) as { book_id: number }[]).map((row) => row.book_id)
 );
 
 // The Hardcover book ID shared by an ABS-owned audiobook, anchored via
