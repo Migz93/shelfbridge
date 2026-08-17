@@ -8,15 +8,17 @@ import {
 } from "../../src/server/sync/engine.js";
 import { normalizeIsbn } from "../../src/server/identifiers.js";
 import {
-  activeGrimmorySiblingsForHardcover,
   cleanupDuplicateBlankHardcoverReads,
   hardcoverProgressPercent,
-  hasActiveBookSiblingForHardcover,
-  hasActiveBookSiblingForSharedHardcover,
-  latestHardcoverRead,
-  shouldAbsAudiobookOwnSharedHardcover,
-  shouldActiveSiblingOwnSharedHardcover
+  latestHardcoverRead
 } from "../../src/server/sync/sync-utils.js";
+import {
+  bookOwnsSharedHardcoverRecord,
+  hasActiveOwningBook,
+  isOwnedBySomeoneElse,
+  resolveSharedHardcoverOwnership,
+  sharedHardcoverRecordFor
+} from "../../src/server/sync/hardcover-ownership.js";
 import { hasKnownHardcoverIdentity } from "../../src/server/sync/chaptarr.js";
 import { createTestDatabase } from "./test-db.js";
 import { seedProfile } from "./test-helpers.js";
@@ -130,15 +132,18 @@ test("shared Hardcover progress gives an active book sibling precedence over Aud
   const activeAudio = { ...inactiveAudio, readStatus: "READING" };
 
   const completedBook = { ...book, readStatus: "READ" };
-  assert.equal(shouldActiveSiblingOwnSharedHardcover([completedBook, activeAudio] as any, completedBook as any), true);
-  assert.equal(shouldActiveSiblingOwnSharedHardcover([completedBook, activeAudio] as any, activeAudio as any), false);
-  assert.equal(shouldAbsAudiobookOwnSharedHardcover([completedBook, inactiveAudio] as any, completedBook as any, new Set(["42"])), true);
-  assert.equal(shouldAbsAudiobookOwnSharedHardcover([book, inactiveAudio] as any, book as any, new Set(["42"])), false);
-  assert.equal(hasActiveBookSiblingForHardcover([book, inactiveAudio] as any, "42"), true);
-  assert.equal(hasActiveBookSiblingForHardcover([inactiveAudio] as any, "42"), false);
-  assert.equal(hasActiveBookSiblingForSharedHardcover([book] as any, "42"), false);
-  assert.equal(hasActiveBookSiblingForSharedHardcover([book, inactiveAudio] as any, "42"), true);
-  assert.equal(activeGrimmorySiblingsForHardcover([book, activeAudio] as any, "42").book?.id, 1);
+  const noAbsOwnership = new Set<string>();
+  const absOwnership = new Set(["42"]);
+
+  assert.equal(isOwnedBySomeoneElse(resolveSharedHardcoverOwnership([completedBook, activeAudio] as any, noAbsOwnership), completedBook as any), true);
+  assert.equal(isOwnedBySomeoneElse(resolveSharedHardcoverOwnership([completedBook, activeAudio] as any, noAbsOwnership), activeAudio as any), false);
+  assert.equal(isOwnedBySomeoneElse(resolveSharedHardcoverOwnership([completedBook, inactiveAudio] as any, absOwnership), completedBook as any), true);
+  assert.equal(isOwnedBySomeoneElse(resolveSharedHardcoverOwnership([book, inactiveAudio] as any, absOwnership), book as any), false);
+  assert.equal(hasActiveOwningBook(resolveSharedHardcoverOwnership([book, inactiveAudio] as any, noAbsOwnership), "42"), true);
+  assert.equal(hasActiveOwningBook(resolveSharedHardcoverOwnership([inactiveAudio] as any, noAbsOwnership), "42"), false);
+  assert.equal(bookOwnsSharedHardcoverRecord(resolveSharedHardcoverOwnership([book] as any, noAbsOwnership), "42"), false);
+  assert.equal(bookOwnsSharedHardcoverRecord(resolveSharedHardcoverOwnership([book, inactiveAudio] as any, noAbsOwnership), "42"), true);
+  assert.equal(sharedHardcoverRecordFor(resolveSharedHardcoverOwnership([book, activeAudio] as any, noAbsOwnership), "42")?.activeBook?.id, 1);
 });
 
 test("a shared Hardcover work ID is valid across separate local media identities", () => {

@@ -29,10 +29,61 @@ test("ABS ownership snapshots are scoped to the current profile", async () => {
     for (const [bookId, profileId, externalId, hardcoverId] of [[firstBook, first, "first", "101"], [secondBook, second, "second", "202"]] as const) {
       db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, audiobookshelf_runtime_validated) VALUES (?, 'audiobookshelf', ?, ?, 1)").run(bookId, profileId, externalId);
       db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, source_media_type, grimmory_hardcover_book_id) VALUES (?, 'grimmory', ?, ?, 'audiobook', ?)").run(bookId, profileId, `g-${externalId}`, hardcoverId);
+      db.prepare("INSERT INTO user_book_states (book_id, profile_id, source_type, progress) VALUES (?, ?, 'audiobookshelf', 10)").run(bookId, profileId);
     }
     const result = await fetchSourceSnapshots(context(db, first));
     assert.deepEqual([...result.absOwnedBookIds], [firstBook]);
     assert.deepEqual([...result.absOwnedHardcoverBookIds], ["101"]);
+  } finally { cleanup(); }
+});
+
+test("a runtime-validated ABS link with no listening activity does not claim ownership", async () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const bookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Unstarted audio')").run().lastInsertRowid);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, audiobookshelf_runtime_validated) VALUES (?, 'audiobookshelf', ?, 'abs-1', 1)").run(bookId, profileId);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, source_media_type, grimmory_hardcover_book_id) VALUES (?, 'grimmory', ?, 'g-1', 'audiobook', '303')").run(bookId, profileId);
+    const result = await fetchSourceSnapshots(context(db, profileId));
+    assert.deepEqual([...result.absOwnedBookIds], []);
+    assert.deepEqual([...result.absOwnedHardcoverBookIds], []);
+  } finally { cleanup(); }
+});
+
+test("a zero-progress ABS state row does not claim ownership either", async () => {
+  // ABS can upsert a user_book_states row for an item that's merely on a
+  // shelf but sitting at 0% — row existence alone isn't proof of listening
+  // activity, so ownership additionally requires a positive progress or
+  // current-time value.
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const bookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Zero-progress audio')").run().lastInsertRowid);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, audiobookshelf_runtime_validated) VALUES (?, 'audiobookshelf', ?, 'abs-1', 1)").run(bookId, profileId);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, source_media_type, grimmory_hardcover_book_id) VALUES (?, 'grimmory', ?, 'g-1', 'audiobook', '303')").run(bookId, profileId);
+    db.prepare("INSERT INTO user_book_states (book_id, profile_id, source_type, progress, audiobookshelf_current_time) VALUES (?, ?, 'audiobookshelf', 0, 0)").run(bookId, profileId);
+    const result = await fetchSourceSnapshots(context(db, profileId));
+    assert.deepEqual([...result.absOwnedBookIds], []);
+    assert.deepEqual([...result.absOwnedHardcoverBookIds], []);
+  } finally { cleanup(); }
+});
+
+test("the per-book Grimmory progress fetch refreshes a stale readStatus from the bulk library fetch", async () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const adapters: Partial<SyncAdapters> = {
+      testGrimmoryLogin: async () => ({ ok: true, accessToken: "token" }),
+      fetchGrimmoryBooks: async () => [{
+        id: 1, title: "Stale Status Book", hardcoverBookId: "42", mediaType: "ebook", readStatus: "UNREAD"
+      }],
+      fetchGrimmoryProgress: async () => ({ readProgress: 40, lastReadTime: "2026-01-01T00:00:00Z", readStatus: "READING" })
+    };
+    const result = await fetchSourceSnapshots(context(db, profileId, {
+      hasGrimmory: true, baseUrl: "https://grimmory.example.com", username: "user", password: "pass",
+      profile: { sync_progress_enabled: 1 }, adapters
+    }));
+    assert.equal(result.grimmoryBooks[0]?.readStatus, "READING");
   } finally { cleanup(); }
 });
 
@@ -80,6 +131,7 @@ test("ABS ownership snapshot batches a large audiobook library", async () => {
         const bookId = Number(db.prepare("INSERT INTO books (title) VALUES (?)").run(`Audio ${id}`).lastInsertRowid);
         db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, audiobookshelf_runtime_validated) VALUES (?, 'audiobookshelf', ?, ?, 1)").run(bookId, profileId, `abs-${id}`);
         db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, source_media_type, grimmory_hardcover_book_id) VALUES (?, 'grimmory', ?, ?, 'audiobook', ?)").run(bookId, profileId, `grim-${id}`, String(id));
+        db.prepare("INSERT INTO user_book_states (book_id, profile_id, source_type, progress) VALUES (?, ?, 'audiobookshelf', 10)").run(bookId, profileId);
       }
     });
     insert();

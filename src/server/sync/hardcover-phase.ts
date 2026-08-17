@@ -8,7 +8,6 @@ import type { SyncAdapters } from "./adapters.js";
 import type { cacheGrimmoryCover, cacheSourceCover } from "./covers.js";
 import type { ConflictStrategy, computeSyncDecision } from "./conflict-policy.js";
 import type {
-  activeGrimmorySiblingsForHardcover,
   audiobookRuntimeForBook,
   cleanupDuplicateBlankHardcoverReads,
   grimmoryToHardcoverRating,
@@ -17,7 +16,6 @@ import type {
   hardcoverPages,
   hardcoverProgressPercent,
   hardcoverToGrimmoryRating,
-  hasActiveBookSiblingForSharedHardcover,
   hasMeaningfulGrChange,
   hasMeaningfulHcChange,
   latestHardcoverRead,
@@ -31,6 +29,7 @@ import type {
   SyncCounters,
   todayDate
 } from "./sync-utils.js";
+import { bookOwnsSharedHardcoverRecord, sharedHardcoverRecordFor, type SharedHardcoverOwnership } from "./hardcover-ownership.js";
 
 type Db = ReturnType<typeof getDb>;
 type RecordEvent = (db: Db, runId: number, profileId: number, bookTitle: string, eventType: string, direction: string | null, decision: string, details: Record<string, unknown>) => void;
@@ -84,8 +83,7 @@ export interface HardcoverStateContext {
   newerSource: typeof newerSource;
   meaningfulProgress: typeof meaningfulProgress;
   hardcoverDate: typeof hardcoverDate;
-  activeGrimmorySiblingsForHardcover: typeof activeGrimmorySiblingsForHardcover;
-  hasActiveBookSiblingForSharedHardcover: typeof hasActiveBookSiblingForSharedHardcover;
+  sharedHardcoverOwnership: SharedHardcoverOwnership;
 }
 
 export async function syncHardcoverState(context: HardcoverStateContext): Promise<void> {
@@ -99,7 +97,7 @@ export async function syncHardcoverState(context: HardcoverStateContext): Promis
     matchedGrimmoryIds, writeTagEnabled, taggedSourceGrimmoryIds, taggedSourceTitles,
     hardcoverSourceGrimmoryIds, audiobookRuntimeForBook, hardcoverProgressPercent,
     absOwnedBookIds, positiveRating, newerSource, meaningfulProgress, hardcoverDate,
-    activeGrimmorySiblingsForHardcover, hasActiveBookSiblingForSharedHardcover } = context;
+    sharedHardcoverOwnership } = context;
 // ── Phase F: HC user states + API sync ───────────────────────────────────
 // For each HC book, find its matching Grimmory book (via the in-memory index
 // AND the book_sources reconciliation), then apply conflict resolution and
@@ -113,14 +111,14 @@ for (const hcBook of hcBooks) {
   }
   const bookId = hcSource.book_id;
 
-  const preferredSiblings = grimmoryAvailable
-    ? activeGrimmorySiblingsForHardcover(grimmoryBooks, hcBook.book.id)
-    : { book: null, audiobook: null };
-  const bookOwnsSharedHardcover = hasActiveBookSiblingForSharedHardcover(grimmoryBooks, hcBook.book.id);
+  const owningBook = grimmoryAvailable
+    ? sharedHardcoverRecordFor(sharedHardcoverOwnership, hcBook.book.id)?.activeBook ?? null
+    : null;
+  const bookOwnsSharedHardcover = bookOwnsSharedHardcoverRecord(sharedHardcoverOwnership, hcBook.book.id);
 
   // Find matching Grimmory book via the in-memory matcher
-  const match = bookOwnsSharedHardcover && preferredSiblings.book
-    ? { grimmoryBook: preferredSiblings.book, confidence: "high" as const, matchType: "hardcover_book_id" as const }
+  const match = bookOwnsSharedHardcover && owningBook
+    ? { grimmoryBook: owningBook, confidence: "high" as const, matchType: "hardcover_book_id" as const }
     : grimmoryAvailable
     ? matchHardcoverBook(hcBook, grimmoryIndex, {
         goodreadsId: getGoodreadsExternalId(db, profileId, bookId),

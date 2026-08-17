@@ -1,19 +1,16 @@
 import { logger } from "../logger.js";
-import { normalizeExternalId } from "../identifiers.js";
 import type { getDb } from "../db/index.js";
 import type { HardcoverEdition, HardcoverUserBook } from "./hardcover.js";
-import type { GrimmoryBook } from "./grimmory.js";
 import type { upsertBookSource } from "./repository.js";
 import type { cacheSourceCover } from "./covers.js";
 import type { enqueueImageCacheTask } from "../image-cache.js";
 import type {
-  activeGrimmorySiblingsForHardcover,
   firstHardcoverSeries,
-  hasActiveBookSiblingForSharedHardcover,
   inferHardcoverMediaType,
   normalizeEditionFormat,
   sqliteNow
 } from "./sync-utils.js";
+import { bookOwnsSharedHardcoverRecord, absOwnsSharedHardcoverRecord, type SharedHardcoverOwnership } from "./hardcover-ownership.js";
 import type { pruneHardcoverSourcesMissingFromFetch, pruneHardcoverUserStatesMissingFromFetch, SourceSnapshotStatus } from "./pruning.js";
 
 type Db = ReturnType<typeof getDb>;
@@ -23,15 +20,11 @@ export interface HardcoverSourcesContext {
   profileId: number;
   hcBooks: HardcoverUserBook[];
   hcEditions: Map<number, HardcoverEdition>;
-  grimmoryAvailable: boolean;
   upsertBookSource: typeof upsertBookSource;
   cacheSourceCover: typeof cacheSourceCover;
   sqliteNow: typeof sqliteNow;
   hasHardcover: boolean;
-  activeGrimmorySiblingsForHardcover: typeof activeGrimmorySiblingsForHardcover;
-  hasActiveBookSiblingForSharedHardcover: typeof hasActiveBookSiblingForSharedHardcover;
-  grimmoryBooks: GrimmoryBook[];
-  absOwnedHardcoverBookIds: Set<string>;
+  sharedHardcoverOwnership: SharedHardcoverOwnership;
   inferHardcoverMediaType: typeof inferHardcoverMediaType;
   firstHardcoverSeries: typeof firstHardcoverSeries;
   normalizeEditionFormat: typeof normalizeEditionFormat;
@@ -42,22 +35,18 @@ export interface HardcoverSourcesContext {
 }
 
 export async function persistHardcoverSources(context: HardcoverSourcesContext): Promise<void> {
-  const { db, profileId, hcBooks, hcEditions, grimmoryAvailable, upsertBookSource, cacheSourceCover, sqliteNow,
-    hasHardcover, activeGrimmorySiblingsForHardcover, hasActiveBookSiblingForSharedHardcover, grimmoryBooks, absOwnedHardcoverBookIds,
+  const { db, profileId, hcBooks, hcEditions, upsertBookSource, cacheSourceCover, sqliteNow,
+    hasHardcover, sharedHardcoverOwnership,
     inferHardcoverMediaType, firstHardcoverSeries, normalizeEditionFormat, enqueueImageCacheTask,
     pruneHardcoverUserStatesMissingFromFetch, pruneHardcoverSourcesMissingFromFetch, hardcoverSnapshotStatus } = context;
 // ── Phase C: Write HC book_sources ─────────────────────────────────────
 if (hasHardcover) {
   for (const hcBook of hcBooks) {
     const userEdition = hcBook.edition_id ? hcEditions.get(hcBook.edition_id) : null;
-    const preferredSiblings = grimmoryAvailable
-      ? activeGrimmorySiblingsForHardcover(grimmoryBooks, hcBook.book.id)
-      : { book: null, audiobook: null };
     // A book owns a shared work regardless of whether its audiobook sibling is
     // active. Do not apply this to an ordinary book with no audio sibling.
-    const bookOwnsSharedHardcover = hasActiveBookSiblingForSharedHardcover(grimmoryBooks, hcBook.book.id);
-    const absOwnsThisHardcoverBook = preferredSiblings.book === null
-      && absOwnedHardcoverBookIds.has(normalizeExternalId(hcBook.book.id) ?? String(hcBook.book.id));
+    const bookOwnsSharedHardcover = bookOwnsSharedHardcoverRecord(sharedHardcoverOwnership, hcBook.book.id);
+    const absOwnsThisHardcoverBook = absOwnsSharedHardcoverRecord(sharedHardcoverOwnership, hcBook.book.id);
     const inferredMediaType = inferHardcoverMediaType(hcBook, userEdition);
     // Hardcover uses one book ID for multiple active editions, while our
     // book_sources row is keyed by that book ID. Keep the row in the book
