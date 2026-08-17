@@ -5,7 +5,8 @@ import {
   pruneGrimmorySourcesMissingFromFetch,
   pruneGrimmoryUserStatesMissingFromFetch,
   pruneHardcoverSourcesMissingFromFetch,
-  pruneHardcoverUserStatesMissingFromFetch
+  pruneHardcoverUserStatesMissingFromFetch,
+  pruneOrphanedHardcoverUserStates
 } from "../../src/server/sync/pruning.js";
 import { seedProfile } from "./test-helpers.js";
 import { createTestDatabase } from "./test-db.js";
@@ -179,6 +180,47 @@ test("a complete empty snapshot removes stale source rows and user states", () =
     const states = db.prepare("SELECT COUNT(*) AS count FROM user_book_states WHERE source_type = 'hardcover'").get() as { count: number };
     assert.equal(sources.count, 0);
     assert.equal(states.count, 0);
+  } finally {
+    cleanup();
+  }
+});
+
+test("pruneOrphanedHardcoverUserStates does not let another profile's live HC source suppress this profile's pruning", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const otherProfileId = seedProfile(db, "Other Profile");
+    // A single canonical book both profiles' Hardcover instances have matched to.
+    const bookId = insertBook(db, "Shared Book");
+
+    // This profile's own Hardcover book_sources row is already gone (e.g. pruned
+    // elsewhere, or never re-created after a reconcile), but the other profile's
+    // Hardcover source for the same book_id is still live.
+    insertBookSource(db, bookId, "hardcover", otherProfileId, "222");
+    insertUserState(db, bookId, profileId, "hardcover");
+    insertUserState(db, bookId, otherProfileId, "hardcover");
+
+    pruneOrphanedHardcoverUserStates(db, profileId);
+
+    const remaining = db.prepare("SELECT profile_id FROM user_book_states WHERE source_type = 'hardcover'").all() as { profile_id: number }[];
+    assert.deepEqual(remaining.map((r) => r.profile_id), [otherProfileId], "this profile's orphaned state must be pruned even though another profile still has a live source for the same book");
+  } finally {
+    cleanup();
+  }
+});
+
+test("pruneOrphanedHardcoverUserStates preserves state when this profile still has a live HC source for the book", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const bookId = insertBook(db, "Still Owned");
+    insertBookSource(db, bookId, "hardcover", profileId, "111");
+    insertUserState(db, bookId, profileId, "hardcover");
+
+    pruneOrphanedHardcoverUserStates(db, profileId);
+
+    const remaining = db.prepare("SELECT COUNT(*) AS count FROM user_book_states WHERE source_type = 'hardcover' AND profile_id = ?").get(profileId) as { count: number };
+    assert.equal(remaining.count, 1);
   } finally {
     cleanup();
   }
