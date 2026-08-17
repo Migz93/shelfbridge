@@ -81,6 +81,81 @@ test("Audiobookshelf repairs a blank live Hardcover read when cached progress is
   assert.equal(readWrites[0]!.fields.progress_seconds, 200);
 });
 
+test("an active book sibling owning the shared Hardcover record suppresses the ABS-to-Hardcover write", async (t) => {
+  const { db, cleanup } = createTestDatabase();
+  t.after(cleanup);
+
+  const profileId = Number(db.prepare("INSERT INTO profiles (display_name) VALUES ('Test Profile')").run().lastInsertRowid);
+  const bookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Test Audiobook')").run().lastInsertRowid);
+  db.prepare(`
+    INSERT INTO book_sources
+      (book_id, source_type, source_instance_id, external_id, source_media_type, source_edition_id, hardcover_audio_seconds)
+    VALUES (?, 'hardcover', ?, '555', 'audiobook', '10', 1000)
+  `).run(bookId, profileId);
+  db.prepare(`
+    INSERT INTO book_sources
+      (book_id, source_type, source_instance_id, external_id, source_media_type, audiobookshelf_duration, audiobookshelf_runtime_validated)
+    VALUES (?, 'audiobookshelf', ?, 'abs-1', 'audiobook', 1000, 1)
+  `).run(bookId, profileId);
+  db.prepare(`
+    INSERT INTO user_book_states
+      (book_id, profile_id, source_type, progress, hardcover_status_id, hardcover_read_id, hardcover_user_book_id, hardcover_edition_id)
+    VALUES (?, ?, 'hardcover', 20, 2, 99, 10, 10)
+  `).run(bookId, profileId);
+
+  // An actively-reading ebook sibling shares Hardcover book 555 with this
+  // audiobook — it owns the shared record, so ABS must not write over it.
+  const owningBook = { id: 42, hardcoverBookId: "555", mediaType: "ebook", readStatus: "READING" };
+  const bookOwnsSharedHardcover = resolveSharedHardcoverOwnership([owningBook] as any, new Set());
+
+  const skippedEvents: Array<{ eventType: string; decision: string }> = [];
+  await syncAudiobookshelfProgress({
+    db,
+    profileId,
+    runId: 1,
+    hasAbs: true,
+    hasHardcover: true,
+    grimmoryAvailable: false,
+    absBaseUrl: "https://abs.example",
+    absApiKey: "key",
+    baseUrl: "",
+    grimmoryToken: null,
+    hardcoverToken: "token",
+    dryRun: false,
+    counters: { written: 0, skipped: 0, superseded: 0, sourceFailures: 0 },
+    grimmoryBooks: [],
+    grimmoryProgressById: new Map(),
+    hcBooks: [{
+      id: 10,
+      edition_id: 10,
+      status_id: 2,
+      book: { id: 555, default_audio_edition_id: 10 },
+      user_book_reads: [{ id: 99, edition_id: 10, progress: 0, progress_seconds: 0, finished_at: null, started_at: "2026-08-16" }]
+    }],
+    adapters: {
+      fetchAudiobookshelfAllProgress: async () => [{ libraryItemId: "abs-1", progress: 0.2, currentTime: 200, duration: 1000, lastUpdate: "2026-08-16T00:00:00.000Z" }],
+      updateHardcoverUserBook: async () => { throw new Error("must not write Hardcover progress while a book sibling owns the shared record"); },
+      updateHardcoverUserBookRead: async () => { throw new Error("must not write a Hardcover read while a book sibling owns the shared record"); },
+      insertHardcoverUserBookRead: async () => { throw new Error("must not insert a Hardcover read while a book sibling owns the shared record"); }
+    },
+    recordEvent: (_db: unknown, _runId: unknown, _profileId: unknown, _title: unknown, eventType: string, _direction: unknown, decision: string) => {
+      skippedEvents.push({ eventType, decision });
+    },
+    meaningfulProgress,
+    effectiveAbsCurrentTimeSeconds,
+    persistResolvedHardcoverAudioEdition,
+    clampPercent,
+    sharedHardcoverOwnership: bookOwnsSharedHardcover,
+    localGrimmoryBookForBookId: () => undefined,
+    todayDate
+  });
+
+  assert.ok(
+    skippedEvents.some((e) => e.eventType === "skipped_no_change" && e.decision === "book_progress_wins_shared_hardcover"),
+    "the suppression must be recorded as a sync event"
+  );
+});
+
 test("Audiobookshelf creates a Hardcover read from a Chaptarr-only shared work mapping", async (t) => {
   const { db, cleanup } = createTestDatabase();
   t.after(cleanup);
