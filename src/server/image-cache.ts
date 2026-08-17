@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { getDb } from "./db/index.js";
 import { logger } from "./logger.js";
-import { fetchIntegration } from "./security/outbound.js";
+import { fetchCoverImage } from "./security/outbound.js";
 
 const DATA_DIR = process.env["DATA_DIR"] ?? "./data";
 const CACHE_DIR = path.join(DATA_DIR, "image-cache");
@@ -104,7 +104,7 @@ async function fetchImageBuffer(sourceUrl: string): Promise<Buffer | null> {
   try {
     return await Promise.race([
       (async () => {
-        const res = await fetchIntegration(sourceUrl, {
+        const res = await fetchCoverImage(sourceUrl, {
           headers: { "User-Agent": "ShelfBridge/0.1 (book sync app)" },
           signal: controller.signal
         });

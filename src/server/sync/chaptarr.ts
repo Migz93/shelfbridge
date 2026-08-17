@@ -3,6 +3,7 @@ import { logger } from "../logger.js";
 import { identifierVariants, normalizeExternalId } from "../identifiers.js";
 import { mapWithConcurrency } from "./concurrency.js";
 import { fetchIntegration } from "../security/outbound.js";
+import { stageFetchedIds } from "./pruning.js";
 
 const DEFAULT_BOOKFILE_CONCURRENCY = 5;
 const MAX_BOOKFILE_CONCURRENCY = 10;
@@ -584,13 +585,15 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
     }
   }
 
-  // Clear Chaptarr book_sources rows for books no longer present in Chaptarr
+  // Clear Chaptarr book_sources rows for books no longer present in Chaptarr.
+  // Staged into a temp table rather than an inline NOT IN (...) list, which
+  // could otherwise exceed SQLite's bound-parameter limit for a large library.
   if (matchedChaptarrIds.size > 0) {
-    const placeholders = Array.from(matchedChaptarrIds).map(() => "?").join(",");
+    stageFetchedIds(db, matchedChaptarrIds);
     db.prepare(`
       DELETE FROM book_sources
-      WHERE source_type = 'chaptarr' AND external_id NOT IN (${placeholders})
-    `).run(...Array.from(matchedChaptarrIds));
+      WHERE source_type = 'chaptarr' AND external_id NOT IN (SELECT id FROM shelfbridge_fetched_ids)
+    `).run();
   } else {
     db.prepare("DELETE FROM book_sources WHERE source_type = 'chaptarr'").run();
   }

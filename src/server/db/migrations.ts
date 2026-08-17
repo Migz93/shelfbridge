@@ -339,7 +339,23 @@ const migration1: Migration = {
   }
 };
 
-export const migrations: Migration[] = [migration1];
+// Records what was actually mismatched at dismissal time (Chaptarr's raw
+// upstream Hardcover/Goodreads book ids), so a dismissal only keeps
+// suppressing the mismatch it was raised against — if Chaptarr's reported
+// upstream ids change on a later sync, the row re-arms as an active mismatch
+// instead of staying silently dismissed forever.
+const migration2: Migration = {
+  version: 2,
+  description: "Re-arm Chaptarr ID mismatch dismissals when the observed mismatch changes",
+  up(db: Database.Database): void {
+    db.exec(`
+      ALTER TABLE chaptarr_id_mismatch_dismissals ADD COLUMN dismissed_hardcover_book_id TEXT;
+      ALTER TABLE chaptarr_id_mismatch_dismissals ADD COLUMN dismissed_goodreads_book_id TEXT;
+    `);
+  }
+};
+
+export const migrations: Migration[] = [migration1, migration2];
 
 // Guards against a typo'd version number: a duplicate would let two migrations
 // silently race to apply at the same version, and a gap (e.g. 1, 3 — skipping

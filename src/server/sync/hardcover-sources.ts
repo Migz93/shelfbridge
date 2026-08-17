@@ -1,6 +1,47 @@
 import { logger } from "../logger.js";
 import { normalizeExternalId } from "../identifiers.js";
-export async function persistHardcoverSources(context: any): Promise<void> {
+import type { getDb } from "../db/index.js";
+import type { HardcoverEdition, HardcoverUserBook } from "./hardcover.js";
+import type { GrimmoryBook } from "./grimmory.js";
+import type { upsertBookSource } from "./repository.js";
+import type { cacheSourceCover } from "./covers.js";
+import type { enqueueImageCacheTask } from "../image-cache.js";
+import type {
+  activeGrimmorySiblingsForHardcover,
+  firstHardcoverSeries,
+  hasActiveBookSiblingForSharedHardcover,
+  inferHardcoverMediaType,
+  normalizeEditionFormat,
+  sqliteNow
+} from "./sync-utils.js";
+import type { pruneHardcoverSourcesMissingFromFetch, pruneHardcoverUserStatesMissingFromFetch, SourceSnapshotStatus } from "./pruning.js";
+
+type Db = ReturnType<typeof getDb>;
+
+export interface HardcoverSourcesContext {
+  db: Db;
+  profileId: number;
+  hcBooks: HardcoverUserBook[];
+  hcEditions: Map<number, HardcoverEdition>;
+  grimmoryAvailable: boolean;
+  upsertBookSource: typeof upsertBookSource;
+  cacheSourceCover: typeof cacheSourceCover;
+  sqliteNow: typeof sqliteNow;
+  hasHardcover: boolean;
+  activeGrimmorySiblingsForHardcover: typeof activeGrimmorySiblingsForHardcover;
+  hasActiveBookSiblingForSharedHardcover: typeof hasActiveBookSiblingForSharedHardcover;
+  grimmoryBooks: GrimmoryBook[];
+  absOwnedHardcoverBookIds: Set<string>;
+  inferHardcoverMediaType: typeof inferHardcoverMediaType;
+  firstHardcoverSeries: typeof firstHardcoverSeries;
+  normalizeEditionFormat: typeof normalizeEditionFormat;
+  enqueueImageCacheTask: typeof enqueueImageCacheTask;
+  pruneHardcoverUserStatesMissingFromFetch: typeof pruneHardcoverUserStatesMissingFromFetch;
+  pruneHardcoverSourcesMissingFromFetch: typeof pruneHardcoverSourcesMissingFromFetch;
+  hardcoverSnapshotStatus: SourceSnapshotStatus;
+}
+
+export async function persistHardcoverSources(context: HardcoverSourcesContext): Promise<void> {
   const { db, profileId, hcBooks, hcEditions, grimmoryAvailable, upsertBookSource, cacheSourceCover, sqliteNow,
     hasHardcover, activeGrimmorySiblingsForHardcover, hasActiveBookSiblingForSharedHardcover, grimmoryBooks, absOwnedHardcoverBookIds,
     inferHardcoverMediaType, firstHardcoverSeries, normalizeEditionFormat, enqueueImageCacheTask,
@@ -108,8 +149,8 @@ if (hasHardcover) {
   }
 
   // Prune states first: source pruning preserves rows with a live state.
-  pruneHardcoverUserStatesMissingFromFetch(db, profileId, new Set(hcBooks.map((b: any) => b.book.id)), hardcoverSnapshotStatus);
-  pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set(hcBooks.map((b: any) => b.book.id)), hardcoverSnapshotStatus);
+  pruneHardcoverUserStatesMissingFromFetch(db, profileId, new Set(hcBooks.map((b) => b.book.id)), hardcoverSnapshotStatus);
+  pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set(hcBooks.map((b) => b.book.id)), hardcoverSnapshotStatus);
   logger.info("Hardcover book_sources written", { profileId, count: hcBooks.length });
 }
 

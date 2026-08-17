@@ -225,7 +225,11 @@ export async function cleanupDuplicateBlankHardcoverReads(opts: {
 
   if (deletedReadIds.length === 0) return;
 
-  opts.hcBook.user_book_reads = (opts.hcBook.user_book_reads ?? []).filter((read) => !duplicateIds.has(read.id));
+  // Only drop reads that were actually deleted remotely — a read whose
+  // deletion failed above must stay in the in-memory state, or later logic
+  // in this sync run would treat it as already gone.
+  const deletedReadIdSet = new Set(deletedReadIds);
+  opts.hcBook.user_book_reads = (opts.hcBook.user_book_reads ?? []).filter((read) => !deletedReadIdSet.has(read.id));
   recordSyncEvent(opts.db, opts.runId, opts.profileId, opts.title, "written", "hardcover_cleanup", "deleted_duplicate_blank_read", {
     hardcoverUserBookId: opts.hcBook.id,
     deletedReadIds

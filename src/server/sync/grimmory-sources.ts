@@ -1,6 +1,28 @@
-import { grimmoryAuthorName, grimmoryCoverUrl } from "./grimmory.js";
+import { grimmoryAuthorName, grimmoryCoverUrl, type GrimmoryBook } from "./grimmory.js";
 import { logger } from "../logger.js";
-export async function persistGrimmorySources(context: any): Promise<void> {
+import type { getDb } from "../db/index.js";
+import type { upsertBookSource } from "./repository.js";
+import type { enqueueImageCacheTask } from "../image-cache.js";
+import type { cacheGrimmoryCover, cacheSourceCover } from "./covers.js";
+import type { sqliteNow } from "./sync-utils.js";
+
+type Db = ReturnType<typeof getDb>;
+
+export interface GrimmorySourcesContext {
+  db: Db;
+  profileId: number;
+  grimmoryAvailable: boolean;
+  grimmoryBooks: GrimmoryBook[];
+  upsertBookSource: typeof upsertBookSource;
+  enqueueImageCacheTask: typeof enqueueImageCacheTask;
+  cacheSourceCover: typeof cacheSourceCover;
+  sqliteNow: typeof sqliteNow;
+  grimmoryToken: string | null;
+  cacheGrimmoryCover: typeof cacheGrimmoryCover;
+  baseUrl: string;
+}
+
+export async function persistGrimmorySources(context: GrimmorySourcesContext): Promise<void> {
   const { db, profileId, grimmoryAvailable, grimmoryBooks, upsertBookSource, enqueueImageCacheTask, cacheSourceCover,
     sqliteNow, grimmoryToken, cacheGrimmoryCover, baseUrl } = context;
 // ── Phase B: Write Grimmory book_sources ────────────────────────────────

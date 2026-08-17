@@ -317,6 +317,43 @@ test("reconcileBookIdentities bridges a Goodreads ISBN despite a stale Grimmory 
   }
 });
 
+test("the stale-Grimmory-ID escape hatch does not drag in an unrelated conflicting Hardcover record", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const path = "/books/Jennifer Hillier/Freak.epub";
+    db.prepare(`
+      INSERT INTO book_sources (source_type, external_id, title, author, isbn10, source_media_type, source_hardcover_book_id)
+      VALUES ('goodreads', 'current-edition', 'Freak', 'Jennifer Hillier', '0143107275', 'book', 'hc-111')
+    `).run();
+    db.prepare(`
+      INSERT INTO book_sources (source_type, external_id, title, author, source_media_type, source_goodreads_edition_id, chaptarr_primary_file_path)
+      VALUES ('chaptarr', 'chaptarr-freak', 'Freak', 'Jennifer Hillier', 'book', 'old-edition', ?)
+    `).run(path);
+    db.prepare(`
+      INSERT INTO book_sources (source_type, external_id, title, author, isbn10, source_media_type, grimmory_goodreads_id, grimmory_hardcover_id, grimmory_primary_file_path)
+      VALUES ('grimmory', 'grimmory-freak', 'Freak', 'Laird Barron', '0143107275', 'book', 'old-edition', 'freak-hc', ?)
+    `).run(path);
+    // Shares only the Hardcover slug with the Grimmory row (so it still joins
+    // that cluster before the ISBN pass), but carries its own conflicting
+    // Hardcover book id — independent evidence the stale-Goodreads-ID escape
+    // hatch must not paper over just because the Goodreads/Grimmory pair
+    // itself is corroborated.
+    db.prepare(`
+      INSERT INTO book_sources (source_type, external_id, title, hardcover_slug, source_media_type)
+      VALUES ('hardcover', 'hc-999', 'Freak', 'freak-hc', 'book')
+    `).run();
+
+    reconcileBookIdentities(db);
+
+    const rows = db.prepare("SELECT source_type, book_id FROM book_sources ORDER BY id").all() as { source_type: string; book_id: number }[];
+    const goodreadsBookId = rows.find((r) => r.source_type === "goodreads")!.book_id;
+    const hardcoverBookId = rows.find((r) => r.source_type === "hardcover")!.book_id;
+    assert.notEqual(goodreadsBookId, hardcoverBookId, "the unrelated Hardcover conflict must keep it out of the merged canonical");
+  } finally {
+    cleanup();
+  }
+});
+
 test("reconcileBookIdentities aggregates many ambiguous Chaptarr file-path skips into a single bounded warning", () => {
   const { db, cleanup } = createTestDatabase();
   const originalWarn = logger.warn.bind(logger);

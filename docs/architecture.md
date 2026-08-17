@@ -59,10 +59,9 @@ Other rules:
 - The global Grimmory base URL in Settings is a fallback used when a profile does
   not override it
 - Chaptarr URL is stored globally in `app_settings` as `chaptarr.baseUrl`;
-  the Chaptarr API key is stored encrypted in `app_settings` as
-  `chaptarr.apiKey`
+  the Chaptarr API key is stored in `app_settings` as `chaptarr.apiKey`
 - Audiobookshelf base URL is stored globally in `app_settings` as
-  `audiobookshelf.baseUrl`. Per-user API keys are stored encrypted in the
+  `audiobookshelf.baseUrl`. Per-user API keys are stored in the
   `audiobookshelf_connections` table
 
 ---

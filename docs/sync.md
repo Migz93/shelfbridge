@@ -980,13 +980,6 @@ Hardcover, it targets a specific `user_book_reads` row. Two related pitfalls:
   the underlying read data is untouched. ShelfBridge checks this pointer
   against the persisted target edition on every sync — independently of
   whether progress or status also need a write — and re-patches it back when
-  it has drifted, so a stale "current edition" doesn't get stuck permanently
-  correct data underneath it.
-- Hardcover's own website appears to feature whichever read was edited most
-  recently in its "Currently Reading" widget, independent of `finished_at` or
-  the `user_books.edition_id` pointer. A one-off manual edit to an older
-  finished read (e.g. correcting its date) can therefore make Hardcover's own
-  UI feature that read instead of the actively-progressing one, even though
-  all underlying data is otherwise correct. This is a Hardcover-side display
-  behaviour, not something ShelfBridge's sync state controls; it resolves
-  itself once the actively-tracked read is written to again.
+  it has drifted, so a stale "current edition" pointer doesn't stay wrong
+  indefinitely underneath otherwise-correct read data. See the comment next
+  to the edition re-patch write for a note on a related Hardcover UI quirk.

@@ -4,7 +4,54 @@ import { identifierVariants, normalizeExternalId, normalizeIsbn } from "../ident
 import { enqueueImageCacheTask } from "../image-cache.js";
 import { GOODREADS_TO_GRIMMORY } from "./matcher.js";
 import { normalizeTitle, normalizeSeriesNumber } from "./normalization.js";
-export async function syncGoodreadsEnrichment(context: any): Promise<boolean> {
+import type { getDb } from "../db/index.js";
+import type { SyncAdapters } from "./adapters.js";
+import type { getUserState, upsertBookSource } from "./repository.js";
+import type { cacheSourceCover } from "./covers.js";
+import type { pruneGoodreadsUserStatesMissingFromFetch } from "./pruning.js";
+import type { syncGoodreadsShelvesToGrimmory } from "./shelves.js";
+import type {
+  hardcoverToGrimmoryRating,
+  hasMeaningfulGoodreadsChange,
+  sameNumber,
+  shouldGoodreadsOverwriteGrimmory,
+  sqliteNow,
+  SyncCounters
+} from "./sync-utils.js";
+
+type Db = ReturnType<typeof getDb>;
+type RecordEvent = (db: Db, runId: number, profileId: number, bookTitle: string, eventType: string, direction: string | null, decision: string, details: Record<string, unknown>) => void;
+
+export interface GoodreadsEnrichmentContext {
+  db: Db;
+  profileId: number;
+  runId: number;
+  profile: Record<string, unknown>;
+  adapters: SyncAdapters;
+  counters: SyncCounters;
+  dryRun: boolean;
+  grimmoryAvailable: boolean;
+  hasGrimmory: boolean;
+  baseUrl: string;
+  grimmoryToken: string | null;
+  recordEvent: RecordEvent;
+  pruneGoodreadsUserStatesMissingFromFetch: typeof pruneGoodreadsUserStatesMissingFromFetch;
+  getUserState: typeof getUserState;
+  hardcoverToGrimmoryRating: typeof hardcoverToGrimmoryRating;
+  writeTagEnabled: boolean;
+  taggedSourceGrimmoryIds: Set<number>;
+  taggedSourceTitles: Map<number, string>;
+  goodreadsSourceGrimmoryIds: Set<number>;
+  hasMeaningfulGoodreadsChange: typeof hasMeaningfulGoodreadsChange;
+  upsertBookSource: typeof upsertBookSource;
+  sqliteNow: typeof sqliteNow;
+  cacheSourceCover: typeof cacheSourceCover;
+  shouldGoodreadsOverwriteGrimmory: typeof shouldGoodreadsOverwriteGrimmory;
+  sameNumber: typeof sameNumber;
+  syncGoodreadsShelvesToGrimmory: typeof syncGoodreadsShelvesToGrimmory;
+}
+
+export async function syncGoodreadsEnrichment(context: GoodreadsEnrichmentContext): Promise<boolean> {
   const { db, profileId, runId, profile, adapters, counters, dryRun, grimmoryAvailable, hasGrimmory, baseUrl, grimmoryToken, recordEvent,
     pruneGoodreadsUserStatesMissingFromFetch, getUserState, hardcoverToGrimmoryRating, writeTagEnabled, taggedSourceGrimmoryIds, taggedSourceTitles,
     goodreadsSourceGrimmoryIds, hasMeaningfulGoodreadsChange, upsertBookSource, sqliteNow, cacheSourceCover,
@@ -29,7 +76,7 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
     pruneGoodreadsUserStatesMissingFromFetch(
       db,
       profileId,
-      new Set(goodreadsBooks.map((b: any) => b.goodreadsId)),
+      new Set(goodreadsBooks.map((b) => b.goodreadsId)),
       goodreadsSyncShelfName ? "partial" : "complete"
     );
 
@@ -100,8 +147,20 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
 
     let goodreadsMatched = 0;
     let goodreadsUnmatched = 0;
+    // Sources for newly-discovered Goodreads-only books, reconciled in a single
+    // batch after the loop instead of once per book — reconciling per book
+    // makes a first sync of a large, mostly-unmatched library quadratic.
+    const pendingGoodreadsOnly: Array<{
+      newSourceId: number; goodreadsId: string; title: string; rating: number | null;
+      shelf: string | null; readAt: string | null; updatedAt: string | null;
+      matchType: string | null; bookLink: string | null;
+    }> = [];
 
     for (const grBook of goodreadsBooks) {
+      // A single book's local DB write throwing must not abort every
+      // remaining book in the library, nor get misreported by the outer
+      // catch as a Goodreads source outage.
+      try {
       let matched: LinkLookup | undefined;
       let matchType: string | null = null;
 
@@ -295,30 +354,42 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
           });
         }
 
-        // Reconcile to assign book_id, then write user state
-        reconcileBookIdentities(db);
-        const newSource = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(newSourceId) as { book_id: number } | undefined;
-        if (newSource?.book_id) {
-          db.prepare(`
-            INSERT OR IGNORE INTO user_book_states
-              (book_id, profile_id, source_type, rating, sync_health,
-               goodreads_shelf, goodreads_read_at, goodreads_updated_at,
-               goodreads_match_type, goodreads_book_link,
-               last_sync_at, last_sync_decision, last_modified_at)
-            VALUES (?, ?, 'goodreads', ?, 'missing', ?, ?, ?, ?, ?, datetime('now'), 'goodreads_only', datetime('now'))
-          `).run(
-            newSource.book_id, profileId, grBook.rating,
-            grBook.shelf, grBook.readAt, grBook.updatedAt,
-            matchType, grBook.bookLink
-          );
-          logger.info("Created Goodreads-only book", { profileId, goodreadsId: grBook.goodreadsId, title: grBook.title, bookId: newSource.book_id });
-        }
+        // book_id is assigned by the single reconcile pass after this loop.
+        pendingGoodreadsOnly.push({
+          newSourceId, goodreadsId: grBook.goodreadsId, title: grBook.title, rating: grBook.rating,
+          shelf: grBook.shelf, readAt: grBook.readAt, updatedAt: grBook.updatedAt,
+          matchType, bookLink: grBook.bookLink ?? null
+        });
         goodreadsUnmatched++;
+      }
+      } catch (err) {
+        logger.warn("Failed to process one Goodreads book; continuing with the rest of the library", {
+          profileId, goodreadsId: grBook.goodreadsId, title: grBook.title, error: err
+        });
+        recordEvent(db, runId, profileId, grBook.title, "api_failure", "goodreads", "book_processing_failed", { error: String(err) });
       }
     }
 
-    // Reconcile to pick up new GR sources
+    // Reconcile once to pick up all new GR sources created above, then write
+    // their user states now that book_id is known.
     reconcileBookIdentities(db);
+    for (const pending of pendingGoodreadsOnly) {
+      const newSource = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(pending.newSourceId) as { book_id: number } | undefined;
+      if (!newSource?.book_id) continue;
+      db.prepare(`
+        INSERT OR IGNORE INTO user_book_states
+          (book_id, profile_id, source_type, rating, sync_health,
+           goodreads_shelf, goodreads_read_at, goodreads_updated_at,
+           goodreads_match_type, goodreads_book_link,
+           last_sync_at, last_sync_decision, last_modified_at)
+        VALUES (?, ?, 'goodreads', ?, 'missing', ?, ?, ?, ?, ?, datetime('now'), 'goodreads_only', datetime('now'))
+      `).run(
+        newSource.book_id, profileId, pending.rating,
+        pending.shelf, pending.readAt, pending.updatedAt,
+        pending.matchType, pending.bookLink
+      );
+      logger.info("Created Goodreads-only book", { profileId, goodreadsId: pending.goodreadsId, title: pending.title, bookId: newSource.book_id });
+    }
     logger.info("Goodreads enrichment complete", { profileId, goodreadsMatched, goodreadsUnmatched });
 
     if (grimmoryAvailable && hasGrimmory && grimmoryToken) {

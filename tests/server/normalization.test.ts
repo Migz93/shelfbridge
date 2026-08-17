@@ -9,6 +9,7 @@ import {
 import { normalizeIsbn } from "../../src/server/identifiers.js";
 import {
   activeGrimmorySiblingsForHardcover,
+  cleanupDuplicateBlankHardcoverReads,
   hardcoverProgressPercent,
   hasActiveBookSiblingForHardcover,
   hasActiveBookSiblingForSharedHardcover,
@@ -17,11 +18,18 @@ import {
   shouldActiveSiblingOwnSharedHardcover
 } from "../../src/server/sync/sync-utils.js";
 import { hasKnownHardcoverIdentity } from "../../src/server/sync/chaptarr.js";
+import { createTestDatabase } from "./test-db.js";
+import { seedProfile } from "./test-helpers.js";
 
 test("normalizeTitle strips parenthetical series info, case, and punctuation", () => {
   assert.equal(normalizeTitle("Dune (Dune, #1)"), "dune");
   assert.equal(normalizeTitle("The Hobbit: There and Back Again"), "the hobbit there and back again");
   assert.equal(normalizeTitle("  Extra   Spaces  "), "extra spaces");
+});
+
+test("normalizeTitle preserves non-Latin scripts instead of stripping them to an empty string", () => {
+  assert.equal(normalizeTitle("Преступление и наказание"), "преступление и наказание");
+  assert.equal(normalizeTitle("三体"), "三体");
 });
 
 test("normalizeSeriesNumber extracts the leading numeric portion", () => {
@@ -44,12 +52,55 @@ test("normalizeIsbn ignores conventional separators", () => {
   assert.equal(normalizeIsbn("97814028AB626"), null);
 });
 
+test("normalizeIsbn rejects a well-formed ISBN with an invalid check digit", () => {
+  // Same digits as the valid examples above with the final check digit changed.
+  assert.equal(normalizeIsbn("978-1-4028-9462-9"), null);
+  assert.equal(normalizeIsbn("0-306-40615-9"), null);
+});
+
 test("newerSource returns whichever timestamp is later, or null when either side is missing", () => {
   assert.equal(newerSource("2026-01-02T00:00:00Z", "2026-01-01T00:00:00Z"), "hardcover");
   assert.equal(newerSource("2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"), "grimmory");
   assert.equal(newerSource(null, "2026-01-01T00:00:00Z"), null);
   assert.equal(newerSource("2026-01-01T00:00:00Z", null), null);
   assert.equal(newerSource(null, null), null);
+});
+
+test("cleanupDuplicateBlankHardcoverReads keeps a read in memory when its remote deletion fails", async () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const runId = Number(db.prepare("INSERT INTO sync_runs (profile_id) VALUES (?)").run(profileId).lastInsertRowid);
+    const bookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Book')").run().lastInsertRowid);
+
+    const progressedRead = { id: 1, edition_id: 5, edition: null, progress: 40, progress_pages: null, progress_seconds: null, started_at: "2026-01-01", finished_at: null };
+    const blankReadThatFailsToDelete = { id: 2, edition_id: 5, edition: null, progress: null, progress_pages: null, progress_seconds: null, started_at: "2026-01-01", finished_at: null };
+    const hcBook = {
+      id: 900, edition_id: 5, status_id: 2, rating: null, updated_at: null, first_started_reading_date: null, last_read_date: null,
+      book: { id: 1, title: "Book", slug: null, image: null, contributions: null, default_physical_edition: null, default_ebook_edition: null, default_audio_edition: null, book_series: null },
+      user_book_reads: [progressedRead, blankReadThatFailsToDelete]
+    };
+
+    await cleanupDuplicateBlankHardcoverReads({
+      db, runId, profileId, title: "Book", bookId,
+      hcBook: hcBook as Parameters<typeof cleanupDuplicateBlankHardcoverReads>[0]["hcBook"],
+      hardcoverToken: "token", dryRun: false, counters: { written: 0, skipped: 0 },
+      adapters: { deleteHardcoverUserBookRead: async () => { throw new Error("network error"); } } as Parameters<typeof cleanupDuplicateBlankHardcoverReads>[0]["adapters"]
+    });
+
+    // The delete failed, so the blank read must still be present in memory —
+    // dropping it here would make later logic in the same run treat it as
+    // already gone even though Hardcover still has it.
+    assert.deepEqual(hcBook.user_book_reads.map((r) => r.id), [1, 2]);
+  } finally { cleanup(); }
+});
+
+test("newerSource does not order unparseable timestamps as strings", () => {
+  // A valid ISO timestamp lexicographically follows a garbage string, which
+  // used to make the garbage value win under plain string comparison.
+  assert.equal(newerSource("not-a-date", "2026-01-01T00:00:00Z"), "grimmory");
+  assert.equal(newerSource("2026-01-01T00:00:00Z", "not-a-date"), "hardcover");
+  assert.equal(newerSource("not-a-date", "also-not-a-date"), null);
 });
 
 test("hardcoverProgressPercent uses the selected read's page count", () => {

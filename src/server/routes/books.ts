@@ -17,6 +17,7 @@ import { logger } from "../logger.js";
 import { reconcileBookIdentities } from "../db/bookIdentity.js";
 import { normalizeExternalId, identifiersEqual } from "../identifiers.js";
 import { validationErrorResponse, writeGrimmoryIdSchema } from "../validation.js";
+import { hasIdentityReviewConflict } from "../sync/identity-review.js";
 
 const router = Router();
 
@@ -182,48 +183,6 @@ function hasNeedsIdReview(row: Pick<DbBookRow,
     || (sourceHardcoverId !== null && !identifiersEqual(grimmoryHardcoverId, sourceHardcoverId));
 }
 
-function distinctClean(values: Array<string | number | null | undefined>): string[] {
-  return Array.from(new Set(
-    values
-      .map((value) => normalizeExternalId(value))
-      .filter((value): value is string => Boolean(value))
-  ));
-}
-
-function distinctComparableIds(
-  rows: Array<Pick<DbBookRow, "goodreads_book_id" | "grimmory_goodreads_id" | "hardcover_book_id" | "grimmory_hardcover_book_id">>,
-  source: "goodreads" | "hardcover"
-): string[] {
-  if (source === "goodreads") {
-    const comparableRows = rows.filter((row) => normalizeExternalId(row.goodreads_book_id) !== null);
-    return distinctClean(comparableRows.flatMap((row) => [row.goodreads_book_id, row.grimmory_goodreads_id]));
-  }
-
-  // Only compare Grimmory's stored Hardcover ID when we also have a ShelfBridge
-  // Hardcover source row for the canonical book. Grimmory can legitimately carry
-  // a Hardcover cross-reference for books that never came from Hardcover.
-  const comparableRows = rows.filter((row) => row.hardcover_book_id !== null);
-  return distinctClean(comparableRows.flatMap((row) => [row.hardcover_book_id, row.grimmory_hardcover_book_id]));
-}
-
-function hasAggregateSourceReviewConflict(
-  rows: Array<Pick<DbBookRow, "goodreads_book_id" | "grimmory_goodreads_id" | "hardcover_book_id" | "grimmory_hardcover_book_id">>,
-  source: "goodreads" | "hardcover"
-): boolean {
-  const sourceIds = distinctComparableIds(rows, source);
-  const grimmoryIds = source === "goodreads"
-    ? distinctClean(rows.map((row) => row.grimmory_goodreads_id))
-    : distinctClean(rows.map((row) => row.grimmory_hardcover_book_id));
-
-  // If Grimmory doesn't carry an ID for this source, there is nothing actionable
-  // to review here beyond the canonical merge itself.
-  if (grimmoryIds.length === 0) return false;
-  if (grimmoryIds.length > 1) return true;
-
-  const [grimmoryId] = grimmoryIds;
-  return grimmoryId !== undefined && sourceIds.length > 0 && !sourceIds.includes(grimmoryId);
-}
-
 function normalizeReviewText(value: string | null | undefined): string | null {
   const text = value
     ?.toLowerCase()
@@ -385,24 +344,6 @@ function dbToDuplicateCandidate(rows: DbBookRow[], mergeEligible: boolean): Book
     seriesNumber: row.book_series_number,
     mergeEligible
   };
-}
-
-// book_sources rows for Grimmory/Hardcover/Goodreads are now scoped per profile
-// instance (see schema v14), so the same book can legitimately carry different
-// cross-reference IDs on different profiles' own servers — that's not a conflict.
-// Evaluate each profile's own rows independently rather than aggregating IDs
-// across every profile sharing this book.
-function hasIdentityReviewConflict(rows: DbBookRow[]): boolean {
-  const byProfile = new Map<number, DbBookRow[]>();
-  for (const row of rows) {
-    const group = byProfile.get(row.profile_id) ?? [];
-    group.push(row);
-    byProfile.set(row.profile_id, group);
-  }
-  return Array.from(byProfile.values()).some((profileRows) =>
-    hasAggregateSourceReviewConflict(profileRows, "goodreads")
-      || hasAggregateSourceReviewConflict(profileRows, "hardcover")
-  );
 }
 
 function hasBookNeedsIdReview(rows: DbBookRow[]): boolean {
@@ -854,7 +795,13 @@ function fetchRows(): DbBookRow[] {
     LEFT JOIN book_sources gr_src   ON gr_src.book_id   = bp.book_id AND gr_src.source_type   = 'goodreads' AND gr_src.source_instance_id = bp.profile_id
     LEFT JOIN book_sources grim_src ON grim_src.book_id = bp.book_id AND grim_src.source_type = 'grimmory' AND grim_src.source_instance_id = bp.profile_id
     LEFT JOIN book_sources chap_src ON chap_src.book_id = bp.book_id AND chap_src.source_type = 'chaptarr'
-    LEFT JOIN chaptarr_id_mismatch_dismissals chap_dismiss ON chap_dismiss.chaptarr_external_id = chap_src.external_id
+    -- A dismissal only suppresses the specific mismatch it was raised against:
+    -- if Chaptarr's reported upstream ids have since changed, the signature no
+    -- longer matches and the row re-arms as an active mismatch.
+    LEFT JOIN chaptarr_id_mismatch_dismissals chap_dismiss
+      ON chap_dismiss.chaptarr_external_id = chap_src.external_id
+      AND chap_dismiss.dismissed_hardcover_book_id IS chap_src.source_hardcover_book_id
+      AND chap_dismiss.dismissed_goodreads_book_id IS chap_src.source_goodreads_book_id
     LEFT JOIN book_sources abs_src  ON abs_src.book_id  = bp.book_id AND abs_src.source_type  = 'audiobookshelf' AND abs_src.source_instance_id = bp.profile_id
     LEFT JOIN user_book_states hc_ubs   ON hc_ubs.book_id   = bp.book_id AND hc_ubs.profile_id   = bp.profile_id AND hc_ubs.source_type   = 'hardcover'
     LEFT JOIN user_book_states gr_ubs   ON gr_ubs.book_id   = bp.book_id AND gr_ubs.profile_id   = bp.profile_id AND gr_ubs.source_type   = 'goodreads'
@@ -1096,41 +1043,76 @@ router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
     res.status(400).json({ error: "Merge requires an authoritative Goodreads or Hardcover record and a Grimmory record" }); return;
   }
   try {
-    const resolvedPlans: Array<{ plan: typeof plans[number]; baseUrl: string; token: string; grimmoryLocalId: number }> = [];
+    // Each plan writes to a remote Grimmory server first and cannot be rolled
+    // back once that write lands — so a later plan failing (whether during
+    // setup — connection lookup, auth, local-ID validation — or during the
+    // write itself) must not make this endpoint report total failure (502)
+    // for a request that already partly applied. Every plan is set up and
+    // run regardless of an earlier one's outcome, and the response reports
+    // exactly which profiles succeeded and which didn't.
+    const succeededProfileIds: number[] = [];
+    const failures: Array<{ profileId: number; error: string }> = [];
     for (const plan of plans) {
-      const connection = db.prepare("SELECT base_url, username, password FROM grimmory_connections WHERE profile_id = ?").get(plan.profileId) as { base_url: string; username: string; password: string } | undefined;
-      const baseUrl = connection?.base_url?.trim() || getSetting("grimmory.baseUrl", "");
-      const password = connection?.password;
-      if (!baseUrl || !connection?.username || !password) { res.status(400).json({ error: "Grimmory connection is not configured" }); return; }
-      const token = await getGrimmoryToken(baseUrl, connection.username, password);
-      if (!token) { res.status(502).json({ error: "Could not authenticate with Grimmory" }); return; }
-      const grimmoryLocalId = Number(plan.grimmory.external_id);
-      if (!Number.isSafeInteger(grimmoryLocalId) || grimmoryLocalId <= 0) {
-        res.status(400).json({ error: "Grimmory record has a non-numeric local ID" }); return;
+      try {
+        const connection = db.prepare("SELECT base_url, username, password FROM grimmory_connections WHERE profile_id = ?").get(plan.profileId) as { base_url: string; username: string; password: string } | undefined;
+        const baseUrl = connection?.base_url?.trim() || getSetting("grimmory.baseUrl", "");
+        const password = connection?.password;
+        if (!baseUrl || !connection?.username || !password) throw new Error("Grimmory connection is not configured");
+        const token = await getGrimmoryToken(baseUrl, connection.username, password);
+        if (!token) throw new Error("Could not authenticate with Grimmory");
+        const grimmoryLocalId = Number(plan.grimmory.external_id);
+        if (!Number.isSafeInteger(grimmoryLocalId) || grimmoryLocalId <= 0) {
+          throw new Error("Grimmory record has a non-numeric local ID");
+        }
+
+        const hardcoverId = plan.hardcover?.hardcover_slug?.trim() || plan.grimmory.grimmory_hardcover_id?.trim() || undefined;
+        await writeAndPersistDuplicateMergePlan(db, {
+          bookId: plan.grimmoryBookId, profileId: plan.profileId,
+          goodreadsId: plan.goodreads?.external_id ?? null, hardcoverBookId: plan.hardcover?.external_id ?? null,
+          hardcoverId: hardcoverId ?? null
+        }, async () => {
+          await writeGrimmoryExternalIds(baseUrl, token, grimmoryLocalId, {
+            ...(plan.goodreads?.external_id ? { goodreadsId: plan.goodreads.external_id } : {}),
+            ...(plan.hardcover?.external_id ? { hardcoverBookId: plan.hardcover.external_id, hardcoverId } : {})
+          });
+        });
+        succeededProfileIds.push(plan.profileId);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn("Duplicate merge plan failed for one profile; continuing with the rest", { bookId, duplicateId, profileId: plan.profileId, error: err });
+        failures.push({ profileId: plan.profileId, error: message });
       }
-      resolvedPlans.push({ plan, baseUrl, token, grimmoryLocalId });
     }
 
-    for (const { plan, baseUrl, token, grimmoryLocalId } of resolvedPlans) {
-      const hardcoverId = plan.hardcover?.hardcover_slug?.trim() || plan.grimmory.grimmory_hardcover_id?.trim() || undefined;
-      await writeAndPersistDuplicateMergePlan(db, {
-        bookId: plan.grimmoryBookId, profileId: plan.profileId,
-        goodreadsId: plan.goodreads?.external_id ?? null, hardcoverBookId: plan.hardcover?.external_id ?? null,
-        hardcoverId: hardcoverId ?? null
-      }, async () => {
-        await writeGrimmoryExternalIds(baseUrl, token, grimmoryLocalId, {
-          ...(plan.goodreads?.external_id ? { goodreadsId: plan.goodreads.external_id } : {}),
-          ...(plan.hardcover?.external_id ? { hardcoverBookId: plan.hardcover.external_id, hardcoverId } : {})
-        });
-      });
+    if (succeededProfileIds.length === 0) {
+      res.status(502).json({ error: "Merge failed for every profile", failures });
+      return;
     }
-    db.transaction(() => {
-      reconcileBookIdentities(db);
-    })();
-    const reconciled = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(plans[0]!.grimmory.id) as { book_id: number } | undefined;
-    if (!reconciled) throw new Error("Reconciled Grimmory record could not be found");
-    logger.info("Merged duplicate by repairing Grimmory authoritative IDs", { bookId, duplicateId, plans: plans.map((plan) => ({ authoritativeBookId: plan.authoritativeBookId, grimmoryBookId: plan.grimmoryBookId, profileId: plan.profileId, goodreads: Boolean(plan.goodreads), hardcover: Boolean(plan.hardcover) })) });
-    res.json({ ok: true, bookId: reconciled.book_id });
+
+    // Reconcile/lookup runs after remote writes have already landed for
+    // succeededProfileIds, so a failure here must not report a blank 502 that
+    // erases the fact those writes succeeded — same reasoning as the per-plan
+    // handling above, just one step later in the flow.
+    let reconciled: { book_id: number } | undefined;
+    try {
+      db.transaction(() => {
+        reconcileBookIdentities(db);
+      })();
+      reconciled = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(plans[0]!.grimmory.id) as { book_id: number } | undefined;
+      if (!reconciled) throw new Error("Reconciled Grimmory record could not be found");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn("Duplicate merge finalization failed after partial success", { bookId, duplicateId, succeededProfileIds, failures, error: err });
+      res.status(207).json({ ok: true, bookId: null, succeededProfileIds, failures, finalizationError: message });
+      return;
+    }
+
+    logger.info("Merged duplicate by repairing Grimmory authoritative IDs", { bookId, duplicateId, succeededProfileIds, failures, plans: plans.map((plan) => ({ authoritativeBookId: plan.authoritativeBookId, grimmoryBookId: plan.grimmoryBookId, profileId: plan.profileId, goodreads: Boolean(plan.goodreads), hardcover: Boolean(plan.hardcover) })) });
+    if (failures.length > 0) {
+      res.status(207).json({ ok: true, bookId: reconciled.book_id, succeededProfileIds, failures });
+    } else {
+      res.json({ ok: true, bookId: reconciled.book_id });
+    }
   } catch (err) { logger.warn("Failed duplicate merge", { bookId, duplicateId, error: err }); res.status(502).json({ error: err instanceof Error ? err.message : String(err) }); }
 });
 
@@ -1144,25 +1126,32 @@ router.post("/:bookId/chaptarr-id-mismatch/dismiss", (req, res) => {
   }
 
   const rows = db.prepare(`
-    SELECT external_id
+    SELECT external_id, source_hardcover_book_id, source_goodreads_book_id
     FROM book_sources
     WHERE book_id = ?
       AND source_type = 'chaptarr'
       AND COALESCE(chaptarr_id_mismatch, 0) = 1
-  `).all(bookId) as { external_id: string }[];
+  `).all(bookId) as { external_id: string; source_hardcover_book_id: string | null; source_goodreads_book_id: string | null }[];
 
   if (rows.length === 0) {
     res.status(404).json({ error: "No Chaptarr ID mismatch is active for this book" });
     return;
   }
 
+  // Record what was actually mismatched (Chaptarr's currently-reported upstream
+  // ids), so this dismissal only suppresses that specific mismatch — if a later
+  // sync changes what Chaptarr reports, the row re-arms instead of staying
+  // silently dismissed against a mismatch that no longer applies.
   const insert = db.prepare(`
-    INSERT INTO chaptarr_id_mismatch_dismissals (chaptarr_external_id)
-    VALUES (?)
-    ON CONFLICT(chaptarr_external_id) DO UPDATE SET dismissed_at = datetime('now')
+    INSERT INTO chaptarr_id_mismatch_dismissals (chaptarr_external_id, dismissed_hardcover_book_id, dismissed_goodreads_book_id)
+    VALUES (?, ?, ?)
+    ON CONFLICT(chaptarr_external_id) DO UPDATE SET
+      dismissed_at = datetime('now'),
+      dismissed_hardcover_book_id = excluded.dismissed_hardcover_book_id,
+      dismissed_goodreads_book_id = excluded.dismissed_goodreads_book_id
   `);
   const transaction = db.transaction(() => {
-    for (const row of rows) insert.run(row.external_id);
+    for (const row of rows) insert.run(row.external_id, row.source_hardcover_book_id, row.source_goodreads_book_id);
   });
   transaction();
 

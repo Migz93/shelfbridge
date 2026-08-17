@@ -25,10 +25,13 @@ export interface AudiobookshelfLibraryContext {
 export async function syncAudiobookshelfLibrary(context: AudiobookshelfLibraryContext): Promise<void> {
   const { db, profileId, runId, hasAbs, absBaseUrl, absApiKey, adapters, counters, recordEvent } = context;
 // ── Phase M: Audiobookshelf library sync ─────────────────────────────────
-if (hasAbs) {
+if (hasAbs && !absApiKey) {
+  logger.warn("Skipping Audiobookshelf library sync: no API key configured despite hasAbs being set", { profileId });
+}
+if (hasAbs && absApiKey) {
   try {
     logger.info("Fetching Audiobookshelf libraries", { profileId });
-    const absLibraries = await adapters.fetchAudiobookshelfLibraries(absBaseUrl, absApiKey!);
+    const absLibraries = await adapters.fetchAudiobookshelfLibraries(absBaseUrl, absApiKey);
     const bookLibraries = absLibraries.filter((lib) => lib.mediaType === "book");
     const liveAbsIds = new Set<string>();
     let absSnapshotComplete = true;
@@ -37,7 +40,7 @@ if (hasAbs) {
     for (const library of bookLibraries) {
       let items: Awaited<ReturnType<SyncAdapters["fetchAudiobookshelfLibraryItems"]>>;
       try {
-        items = await adapters.fetchAudiobookshelfLibraryItems(absBaseUrl, absApiKey!, library.id);
+        items = await adapters.fetchAudiobookshelfLibraryItems(absBaseUrl, absApiKey, library.id);
       } catch (libraryErr) {
         absSnapshotComplete = false;
         counters.sourceFailures++;

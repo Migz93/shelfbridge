@@ -45,8 +45,28 @@ export function localGrimmoryBookForBookId(db: Db, profileId: number, bookId: nu
   return null;
 }
 
+const bookSourceColumnsCache = new WeakMap<Db, Set<string>>();
+
+/** The live column set, not a hardcoded list, so it can't drift from the schema. */
+function bookSourceColumns(db: Db): Set<string> {
+  let columns = bookSourceColumnsCache.get(db);
+  if (!columns) {
+    columns = new Set((db.prepare("PRAGMA table_info(book_sources)").all() as { name: string }[]).map((c) => c.name));
+    bookSourceColumnsCache.set(db, columns);
+  }
+  return columns;
+}
+
 /** Upsert a book_sources row, scoped to (source_type, source_instance_id, external_id). Returns the row id. */
 export function upsertBookSource(db: Db, sourceType: string, instanceId: number, externalId: string | number, fields: Record<string, unknown>): number {
+  // fields keys become raw SQL identifiers below; callers only ever pass fixed
+  // literal keys, but validating against the real schema is cheap
+  // defense-in-depth against a future caller building keys dynamically.
+  const validColumns = bookSourceColumns(db);
+  for (const key of Object.keys(fields)) {
+    if (!validColumns.has(key)) throw new Error(`upsertBookSource: "${key}" is not a book_sources column`);
+  }
+
   const existing = getBookSource(db, sourceType, instanceId, externalId);
   if (existing) {
     const setClauses = Object.keys(fields).map((k) => `${k} = ?`).join(", ");

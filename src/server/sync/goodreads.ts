@@ -37,11 +37,34 @@ const XML_NAMED_ENTITIES: Record<string, string> = {
 // Decodes all entities in a single left-to-right pass so a literal sequence like
 // "&amp;lt;" (the escaped form of the text "&lt;") isn't re-scanned and unescaped
 // a second time into "<".
-function decodeXmlEntities(value: string): string {
-  return value.replace(/&(?:(quot|apos|amp|lt|gt)|#(\d+)|#x([0-9a-f]+));/gi, (_match, name?: string, dec?: string, hex?: string) => {
-    if (name) return XML_NAMED_ENTITIES[name.toLowerCase()] ?? _match;
-    if (dec) return String.fromCodePoint(Number(dec));
-    return String.fromCodePoint(parseInt(hex!, 16));
+const MAX_UNICODE_CODEPOINT = 0x10ffff;
+
+// XML 1.0's Char production (https://www.w3.org/TR/xml/#charsets) — excludes
+// NUL and most other control characters, and the surrogate range, which are
+// invalid in an XML document even though they're valid Unicode code points.
+function isValidXmlCodePoint(codePoint: number): boolean {
+  return codePoint === 0x9
+    || codePoint === 0xa
+    || codePoint === 0xd
+    || (codePoint >= 0x20 && codePoint <= 0xd7ff)
+    || (codePoint >= 0xe000 && codePoint <= 0xfffd)
+    || (codePoint >= 0x10000 && codePoint <= MAX_UNICODE_CODEPOINT);
+}
+
+function codePointToChar(codePoint: number, fallback: string): string {
+  if (!Number.isInteger(codePoint) || !isValidXmlCodePoint(codePoint)) return fallback;
+  try {
+    return String.fromCodePoint(codePoint);
+  } catch {
+    return fallback;
+  }
+}
+
+export function decodeXmlEntities(value: string): string {
+  return value.replace(/&(?:(quot|apos|amp|lt|gt)|#(\d+)|#x([0-9a-f]+));/gi, (fullMatch, name?: string, dec?: string, hex?: string) => {
+    if (name) return XML_NAMED_ENTITIES[name.toLowerCase()] ?? fullMatch;
+    if (dec) return codePointToChar(Number(dec), fullMatch);
+    return codePointToChar(parseInt(hex!, 16), fullMatch);
   });
 }
 

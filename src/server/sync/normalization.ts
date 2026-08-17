@@ -3,7 +3,10 @@ export function normalizeTitle(title: string): string {
   return title
     .replace(/\s*\(.*?\)\s*/g, " ")
     .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
+    // Unicode-aware: an ASCII-only character class would strip every letter
+    // out of a non-Latin title (Cyrillic, CJK, etc.), normalizing it to "" and
+    // defeating title-based matching entirely for those libraries.
+    .replace(/[^\p{L}\p{N}\s]/gu, "")
     .replace(/\s+/g, " ")
     .trim();
 }

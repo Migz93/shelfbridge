@@ -38,13 +38,15 @@ test.describe("Page smoke tests", () => {
 
   test("Sidebar navigation links are present", async ({ page }) => {
     await page.goto("/dashboard");
-    // Scope to the <nav> element to avoid matching same-named links in the page body
+    // Scope to the <nav> element to avoid matching same-named links in the page body.
+    // Regexes are anchored so a footer link like "Audiobookshelf" or "Chaptarr"
+    // can't collide with a substring of one of these names.
     const nav = page.locator("nav");
-    await expect(nav.getByRole("link", { name: /dashboard/i })).toBeVisible();
-    await expect(nav.getByRole("link", { name: /books/i }).first()).toBeVisible();
-    await expect(nav.getByRole("link", { name: /users/i })).toBeVisible();
-    await expect(nav.getByRole("link", { name: /history/i })).toBeVisible();
-    await expect(nav.getByRole("link", { name: /settings/i })).toBeVisible();
+    await expect(nav.getByRole("link", { name: /^dashboard$/i })).toBeVisible();
+    await expect(nav.getByRole("link", { name: /^books$/i }).first()).toBeVisible();
+    await expect(nav.getByRole("link", { name: /^users$/i })).toBeVisible();
+    await expect(nav.getByRole("link", { name: /^history$/i })).toBeVisible();
+    await expect(nav.getByRole("link", { name: /^settings$/i })).toBeVisible();
   });
 
   test("Sidebar navigation works", async ({ page }) => {
@@ -55,13 +57,13 @@ test.describe("Page smoke tests", () => {
     await expect(page).toHaveURL(/\/books/);
     await expect(page.getByRole("heading", { name: "Books", exact: true })).toBeVisible();
 
-    await nav.getByRole("link", { name: /users/i }).click();
+    await nav.getByRole("link", { name: /^users$/i }).click();
     await expect(page).toHaveURL(/\/users/);
 
-    await nav.getByRole("link", { name: /history/i }).click();
+    await nav.getByRole("link", { name: /^history$/i }).click();
     await expect(page).toHaveURL(/\/history/);
 
-    await nav.getByRole("link", { name: /settings/i }).click();
+    await nav.getByRole("link", { name: /^settings$/i }).click();
     await expect(page).toHaveURL(/\/settings/);
   });
 
