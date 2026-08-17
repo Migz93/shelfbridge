@@ -11,7 +11,8 @@ import {
   pruneGrimmorySourcesMissingFromFetch,
   pruneGrimmoryUserStatesMissingFromFetch,
   pruneHardcoverSourcesMissingFromFetch,
-  pruneHardcoverUserStatesMissingFromFetch
+  pruneHardcoverUserStatesMissingFromFetch,
+  pruneOrphanedHardcoverUserStates
 } from "./pruning.js";
 import { cacheGrimmoryCover, cacheSourceCover, refreshStaleGrimmoryCovers } from "./covers.js";
 import { syncGoodreadsShelvesToGrimmory, syncListsToShelves } from "./shelves.js";
@@ -157,18 +158,7 @@ export async function runSyncImpl(
     // book_sources row gets a book_id. This is what links HC sources to
     // Grimmory sources for the HC sync loop below.
     reconcileBookIdentities(db);
-    if (hasHardcover) {
-      db.prepare(`
-        DELETE FROM user_book_states
-        WHERE profile_id = ?
-          AND source_type = 'hardcover'
-          AND NOT EXISTS (
-            SELECT 1 FROM book_sources
-            WHERE book_sources.book_id = user_book_states.book_id
-              AND book_sources.source_type = 'hardcover'
-          )
-      `).run(profileId);
-    }
+    if (hasHardcover) pruneOrphanedHardcoverUserStates(db, profileId);
 
     // ── Phase E: Build Grimmory in-memory match index (for HC loop) ─────────
     const grimmoryIndex = buildGrimmoryIndex(grimmoryBooks);

@@ -204,7 +204,24 @@ function normalizeSeriesNumber(value: string | null | undefined): string | null 
   return text.match(/\d+(?:\.\d+)?/)?.[0] ?? text;
 }
 
-function hasDistinctSeriesPosition(a: DbBookRow, b: DbBookRow): boolean {
+type DuplicateMatchRow = Pick<DbBookRow, "book_id" | "book_title" | "book_author" | "book_series_name" | "book_series_number">;
+
+// Duplicate matching only compares book-level title/author/series fields, so this
+// scans the small `books` table directly instead of the much heavier fetchRows()
+// join (books x profiles x every source/user-state table).
+function fetchDuplicateMatchRows(): DuplicateMatchRow[] {
+  return getDb().prepare(`
+    SELECT
+      id AS book_id,
+      title AS book_title,
+      author AS book_author,
+      series_name AS book_series_name,
+      series_number AS book_series_number
+    FROM books
+  `).all() as DuplicateMatchRow[];
+}
+
+function hasDistinctSeriesPosition(a: DuplicateMatchRow, b: DuplicateMatchRow): boolean {
   const seriesA = normalizeReviewText(a.book_series_name);
   const seriesB = normalizeReviewText(b.book_series_name);
   if (!seriesA || !seriesB || seriesA !== seriesB) return false;
@@ -228,7 +245,7 @@ function dismissedDuplicatePairKeys(): Set<string> {
   return new Set(rows.map((row) => duplicatePairKey(row.book_id_low, row.book_id_high)));
 }
 
-function actionableDuplicateIds(groups: DbBookRow[][], dismissedPairs: Set<string>): Set<number> {
+function actionableDuplicateIds(groups: DuplicateMatchRow[][], dismissedPairs: Set<string>): Set<number> {
   return new Set(groups.flatMap((group) =>
     group
       .filter((candidate) => group.some((other) =>
@@ -240,8 +257,8 @@ function actionableDuplicateIds(groups: DbBookRow[][], dismissedPairs: Set<strin
   ));
 }
 
-function probableDuplicateBookIds(rows: DbBookRow[], dismissedPairs = dismissedDuplicatePairKeys()): Set<number> {
-  const byKey = new Map<string, DbBookRow[]>();
+function probableDuplicateBookIds(rows: DuplicateMatchRow[], dismissedPairs = dismissedDuplicatePairKeys()): Set<number> {
+  const byKey = new Map<string, DuplicateMatchRow[]>();
   for (const group of groupByBook(rows)) {
     const row = group[0]!;
     const title = probableDuplicateTitleKey(row.book_title);
@@ -261,7 +278,7 @@ function probableDuplicateBookIds(rows: DbBookRow[], dismissedPairs = dismissedD
   return result;
 }
 
-function probableDuplicateCandidateIds(rows: DbBookRow[], bookId: number, dismissedPairs = dismissedDuplicatePairKeys()): Set<number> {
+function probableDuplicateCandidateIds(rows: DuplicateMatchRow[], bookId: number, dismissedPairs = dismissedDuplicatePairKeys()): Set<number> {
   const current = rows.find((row) => row.book_id === bookId);
   if (!current) return new Set();
 
@@ -282,7 +299,7 @@ function probableDuplicateCandidateIds(rows: DbBookRow[], bookId: number, dismis
 }
 
 export function isLiveProbableDuplicatePair(
-  rows: DbBookRow[],
+  rows: DuplicateMatchRow[],
   bookId: number,
   duplicateId: number,
   dismissedPairs = dismissedDuplicatePairKeys()
@@ -447,8 +464,8 @@ function matchesFilters(row: DbBookRow, opts: {
   return true;
 }
 
-function groupByBook(rows: DbBookRow[]): DbBookRow[][] {
-  const groups = new Map<number, DbBookRow[]>();
+function groupByBook<T extends { book_id: number }>(rows: T[]): T[][] {
+  const groups = new Map<number, T[]>();
   for (const row of rows) {
     const group = groups.get(row.book_id) ?? [];
     group.push(row);
@@ -667,12 +684,20 @@ function bestRelationshipRowsByProfile(rows: DbBookRow[]): DbBookRow[] {
   return Array.from(byProfile.values()).sort((a, b) => a.profile_name.localeCompare(b.profile_name));
 }
 
-function fetchRows(): DbBookRow[] {
+// bookIds, when given, scopes the CROSS JOIN with profiles to just those books
+// instead of the whole catalog — used by callers that already know which
+// book(s) they need (e.g. a single detail view plus its duplicate candidates)
+// rather than the full book listing.
+function fetchRows(bookIds?: number[]): DbBookRow[] {
+  const bookIdFilter = bookIds && bookIds.length > 0
+    ? `AND book_id IN (${bookIds.map(() => "?").join(",")})`
+    : "";
   return getDb().prepare(`
     WITH all_books AS (
       SELECT DISTINCT book_id FROM book_sources
       WHERE book_id IS NOT NULL
         AND source_type IN ('grimmory', 'hardcover', 'goodreads')
+        ${bookIdFilter}
     ),
     book_profile AS (
       SELECT ab.book_id, p.id AS profile_id
@@ -810,7 +835,7 @@ function fetchRows(): DbBookRow[] {
     LEFT JOIN grimmory_connections gc  ON gc.profile_id  = bp.profile_id
     LEFT JOIN goodreads_connections grc ON grc.profile_id = bp.profile_id
     ORDER BY b.title ASC, p.display_name ASC
-  `).all() as DbBookRow[];
+  `).all(...(bookIds && bookIds.length > 0 ? bookIds : [])) as DbBookRow[];
 }
 
 function compareSummaries(sortBy: string): (a: BookSummary, b: BookSummary) => number {
@@ -1035,7 +1060,7 @@ router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
   if (bookId === null || duplicateId === null || bookId === duplicateId) {
     res.status(400).json({ error: "Invalid duplicate pair" }); return;
   }
-  if (!isLiveProbableDuplicatePair(fetchRows(), bookId, duplicateId)) {
+  if (!isLiveProbableDuplicatePair(fetchDuplicateMatchRows(), bookId, duplicateId)) {
     res.status(400).json({ error: "Merge requires a live probable-duplicate pair" }); return;
   }
   const plans = duplicateMergePlans(db, bookId, duplicateId);
@@ -1261,11 +1286,14 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
 // GET /api/books/:id
 router.get("/:id", (req, res) => {
   const id = parseInt(req.params["id"] ?? "0", 10);
-  const allRows = fetchRows();
+  // Duplicate matching only needs title/author/series, so it's computed over a
+  // lightweight scan of the whole `books` table; the heavier fetchRows() join is
+  // then scoped to just this book and its candidates instead of the full catalog.
+  const duplicateIds = probableDuplicateCandidateIds(fetchDuplicateMatchRows(), id);
+  const allRows = fetchRows([id, ...duplicateIds]);
   const rows = allRows.filter((row) => row.book_id === id);
   if (rows.length === 0) { res.status(404).json({ error: "Not found" }); return; }
   const activeRelationshipRows = rows.filter((row) => row.has_any_ubs);
-  const duplicateIds = probableDuplicateCandidateIds(allRows, id);
   const duplicateCandidates = groupByBook(allRows)
     .filter((group) => duplicateIds.has(group[0]!.book_id))
     .map((group) => dbToDuplicateCandidate(group, duplicateMergePlans(getDb(), id, group[0]!.book_id).length > 0))

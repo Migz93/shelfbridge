@@ -42,6 +42,29 @@ function pruneUserStates(db: Db, profileId: number, sourceType: string, fetchedI
   if (result.changes > 0) logger.info(`Pruned ${sourceName} user states missing from fetched library`, { profileId, deleted: result.changes });
 }
 
+/**
+ * Removes this profile's Hardcover user states left orphaned by reconciliation
+ * (e.g. a book merge/split changing which book_id a state's book_sources row
+ * now lives under). book_id is a global canonical record shared across
+ * profiles, so the EXISTS check must also be qualified by this profile's own
+ * source_instance_id — otherwise another profile's still-live Hardcover
+ * book_sources row for the same book would suppress this profile's pruning.
+ */
+export function pruneOrphanedHardcoverUserStates(db: Db, profileId: number): void {
+  const result = db.prepare(`
+    DELETE FROM user_book_states
+    WHERE profile_id = ?
+      AND source_type = 'hardcover'
+      AND NOT EXISTS (
+        SELECT 1 FROM book_sources
+        WHERE book_sources.book_id = user_book_states.book_id
+          AND book_sources.source_type = 'hardcover'
+          AND book_sources.source_instance_id = user_book_states.profile_id
+      )
+  `).run(profileId);
+  if (result.changes > 0) logger.info("Pruned orphaned Hardcover user states after reconciliation", { profileId, deleted: result.changes });
+}
+
 export function pruneHardcoverSourcesMissingFromFetch(db: Db, profileId: number, fetchedIds: Set<number>, snapshotStatus: SourceSnapshotStatus): void {
   pruneSources(db, profileId, "hardcover", fetchedIds, snapshotStatus, "HC");
 }
