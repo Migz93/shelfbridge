@@ -115,3 +115,24 @@ test("syncChaptarrStatus reconciles the survivor when a removed Chaptarr row was
   assert.ok(book, "the book must survive — it still has a Hardcover source");
   assert.notEqual(book.media_type, "audiobook", "media_type must be recomputed from the surviving Hardcover row, not left stale from the deleted Chaptarr row's format signal");
 });
+
+test("syncChaptarrStatus cleans up the removed source's orphaned image_cache row", async () => {
+  const profileId = seedProfile(db);
+
+  const bookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Chaptarr Cached Cover Book')").run().lastInsertRowid);
+  const chaptarrSourceId = Number(db.prepare(`
+    INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type, chaptarr_monitored, chaptarr_has_file)
+    VALUES (?, 'chaptarr', 0, '4', 'Chaptarr Cached Cover Book', 'book', 1, 1)
+  `).run(bookId).lastInsertRowid);
+  // local_file_path left NULL — this test is about the row-level relationship
+  // between a removed source and its cache row, not filesystem cleanup.
+  db.prepare(`INSERT INTO image_cache (cache_key, entity_id) VALUES (?, ?)`)
+    .run(`cover:${chaptarrSourceId}`, String(chaptarrSourceId));
+
+  await withFakeChaptarr({ books: [], authors: [] }, async () => {
+    await syncChaptarrStatus(profileId);
+  });
+
+  const cacheRow = db.prepare("SELECT id FROM image_cache WHERE entity_id = ?").get(String(chaptarrSourceId));
+  assert.equal(cacheRow, undefined, "the removed Chaptarr source's image_cache row must be cleaned up, not left as a ghost referencing a deleted book_sources id");
+});

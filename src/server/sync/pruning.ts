@@ -1,6 +1,7 @@
 import type { getDb } from "../db/index.js";
 import { logger } from "../logger.js";
 import { reconcileBookIdentities } from "../db/bookIdentity.js";
+import { cleanupImageCacheForSourceIds } from "../db/imageCacheMaintenance.js";
 
 type Db = ReturnType<typeof getDb>;
 export type SourceSnapshotStatus = "complete" | "partial" | "failed";
@@ -88,13 +89,15 @@ function pruneSources(db: Db, profileId: number, sourceType: "hardcover" | "grim
   `;
   const params = [sourceType, profileId, sourceType, profileId];
   // Captured before the delete: a book left with a surviving source or with
-  // zero remaining sources both need explicit handling afterward — see
+  // zero remaining sources both need explicit handling afterward, and the
+  // deleted source ids' own image_cache rows need cleaning up too — see
   // cleanupAfterSourceRemoval.
-  const staleBookIds = (db.prepare(`SELECT DISTINCT book_id FROM book_sources WHERE ${whereClause} AND book_id IS NOT NULL`).all(...params) as { book_id: number }[])
-    .map((row) => row.book_id);
+  const staleRows = db.prepare(`SELECT id, book_id FROM book_sources WHERE ${whereClause}`).all(...params) as { id: number; book_id: number | null }[];
+  const staleSourceIds = staleRows.map((row) => row.id);
+  const staleBookIds = staleRows.map((row) => row.book_id).filter((id): id is number => id !== null);
   const result = db.prepare(`DELETE FROM book_sources WHERE ${whereClause}`).run(...params);
   if (result.changes > 0) logger.info(`Pruned ${sourceName} book_sources with no remaining user states`, { profileId, deleted: result.changes });
-  cleanupAfterSourceRemoval(db, staleBookIds);
+  cleanupAfterSourceRemoval(db, staleBookIds, staleSourceIds);
 }
 
 /** Stages ids into a temp table so a large id set can be joined against instead of built into an inline SQL list. */
@@ -153,18 +156,21 @@ function deleteOrphanedBooks(db: Db, bookIds: number[]): void {
 }
 
 /**
- * Handles both possible outcomes for a book that just lost one of its
- * sources (Chaptarr, Hardcover, or Grimmory pruning a stale row): if it now
- * has zero sources and zero user state, it's a ghost canonical — delete it.
- * If it still has other sources, those survivors may now need a different
- * canonical title/cover/identifier (the deleted row could have been the
- * preferred one) and book_identity_keys may still hold keys that only came
- * from the deleted row — reconcile scoped to the survivors so
- * reconcileBookIdentities recomputes both from what's actually left. Either
- * way, this book has nothing to do with what a scoped reconcile of the
- * *newly written* rows elsewhere in the same sync would already cover.
+ * Handles everything that follows deleting a set of book_sources rows
+ * (Chaptarr, Hardcover, or Grimmory pruning stale rows):
+ * - a book left with zero sources and zero user state is a ghost canonical —
+ *   delete it;
+ * - a book left with surviving sources may now need a different canonical
+ *   title/cover/identifier (the deleted row could have been the preferred
+ *   one) and book_identity_keys may still hold keys that only came from the
+ *   deleted row — reconcile scoped to the survivors so reconcileBookIdentities
+ *   recomputes both from what's actually left;
+ * - the deleted rows' own image_cache entries (keyed by book_sources.id, so
+ *   they don't cascade away with the source row) are now unconditionally
+ *   orphaned — clean them up directly rather than waiting on a full reconcile.
  */
-export function cleanupAfterSourceRemoval(db: Db, affectedBookIds: number[]): void {
+export function cleanupAfterSourceRemoval(db: Db, affectedBookIds: number[], deletedSourceIds: number[]): void {
+  cleanupImageCacheForSourceIds(db, deletedSourceIds);
   if (affectedBookIds.length === 0) return;
   const survivorSourceIds: number[] = [];
   for (const batch of chunk(affectedBookIds, BATCH_SIZE)) {

@@ -22,11 +22,11 @@ function insertBookSource(
   sourceInstanceId: number,
   externalId: string,
   title?: string
-): void {
-  db.prepare(`
+): number {
+  return Number(db.prepare(`
     INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type)
     VALUES (?, ?, ?, ?, ?, 'book')
-  `).run(bookId, sourceType, sourceInstanceId, externalId, title ?? null);
+  `).run(bookId, sourceType, sourceInstanceId, externalId, title ?? null).lastInsertRowid);
 }
 
 function insertUserState(
@@ -317,6 +317,28 @@ test("pruning a preferred source reconciles the survivor, updating the canonical
     const book = db.prepare("SELECT title FROM books WHERE id = ?").get(bookId) as { title: string } | undefined;
     assert.ok(book, "the book must survive — it still has a Grimmory source");
     assert.equal(book.title, "Grimmory Title", "the canonical title must be recomputed from the surviving source, not left stale from the deleted Hardcover row");
+  } finally {
+    cleanup();
+  }
+});
+
+test("pruning a source cleans up its orphaned image_cache row, not just the source itself", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const bookId = insertBook(db, "Cached Cover Book");
+    const hcSourceId = insertBookSource(db, bookId, "hardcover", profileId, "111");
+    // local_file_path left NULL so cleanup only has to delete the row, not
+    // touch the filesystem — this test is about the row-level relationship,
+    // not file deletion (already covered by imageCacheMaintenance's own tests).
+    db.prepare(`
+      INSERT INTO image_cache (cache_key, entity_id) VALUES (?, ?)
+    `).run(`cover:${hcSourceId}`, String(hcSourceId));
+
+    pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set(), "complete");
+
+    const cacheRow = db.prepare("SELECT id FROM image_cache WHERE entity_id = ?").get(String(hcSourceId));
+    assert.equal(cacheRow, undefined, "the pruned source's image_cache row must be cleaned up, not left as a ghost referencing a deleted book_sources id");
   } finally {
     cleanup();
   }

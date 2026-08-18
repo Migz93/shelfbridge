@@ -600,21 +600,25 @@ export async function syncChaptarrStatus(profileId: number): Promise<number[]> {
   // could otherwise exceed SQLite's bound-parameter limit for a large library.
   if (matchedChaptarrIds.size > 0) {
     stageFetchedIds(db, matchedChaptarrIds);
-    const staleBookIds = (db.prepare(`
-      SELECT DISTINCT book_id FROM book_sources
-      WHERE source_type = 'chaptarr' AND external_id NOT IN (SELECT id FROM shelfbridge_fetched_ids) AND book_id IS NOT NULL
-    `).all() as { book_id: number }[]).map((row) => row.book_id);
+    const staleRows = db.prepare(`
+      SELECT id, book_id FROM book_sources
+      WHERE source_type = 'chaptarr' AND external_id NOT IN (SELECT id FROM shelfbridge_fetched_ids)
+    `).all() as { id: number; book_id: number | null }[];
+    const staleSourceIds = staleRows.map((row) => row.id);
+    const staleBookIds = staleRows.map((row) => row.book_id).filter((id): id is number => id !== null);
     db.prepare(`
       DELETE FROM book_sources
       WHERE source_type = 'chaptarr' AND external_id NOT IN (SELECT id FROM shelfbridge_fetched_ids)
     `).run();
-    cleanupAfterSourceRemoval(db, staleBookIds);
+    cleanupAfterSourceRemoval(db, staleBookIds, staleSourceIds);
   } else {
-    const staleBookIds = (db.prepare(`
-      SELECT DISTINCT book_id FROM book_sources WHERE source_type = 'chaptarr' AND book_id IS NOT NULL
-    `).all() as { book_id: number }[]).map((row) => row.book_id);
+    const staleRows = db.prepare(`
+      SELECT id, book_id FROM book_sources WHERE source_type = 'chaptarr'
+    `).all() as { id: number; book_id: number | null }[];
+    const staleSourceIds = staleRows.map((row) => row.id);
+    const staleBookIds = staleRows.map((row) => row.book_id).filter((id): id is number => id !== null);
     db.prepare("DELETE FROM book_sources WHERE source_type = 'chaptarr'").run();
-    cleanupAfterSourceRemoval(db, staleBookIds);
+    cleanupAfterSourceRemoval(db, staleBookIds, staleSourceIds);
   }
 
   // Promote 'missing' Grimmory user_book_states to 'pending_download' when Chaptarr
