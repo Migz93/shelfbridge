@@ -5,6 +5,29 @@ import { mapWithConcurrency } from "./concurrency.js";
 import { fetchIntegration } from "../security/outbound.js";
 import { stageFetchedIds } from "./pruning.js";
 
+// A book that loses its last book_sources row has nothing left to anchor a
+// scoped reconcile on — reconcileBookIdentities' stale-book cleanup only ever
+// sees rows it was scoped to, so a book left with zero sources by a Chaptarr
+// row's removal must be checked directly here, scoped to just the candidate
+// book ids (mirroring reconcileBookIdentities' own staleness check, but
+// without scanning the whole `books` table).
+function deleteOrphanedBooks(db: ReturnType<typeof getDb>, bookIds: number[]): void {
+  if (bookIds.length === 0) return;
+  const placeholders = bookIds.map(() => "?").join(",");
+  const orphaned = db.prepare(`
+    SELECT b.id FROM books b
+    WHERE b.id IN (${placeholders})
+      AND NOT EXISTS (SELECT 1 FROM book_sources bs WHERE bs.book_id = b.id)
+      AND NOT EXISTS (SELECT 1 FROM user_book_states ubs WHERE ubs.book_id = b.id)
+  `).all(...bookIds) as { id: number }[];
+  if (orphaned.length === 0) return;
+  const deleteBook = db.prepare("DELETE FROM books WHERE id = ?");
+  for (const row of orphaned) deleteBook.run(row.id);
+  logger.info("Removed canonical books left with no sources after Chaptarr status pass", {
+    bookIds: orphaned.map((row) => row.id)
+  });
+}
+
 const DEFAULT_BOOKFILE_CONCURRENCY = 5;
 const MAX_BOOKFILE_CONCURRENCY = 10;
 
@@ -600,12 +623,21 @@ export async function syncChaptarrStatus(profileId: number): Promise<number[]> {
   // could otherwise exceed SQLite's bound-parameter limit for a large library.
   if (matchedChaptarrIds.size > 0) {
     stageFetchedIds(db, matchedChaptarrIds);
+    const staleBookIds = (db.prepare(`
+      SELECT DISTINCT book_id FROM book_sources
+      WHERE source_type = 'chaptarr' AND external_id NOT IN (SELECT id FROM shelfbridge_fetched_ids) AND book_id IS NOT NULL
+    `).all() as { book_id: number }[]).map((row) => row.book_id);
     db.prepare(`
       DELETE FROM book_sources
       WHERE source_type = 'chaptarr' AND external_id NOT IN (SELECT id FROM shelfbridge_fetched_ids)
     `).run();
+    deleteOrphanedBooks(db, staleBookIds);
   } else {
+    const staleBookIds = (db.prepare(`
+      SELECT DISTINCT book_id FROM book_sources WHERE source_type = 'chaptarr' AND book_id IS NOT NULL
+    `).all() as { book_id: number }[]).map((row) => row.book_id);
     db.prepare("DELETE FROM book_sources WHERE source_type = 'chaptarr'").run();
+    deleteOrphanedBooks(db, staleBookIds);
   }
 
   // Promote 'missing' Grimmory user_book_states to 'pending_download' when Chaptarr
