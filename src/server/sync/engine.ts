@@ -3,7 +3,6 @@ import { reconcileBookIdentities } from "../db/bookIdentity.js";
 import { logger } from "../logger.js";
 import { buildGrimmoryIndex } from "./matcher.js";
 import { enqueueImageCacheTask } from "../image-cache.js";
-import type { SyncStatus } from "../../shared/types.js";
 import { defaultAdapters, type SyncAdapters } from "./adapters.js";
 import { computeSyncDecision, type ConflictStrategy } from "./conflict-policy.js";
 import {
@@ -32,6 +31,7 @@ import { persistGrimmorySources } from "./grimmory-sources.js";
 import { persistHardcoverSources } from "./hardcover-sources.js";
 import { applySourceTags } from "./source-tags.js";
 import { recordSyncEvent } from "./events.js";
+import { getActiveSyncStatus, trackActiveSyncRun, untrackActiveSyncRun, runExclusiveOfSyncs } from "./sync-queue.js";
 
 import * as syncUtils from "./sync-utils.js";
 
@@ -58,47 +58,14 @@ interface SyncCounters {
 }
 
 const { sameNumber, positiveRating, grimmoryToHardcoverRating, hardcoverToGrimmoryRating, hasMeaningfulHcChange, hasMeaningfulGrChange, hasMeaningfulGoodreadsChange, hardcoverDate, hardcoverPages, firstHardcoverSeries, latestHardcoverRead, cleanupDuplicateBlankHardcoverReads, meaningfulProgress, audiobookRuntimeForBook, hardcoverProgressPercent, effectiveAbsCurrentTimeSeconds, persistResolvedHardcoverAudioEdition, progressPagesFromPercent, todayDate, sqliteNow, sourceTagName, hardcoverFieldsFromGrimmory, normalizeEditionFormat, inferHardcoverMediaType, hasGrimmoryUserActivity, clampPercent } = syncUtils;
-// Serialise all profile syncs because identity reconciliation mutates shared state.
-let syncQueue = Promise.resolve();
-const activeSyncRuns = new Map<number, { profileId: number; startedAt: string }>();
 
-export function getActiveSyncStatus(): SyncStatus {
-  const rows = Array.from(activeSyncRuns.entries()).map(([runId, run]) => ({
-    runId,
-    ...run
-  })).sort((a, b) => a.startedAt.localeCompare(b.startedAt) || a.runId - b.runId);
-
-  return {
-    isRunning: rows.length > 0,
-    runIds: rows.map((row) => row.runId),
-    profileIds: Array.from(new Set(rows.map((row) => row.profileId))),
-    startedAt: rows[0]?.startedAt ?? null
-  };
-}
+export { getActiveSyncStatus, runExclusiveOfSyncs };
 
 export function runSync(profileId: number, runId: number, dryRun: boolean): Promise<void> {
-  activeSyncRuns.set(runId, { profileId, startedAt: new Date().toISOString() });
-  const result = syncQueue
-    .then(() => runSyncImpl(profileId, runId, dryRun))
-    .finally(() => {
-      activeSyncRuns.delete(runId);
-    });
-  syncQueue = result.catch(() => {});
-  return result;
-}
-
-/**
- * Runs `task` serialized against every profile sync via the same queue —
- * never overlapping a sync in progress or letting one start while `task`
- * runs. A sync yields to the event loop on every await (remote I/O), and
- * anything mutating book identities (e.g. the daily full-reconcile
- * maintenance job) that ran unserialized during one of those gaps could
- * merge/reassign a book_id a paused sync is mid-write against.
- */
-export function runExclusiveOfSyncs<T>(task: () => Promise<T>): Promise<T> {
-  const result = syncQueue.then(task);
-  syncQueue = result.then(() => undefined, () => undefined);
-  return result;
+  trackActiveSyncRun(runId, profileId);
+  return runExclusiveOfSyncs(() => runSyncImpl(profileId, runId, dryRun).finally(() => {
+    untrackActiveSyncRun(runId);
+  }));
 }
 
 export async function runSyncImpl(
