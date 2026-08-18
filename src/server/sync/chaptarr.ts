@@ -5,21 +5,30 @@ import { mapWithConcurrency } from "./concurrency.js";
 import { fetchIntegration } from "../security/outbound.js";
 import { stageFetchedIds } from "./pruning.js";
 
+const ORPHAN_CHECK_BATCH_SIZE = 500;
+
 // A book that loses its last book_sources row has nothing left to anchor a
 // scoped reconcile on — reconcileBookIdentities' stale-book cleanup only ever
 // sees rows it was scoped to, so a book left with zero sources by a Chaptarr
 // row's removal must be checked directly here, scoped to just the candidate
 // book ids (mirroring reconcileBookIdentities' own staleness check, but
-// without scanning the whole `books` table).
+// without scanning the whole `books` table). Batched rather than one IN (...)
+// clause for every id — a large upstream removal could otherwise exceed
+// SQLite's bound-parameter limit, the same reason the adjacent Chaptarr
+// source deletion above stages its ids into a temp table instead.
 function deleteOrphanedBooks(db: ReturnType<typeof getDb>, bookIds: number[]): void {
   if (bookIds.length === 0) return;
-  const placeholders = bookIds.map(() => "?").join(",");
-  const orphaned = db.prepare(`
-    SELECT b.id FROM books b
-    WHERE b.id IN (${placeholders})
-      AND NOT EXISTS (SELECT 1 FROM book_sources bs WHERE bs.book_id = b.id)
-      AND NOT EXISTS (SELECT 1 FROM user_book_states ubs WHERE ubs.book_id = b.id)
-  `).all(...bookIds) as { id: number }[];
+  const orphaned: { id: number }[] = [];
+  for (let i = 0; i < bookIds.length; i += ORPHAN_CHECK_BATCH_SIZE) {
+    const batch = bookIds.slice(i, i + ORPHAN_CHECK_BATCH_SIZE);
+    const placeholders = batch.map(() => "?").join(",");
+    orphaned.push(...(db.prepare(`
+      SELECT b.id FROM books b
+      WHERE b.id IN (${placeholders})
+        AND NOT EXISTS (SELECT 1 FROM book_sources bs WHERE bs.book_id = b.id)
+        AND NOT EXISTS (SELECT 1 FROM user_book_states ubs WHERE ubs.book_id = b.id)
+    `).all(...batch) as { id: number }[]));
+  }
   if (orphaned.length === 0) return;
   const deleteBook = db.prepare("DELETE FROM books WHERE id = ?");
   for (const row of orphaned) deleteBook.run(row.id);
