@@ -147,9 +147,15 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
 
     let goodreadsMatched = 0;
     let goodreadsUnmatched = 0;
-    // Sources for newly-discovered Goodreads-only books, reconciled in a single
-    // batch after the loop instead of once per book — reconciling per book
-    // makes a first sync of a large, mostly-unmatched library quadratic.
+    // Every Goodreads book_sources row touched this pass — matched (identity
+    // data on an existing book can change: ISBN, title, author, series) and
+    // newly-created — reconciled together in a single batch after the loop
+    // instead of once per book, which would make a first sync of a large
+    // library quadratic.
+    const touchedGoodreadsSourceIds: number[] = [];
+    // Sources for newly-discovered Goodreads-only books specifically — tracked
+    // separately because their book_id isn't known until after the reconcile
+    // below, so their user_book_states insert has to wait for that.
     const pendingGoodreadsOnly: Array<{
       newSourceId: number; goodreadsId: string; title: string; rating: number | null;
       shelf: string | null; readAt: string | null; updatedAt: string | null;
@@ -240,6 +246,7 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
           goodreads_book_link: grBook.bookLink ?? null,
           last_sync_at: sqliteNow()
         });
+        touchedGoodreadsSourceIds.push(goodreadsSourceId);
         if (grBook.coverUrl) {
           enqueueImageCacheTask(`cover:${goodreadsSourceId}`, async () => {
             await cacheSourceCover(db, goodreadsSourceId, "goodreads", grBook.coverUrl!);
@@ -347,6 +354,7 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
           goodreads_book_link: grBook.bookLink ?? null,
           last_sync_at: sqliteNow()
         });
+        touchedGoodreadsSourceIds.push(newSourceId);
 
         if (grBook.coverUrl) {
           enqueueImageCacheTask(`cover:${newSourceId}`, async () => {
@@ -370,11 +378,12 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
       }
     }
 
-    // Reconcile once to pick up all new GR sources created above, then write
-    // their user states now that book_id is known. Scoped to just those new
-    // source rows — they're the only thing that changed in this loop.
-    if (pendingGoodreadsOnly.length > 0) {
-      reconcileBookIdentities(db, { sourceIds: pendingGoodreadsOnly.map((pending) => pending.newSourceId) });
+    // Reconcile once for every Goodreads source touched above — both matched
+    // updates (identity data on an existing book can change) and newly
+    // created rows (book_id assigned by this call) — then write new books'
+    // user states now that their book_id is known.
+    if (touchedGoodreadsSourceIds.length > 0) {
+      reconcileBookIdentities(db, { sourceIds: touchedGoodreadsSourceIds });
     }
     for (const pending of pendingGoodreadsOnly) {
       const newSource = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(pending.newSourceId) as { book_id: number } | undefined;
