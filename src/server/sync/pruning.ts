@@ -144,7 +144,9 @@ function deleteOrphanedBooks(db: Db, bookIds: number[]): void {
   }
   if (orphaned.length === 0) return;
   const deleteBook = db.prepare("DELETE FROM books WHERE id = ?");
-  for (const row of orphaned) deleteBook.run(row.id);
+  db.transaction(() => {
+    for (const row of orphaned) deleteBook.run(row.id);
+  })();
   logger.info("Removed canonical books left with no sources after pruning", {
     bookIds: orphaned.map((row) => row.id)
   });

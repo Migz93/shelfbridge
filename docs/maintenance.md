@@ -14,18 +14,16 @@ ShelfBridge runs three scheduled housekeeping jobs, all registered in
 | `full-reconcile` | Daily at 04:00 | Runs a full, unscoped `reconcileBookIdentities()` pass over the whole catalog, with progress logged at each phase. Serialized against every profile sync via `runExclusiveOfSyncs` in `engine.ts` — it never runs while a sync is mid-flight, since a sync yields to the event loop between remote I/O calls and an unserialized reconcile could merge/reassign a book_id it's mid-write against |
 
 Book identity reconciliation itself is not primarily a scheduled task: every
-sync phase and book-mutating route calls `reconcileBookIdentities()` scoped to
-just the rows it touched (see `ReconcileScope` in `bookIdentity.ts`), so
-identities stay correct on the fly without scanning the whole catalog on every
-write. The `full-reconcile` job exists as a periodic correction pass for the
-narrow gaps scoped reconciliation intentionally accepts — see the doc comment
-on `expandScopeToRows` in `bookIdentity.ts` for the specific known gap.
+sync phase and book-mutating route reconciles just the records it touched, so
+identities stay correct on the fly without scanning the whole catalog on
+every write. The `full-reconcile` job exists as a periodic correction pass
+for the narrow cases on-the-fly reconciliation can miss.
 
-A related cleanup is not scheduled but runs inline: `cleanupOrphanedImageCache()`
-in `src/server/db/imageCacheMaintenance.ts` is called from an unscoped
-`reconcileBookIdentities` (startup, and the `full-reconcile` job) rather than a
-scoped one, since it scans the whole `image_cache` table and would defeat the
-point of scoping if it ran on every write-triggered reconcile too.
+A related cleanup is not scheduled but runs inline: orphaned `image_cache`
+rows are removed whenever a full reconciliation runs (startup, and the
+`full-reconcile` job) or a book is deleted. It isn't run after every
+write-triggered scoped reconcile, since it scans the whole `image_cache`
+table and would defeat the point of scoping if it did.
 
 ## Data Retention
 

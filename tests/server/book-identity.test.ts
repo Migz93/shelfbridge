@@ -518,6 +518,11 @@ test("scoped reconcileBookIdentities does not touch or merge an unrelated existi
       { id: number; title: string; last_modified_at: string }[];
     assert.equal(before.length, 2);
     const bookB = before.find((b) => b.title === "Book B")!;
+    // datetime('now') has one-second resolution, so a same-second rewrite
+    // would be invisible against bookB's own last_modified_at. Pin a sentinel
+    // value that a rewrite would have to overwrite.
+    const sentinelTimestamp = "2000-01-01 00:00:00";
+    db.prepare("UPDATE books SET last_modified_at = ? WHERE id = ?").run(sentinelTimestamp, bookB.id);
 
     // Only Book A gets a new, unrelated source. Book B must be left completely
     // alone — both as a correctness guard (no accidental merge) and as proof
@@ -530,7 +535,7 @@ test("scoped reconcileBookIdentities does not touch or merge an unrelated existi
     assert.equal(after.length, 2, "unrelated books must not be merged");
     const bookBAfter = after.find((b) => b.id === bookB.id)!;
     assert.equal(bookBAfter.title, bookB.title);
-    assert.equal(bookBAfter.last_modified_at, bookB.last_modified_at, "an out-of-scope book must not be rewritten");
+    assert.equal(bookBAfter.last_modified_at, sentinelTimestamp, "an out-of-scope book must not be rewritten");
   } finally {
     cleanup();
   }

@@ -15,6 +15,7 @@ import type {
 import { getGrimmoryToken, writeGrimmoryExternalIds } from "../sync/grimmory.js";
 import { logger } from "../logger.js";
 import { reconcileBookIdentities } from "../db/bookIdentity.js";
+import { cleanupOrphanedImageCache } from "../db/imageCacheMaintenance.js";
 import { normalizeExternalId, identifiersEqual } from "../identifiers.js";
 import { validationErrorResponse, writeGrimmoryIdSchema } from "../validation.js";
 import { hasIdentityReviewConflict } from "../sync/identity-review.js";
@@ -1007,6 +1008,11 @@ router.delete("/:id", (req, res) => {
 
   try {
     transaction();
+    // book_sources rows cascaded away with the book, but their image_cache
+    // rows don't (image_cache keys off book_sources.id via entity_id, not
+    // books.id) — clean those up directly rather than waiting on the next
+    // full reconcile.
+    cleanupOrphanedImageCache(db);
     logger.info("Deleted local canonical book", { bookId, title: existing.title });
     res.json({ ok: true });
   } catch (err) {

@@ -455,19 +455,14 @@ decorated Goodreads or Hardcover IDs still match their plain numeric source IDs.
    rows store normalised identity metadata when the upstream source provides it:
    title, author, ISBNs, cover, and series fields. Rows that share identity keys
    will be clustered in Phase D.
-6. **Reconciles book identities** (Phase D): `reconcileBookIdentities` assigns
-   canonical `books.id` values using the union-find algorithm. It runs *scoped*
-   to just the `book_sources` rows this profile's sync upserted in the phases
-   above — expanded to every row of any book that could plausibly merge with
-   one of them, following the same identity keys the merge passes below use
-   (source IDs, ISBN, file path, title+author), not a scan of the whole
-   catalog. See `ReconcileScope` and `expandScopeToRows` in `bookIdentity.ts`
-   for the expansion algorithm and its one documented gap. `initSchema()` at
-   startup and the daily `full-reconcile` maintenance job (`docs/maintenance.md`)
-   still run a full, unscoped pass over every `book_sources` row. Exact source
-   IDs and ISBNs remain the strongest joins. Title+author joins are allowed only
-   when known series metadata is compatible, so `series_name` narrows candidates
-   and `series_number` can prevent books in different series positions from
+6. **Reconciles book identities** (Phase D): assigns canonical `books.id`
+   values, scoped to just this profile sync's own changes plus anything else
+   that could plausibly merge with them — not a scan of the whole catalog.
+   Startup and the daily `full-reconcile` maintenance job (`docs/maintenance.md`)
+   still run a full, unscoped pass. Exact source IDs and ISBNs remain the
+   strongest joins. Title+author joins are allowed only when known series
+   metadata is compatible, so `series_name` narrows candidates and
+   `series_number` can prevent books in different series positions from
    collapsing together. Books with no HC/GR counterpart become standalone
    "On Disk" clusters.
    
