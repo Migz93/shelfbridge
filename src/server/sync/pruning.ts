@@ -77,16 +77,25 @@ function pruneSources(db: Db, profileId: number, sourceType: "hardcover" | "grim
   if (!canPruneSnapshot(profileId, sourceName, fetchedIds.size, snapshotStatus)) return;
   stageFetchedIds(db, fetchedIds);
   // Scope both the source and its state guard to this profile's integration.
-  const result = db.prepare(`
-    DELETE FROM book_sources
-    WHERE source_type = ? AND source_instance_id = ?
-      AND CAST(external_id AS TEXT) NOT IN (SELECT id FROM shelfbridge_fetched_ids)
-      AND NOT EXISTS (
-        SELECT 1 FROM user_book_states
-        WHERE book_id = book_sources.book_id AND source_type = ? AND profile_id = ?
-      )
-  `).run(sourceType, profileId, sourceType, profileId);
+  const whereClause = `
+    source_type = ? AND source_instance_id = ?
+    AND CAST(external_id AS TEXT) NOT IN (SELECT id FROM shelfbridge_fetched_ids)
+    AND NOT EXISTS (
+      SELECT 1 FROM user_book_states
+      WHERE book_id = book_sources.book_id AND source_type = ? AND profile_id = ?
+    )
+  `;
+  const params = [sourceType, profileId, sourceType, profileId];
+  // Captured before the delete: a book left with zero remaining sources has
+  // nothing left to anchor a scoped reconcile on, so it must be checked
+  // directly here (see deleteOrphanedBooks) rather than relying on
+  // reconcileBookIdentities' stale-book cleanup, which only ever sees rows
+  // it was scoped to.
+  const staleBookIds = (db.prepare(`SELECT DISTINCT book_id FROM book_sources WHERE ${whereClause}`).all(...params) as { book_id: number }[])
+    .map((row) => row.book_id);
+  const result = db.prepare(`DELETE FROM book_sources WHERE ${whereClause}`).run(...params);
   if (result.changes > 0) logger.info(`Pruned ${sourceName} book_sources with no remaining user states`, { profileId, deleted: result.changes });
+  deleteOrphanedBooks(db, staleBookIds);
 }
 
 /** Stages ids into a temp table so a large id set can be joined against instead of built into an inline SQL list. */
@@ -106,4 +115,35 @@ function canPruneSnapshot(profileId: number, sourceName: string, fetchedCount: n
     fetchedCount
   });
   return false;
+}
+
+const ORPHAN_CHECK_BATCH_SIZE = 500;
+
+/**
+ * Deletes any of the given book ids left with zero remaining book_sources
+ * rows and zero user_book_states rows — used after pruning a source (Chaptarr,
+ * Hardcover, Grimmory) removes what may have been a book's last source.
+ * Batched rather than one IN (...) clause for every id, since a large
+ * upstream removal could otherwise exceed SQLite's bound-parameter limit —
+ * the same reason the caller stages its own ids into a temp table.
+ */
+export function deleteOrphanedBooks(db: Db, bookIds: number[]): void {
+  if (bookIds.length === 0) return;
+  const orphaned: { id: number }[] = [];
+  for (let i = 0; i < bookIds.length; i += ORPHAN_CHECK_BATCH_SIZE) {
+    const batch = bookIds.slice(i, i + ORPHAN_CHECK_BATCH_SIZE);
+    const placeholders = batch.map(() => "?").join(",");
+    orphaned.push(...(db.prepare(`
+      SELECT b.id FROM books b
+      WHERE b.id IN (${placeholders})
+        AND NOT EXISTS (SELECT 1 FROM book_sources bs WHERE bs.book_id = b.id)
+        AND NOT EXISTS (SELECT 1 FROM user_book_states ubs WHERE ubs.book_id = b.id)
+    `).all(...batch) as { id: number }[]));
+  }
+  if (orphaned.length === 0) return;
+  const deleteBook = db.prepare("DELETE FROM books WHERE id = ?");
+  for (const row of orphaned) deleteBook.run(row.id);
+  logger.info("Removed canonical books left with no sources after pruning", {
+    bookIds: orphaned.map((row) => row.id)
+  });
 }

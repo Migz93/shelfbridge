@@ -247,3 +247,52 @@ test("partial and failed snapshots never prune, including when they are empty", 
     cleanup();
   }
 });
+
+test("pruneHardcoverSourcesMissingFromFetch deletes a book left with no sources and no user state", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const staleId = insertBook(db, "Hardcover Only Book");
+    insertBookSource(db, staleId, "hardcover", profileId, "222");
+
+    pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set(), "complete");
+
+    const book = db.prepare("SELECT id FROM books WHERE id = ?").get(staleId);
+    assert.equal(book, undefined, "a book left with no sources and no user state after pruning its only Hardcover source must be deleted, not left as a ghost canonical");
+  } finally {
+    cleanup();
+  }
+});
+
+test("pruneHardcoverSourcesMissingFromFetch does not delete a book that still has another source", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const bookId = insertBook(db, "Multi-Source Book");
+    insertBookSource(db, bookId, "hardcover", profileId, "222");
+    insertBookSource(db, bookId, "grimmory", profileId, "333");
+
+    pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set(), "complete");
+
+    const book = db.prepare("SELECT id FROM books WHERE id = ?").get(bookId);
+    assert.ok(book, "a book with a surviving Grimmory source must not be deleted just because its Hardcover source was pruned");
+  } finally {
+    cleanup();
+  }
+});
+
+test("pruneGrimmorySourcesMissingFromFetch deletes a book left with no sources and no user state", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const staleId = insertBook(db, "Grimmory Only Book");
+    insertBookSource(db, staleId, "grimmory", profileId, "222");
+
+    pruneGrimmorySourcesMissingFromFetch(db, profileId, new Set(), "complete");
+
+    const book = db.prepare("SELECT id FROM books WHERE id = ?").get(staleId);
+    assert.equal(book, undefined, "a book left with no sources and no user state after pruning its only Grimmory source must be deleted, not left as a ghost canonical");
+  } finally {
+    cleanup();
+  }
+});
