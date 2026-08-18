@@ -395,7 +395,39 @@ const migration4: Migration = {
   }
 };
 
-export const migrations: Migration[] = [migration1, migration2, migration3, migration4];
+// book_identity_keys previously had UNIQUE(key_type, key_value) — a key value
+// legitimately shared by two canonicals that were intentionally kept apart
+// (e.g. same title/author but conflicting hardcover_book_id) could only ever
+// be recorded against whichever book's INSERT OR IGNORE landed first. Scoped
+// reconciliation's candidate expansion (bookIdentity.ts's expandScopeToRows)
+// looks up candidates by key value, so the second canonical was silently
+// undiscoverable by any scoped call — only a full reconcile would find it.
+// Re-keyed to UNIQUE(book_id, key_type, key_value) so every book that legitimately
+// carries a key gets its own row. No backfill needed: this table is a fully
+// derived cache, rebuilt by the unscoped reconcile initSchema() always runs
+// immediately after migrations (schema.ts) — dropping and recreating it here
+// is simpler and just as correct as trying to migrate its (already partially
+// wrong, pre-this-fix) existing contents.
+const migration5: Migration = {
+  version: 5,
+  description: "Allow multiple canonicals to share an identity key in book_identity_keys",
+  up(db: Database.Database): void {
+    db.exec(`
+      DROP TABLE book_identity_keys;
+      CREATE TABLE book_identity_keys (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        book_id   INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+        key_type  TEXT NOT NULL,
+        key_value TEXT NOT NULL,
+        UNIQUE(book_id, key_type, key_value)
+      );
+      CREATE INDEX idx_book_identity_keys_book ON book_identity_keys(book_id);
+      CREATE INDEX idx_book_identity_keys_value ON book_identity_keys(key_value);
+    `);
+  }
+};
+
+export const migrations: Migration[] = [migration1, migration2, migration3, migration4, migration5];
 
 // Guards against a typo'd version number: a duplicate would let two migrations
 // silently race to apply at the same version, and a gap (e.g. 1, 3 — skipping

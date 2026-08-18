@@ -25,11 +25,13 @@ function insertSource(
     isbn13?: string;
     sourceHardcoverBookId?: string;
     sourceGoodreadsBookId?: string;
+    seriesName?: string;
+    seriesNumber?: string;
   }
 ): number {
   return Number(db.prepare(`
-    INSERT INTO book_sources (source_type, external_id, title, author, isbn13, source_media_type, source_hardcover_book_id, source_goodreads_book_id)
-    VALUES (@sourceType, @externalId, @title, @author, @isbn13, 'book', @sourceHardcoverBookId, @sourceGoodreadsBookId)
+    INSERT INTO book_sources (source_type, external_id, title, author, isbn13, source_media_type, source_hardcover_book_id, source_goodreads_book_id, series_name, series_number)
+    VALUES (@sourceType, @externalId, @title, @author, @isbn13, 'book', @sourceHardcoverBookId, @sourceGoodreadsBookId, @seriesName, @seriesNumber)
   `).run({
     sourceType: fields.sourceType,
     externalId: fields.externalId,
@@ -37,7 +39,9 @@ function insertSource(
     author: fields.author ?? "Author",
     isbn13: fields.isbn13 ?? null,
     sourceHardcoverBookId: fields.sourceHardcoverBookId ?? null,
-    sourceGoodreadsBookId: fields.sourceGoodreadsBookId ?? null
+    sourceGoodreadsBookId: fields.sourceGoodreadsBookId ?? null,
+    seriesName: fields.seriesName ?? null,
+    seriesNumber: fields.seriesNumber ?? null
   }).lastInsertRowid);
 }
 
@@ -550,6 +554,46 @@ test("reconcileBookIdentities with an empty scope is a no-op", () => {
     reconcileBookIdentities(db, { sourceIds: [] });
 
     assert.deepEqual(booksByTitle(db), before);
+  } finally {
+    cleanup();
+  }
+});
+
+test("scoped reconcileBookIdentities discovers the correct canonical when two existing books legitimately share a key value", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    // book_identity_keys allows only one row per (book_id, key_type, key_value) —
+    // not one row per (key_type, key_value) globally — specifically so that two
+    // canonicals which share a title/author key but were correctly kept separate
+    // (no series overlap here) can each still be found by candidate expansion.
+    // Book A is inserted first so its title_author key would be the one to "win"
+    // under the old, buggy global-uniqueness constraint.
+    insertSource(db, { sourceType: "hardcover", externalId: "hc-a", title: "Same Title", author: "Shared Author" });
+    insertSource(db, {
+      sourceType: "goodreads", externalId: "gr-b", title: "Same Title", author: "Shared Author",
+      seriesName: "Series X", seriesNumber: "2"
+    });
+    reconcileBookIdentities(db);
+    const before = booksByTitle(db);
+    assert.equal(before.length, 2, "the two books must start out separate (no series overlap between them)");
+
+    // A new row shares Book B's title/author *and* series — this should merge
+    // with B specifically, discoverable only via the shared title_author key
+    // (no ISBN or high-confidence id ties it to either book directly).
+    const newSourceId = insertSource(db, {
+      sourceType: "grimmory", externalId: "gr-new", title: "Same Title", author: "Shared Author",
+      seriesName: "Series X", seriesNumber: "2"
+    });
+    reconcileBookIdentities(db, { sourceIds: [newSourceId] });
+
+    const after = booksByTitle(db);
+    assert.equal(after.length, 2, "the new row must merge into Book B, not create a third book because Book B's key was undiscoverable");
+
+    const newSourceRow = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(newSourceId) as { book_id: number };
+    // The merged-into book must specifically carry the series data — i.e. it's
+    // Book B, not Book A and not a spurious third canonical.
+    const mergedBook = db.prepare("SELECT series_name FROM books WHERE id = ?").get(newSourceRow.book_id) as { series_name: string | null };
+    assert.equal(mergedBook.series_name, "Series X", "the new row must have merged with Book B (the series-bearing book), not Book A");
   } finally {
     cleanup();
   }
