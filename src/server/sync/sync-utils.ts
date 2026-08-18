@@ -306,29 +306,33 @@ export function effectiveAbsCurrentTimeSeconds(absProgress: { currentTime: numbe
 }
 
 /**
- * Returns the updated row's book_sources.id, or null if nothing changed (no
- * matching row, or it already had this edition/media type). Flipping
- * source_media_type to 'audiobook' changes that row's identity-key format
- * bucket and can change the book's canonical media_type, so callers must
- * reconcile scoped to the returned id — see syncAudiobookshelfProgress.
+ * Returns the updated rows' book_sources.id values (empty if nothing changed —
+ * no matching row, or it already had this edition/media type). Flipping
+ * source_media_type to 'audiobook' changes a row's identity-key format bucket
+ * and can change the book's canonical media_type, so callers must reconcile
+ * scoped to the returned ids — see syncAudiobookshelfProgress. Uses .all()
+ * rather than .get(): the WHERE clause isn't guaranteed unique (no DB
+ * constraint ties book_id to at most one hardcover row per instance), and
+ * .get() would still update every matching row while silently returning only
+ * one of their ids, leaving any other updated row's identity data stale.
  */
 export function persistResolvedHardcoverAudioEdition(
   db: ReturnType<typeof getDb>,
   profileId: number,
   bookId: number,
   editionId: number | null
-): number | null {
-  if (!editionId || editionId <= 0) return null;
+): number[] {
+  if (!editionId || editionId <= 0) return [];
   // Scoped to this profile's own Hardcover instance — each profile can track a
   // different edition of the same shared book.
-  const row = db.prepare(`
+  const rows = db.prepare(`
     UPDATE book_sources
     SET source_edition_id = ?, source_media_type = 'audiobook', last_modified_at = datetime('now')
     WHERE source_type = 'hardcover' AND source_instance_id = ? AND book_id = ?
       AND (source_edition_id IS NULL OR source_edition_id != ? OR source_media_type IS NULL OR source_media_type != 'audiobook')
     RETURNING id
-  `).get(String(editionId), profileId, bookId, String(editionId)) as { id: number } | undefined;
-  return row?.id ?? null;
+  `).all(String(editionId), profileId, bookId, String(editionId)) as { id: number }[];
+  return rows.map((row) => row.id);
 }
 
 export function progressPagesFromPercent(percent: number, pages: number | null): number | null {

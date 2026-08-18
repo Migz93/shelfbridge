@@ -12,7 +12,10 @@ export function normalizeReviewText(value: string | null | undefined): string | 
   const text = value
     ?.toLowerCase()
     .replace(/\s*\(.*?\)\s*/g, " ")
-    .replace(/[^a-z0-9\s]/g, " ")
+    // Unicode-aware for the same reason as normalizeTitle in bookIdentity.ts:
+    // an ASCII-only class strips a non-Latin title/author down to nothing,
+    // silently defeating duplicate detection for it entirely.
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim() ?? null;
   return text || null;

@@ -105,6 +105,7 @@ test("syncAudiobookshelfProgress returns the Hardcover book_sources id whose aud
     VALUES (?, ?, 'hardcover', 20, 2, 99, 10, 10)
   `).run(bookId, profileId);
 
+  const events: Array<{ eventType: string; decision: string }> = [];
   const touchedSourceIds = await syncAudiobookshelfProgress({
     db,
     profileId,
@@ -133,7 +134,9 @@ test("syncAudiobookshelfProgress returns the Hardcover book_sources id whose aud
       updateHardcoverUserBook: async () => {},
       updateHardcoverUserBookRead: async () => {}
     },
-    recordEvent: () => {},
+    recordEvent: (_db: unknown, _runId: number, _profileId: number, _title: string, eventType: string, _direction: string | null, decision: string) => {
+      events.push({ eventType, decision });
+    },
     meaningfulProgress,
     effectiveAbsCurrentTimeSeconds,
     persistResolvedHardcoverAudioEdition,
@@ -142,6 +145,8 @@ test("syncAudiobookshelfProgress returns the Hardcover book_sources id whose aud
     localGrimmoryBookForBookId: () => undefined,
     todayDate
   });
+
+  assert.deepEqual(events.filter((e) => e.eventType === "api_failure"), [], "no per-book failure should have been swallowed while resolving/writing the audio edition");
 
   assert.deepEqual(touchedSourceIds, [hcSourceId], "must return the Hardcover source row it resolved an audio edition for");
   const updated = db.prepare("SELECT source_media_type, source_edition_id FROM book_sources WHERE id = ?").get(hcSourceId) as

@@ -90,7 +90,7 @@ function pruneSources(db: Db, profileId: number, sourceType: "hardcover" | "grim
   // Captured before the delete: a book left with a surviving source or with
   // zero remaining sources both need explicit handling afterward — see
   // cleanupAfterSourceRemoval.
-  const staleBookIds = (db.prepare(`SELECT DISTINCT book_id FROM book_sources WHERE ${whereClause}`).all(...params) as { book_id: number }[])
+  const staleBookIds = (db.prepare(`SELECT DISTINCT book_id FROM book_sources WHERE ${whereClause} AND book_id IS NOT NULL`).all(...params) as { book_id: number }[])
     .map((row) => row.book_id);
   const result = db.prepare(`DELETE FROM book_sources WHERE ${whereClause}`).run(...params);
   if (result.changes > 0) logger.info(`Pruned ${sourceName} book_sources with no remaining user states`, { profileId, deleted: result.changes });

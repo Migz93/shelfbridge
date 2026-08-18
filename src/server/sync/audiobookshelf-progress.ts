@@ -400,8 +400,7 @@ if (hasAbs && absApiKey && (hasHardcover || grimmoryAvailable)) {
           preferredEditionId = hcLibraryBook?.book.default_audio_edition_id ?? null;
         }
 
-        const resolvedAudioEditionSourceId = persistResolvedHardcoverAudioEdition(db, profileId, absSource.book_id, preferredEditionId);
-        if (resolvedAudioEditionSourceId !== null) resolvedAudioEditionSourceIds.push(resolvedAudioEditionSourceId);
+        resolvedAudioEditionSourceIds.push(...persistResolvedHardcoverAudioEdition(db, profileId, absSource.book_id, preferredEditionId));
 
         if (hcState?.hardcover_user_book_id) {
           const progressSeconds = absProgress

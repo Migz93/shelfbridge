@@ -4,15 +4,7 @@ import { reconcileBookIdentities, expandScopeToRows } from "../../src/server/db/
 import { logger } from "../../src/server/logger.js";
 import { createTestDatabase } from "./test-db.js";
 import { seedProfile } from "./test-helpers.js";
-
-/** A valid, checksummed ISBN13 for synthetic test data. */
-function validIsbn13(n: number): string {
-  const body = `978${String(n).padStart(9, "0")}`;
-  let sum = 0;
-  for (let i = 0; i < 12; i++) sum += Number(body[i]) * (i % 2 === 0 ? 1 : 3);
-  const check = (10 - (sum % 10)) % 10;
-  return `${body}${check}`;
-}
+import { validIsbn13 } from "./fixtures/library-fixture.js";
 
 /** Inserts a book_sources row with book_id left NULL, as a fresh sync would. */
 function insertSource(

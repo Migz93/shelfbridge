@@ -8,7 +8,8 @@ const WORK_COUNTS: Record<LibrarySize, number> = {
   large: 10000
 };
 
-function validIsbn13(n: number): string {
+/** A valid, checksummed ISBN13 for synthetic test data. */
+export function validIsbn13(n: number): string {
   const body = `978${String(n).padStart(9, "0")}`;
   let sum = 0;
   for (let i = 0; i < 12; i++) sum += Number(body[i]) * (i % 2 === 0 ? 1 : 3);
