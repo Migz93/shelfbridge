@@ -15,7 +15,7 @@ import type {
 import { getGrimmoryToken, writeGrimmoryExternalIds } from "../sync/grimmory.js";
 import { logger } from "../logger.js";
 import { reconcileBookIdentities } from "../db/bookIdentity.js";
-import { cleanupOrphanedImageCache } from "../db/imageCacheMaintenance.js";
+import { cleanupImageCacheForSourceIds } from "../db/imageCacheMaintenance.js";
 import { normalizeExternalId, identifiersEqual } from "../identifiers.js";
 import { validationErrorResponse, writeGrimmoryIdSchema } from "../validation.js";
 import { hasIdentityReviewConflict } from "../sync/identity-review.js";
@@ -1001,6 +1001,8 @@ router.delete("/:id", (req, res) => {
   // ON DELETE CASCADE, so deleting the book already removes every row that
   // referenced it. No other book's data is touched by this deletion, so
   // there is nothing left to re-cluster.
+  const sourceIds = (db.prepare("SELECT id FROM book_sources WHERE book_id = ?").all(bookId) as { id: number }[])
+    .map((row) => row.id);
   const deleteBook = db.prepare("DELETE FROM books WHERE id = ?");
   const transaction = db.transaction(() => {
     deleteBook.run(bookId);
@@ -1011,12 +1013,15 @@ router.delete("/:id", (req, res) => {
     // book_sources rows cascaded away with the book, but their image_cache
     // rows don't (image_cache keys off book_sources.id via entity_id, not
     // books.id) — clean those up directly rather than waiting on the next
-    // full reconcile. Isolated in its own try/catch: the deletion itself has
-    // already committed by this point, so a cleanup failure must not turn a
-    // successful deletion into a reported 500 — it's a stale image_cache row
-    // at worst, and the daily full reconcile catches it regardless.
+    // full reconcile. Scoped to just this book's own source ids rather than
+    // a full-table cleanupOrphanedImageCache scan, since this runs on the
+    // DELETE request's hot path. Isolated in its own try/catch: the deletion
+    // itself has already committed by this point, so a cleanup failure must
+    // not turn a successful deletion into a reported 500 — it's a stale
+    // image_cache row at worst, and the daily full reconcile catches it
+    // regardless.
     try {
-      cleanupOrphanedImageCache(db);
+      cleanupImageCacheForSourceIds(db, sourceIds);
     } catch (cleanupErr) {
       logger.warn("Orphaned image-cache cleanup failed after book deletion; the deletion itself still succeeded", { bookId, error: cleanupErr });
     }

@@ -76,6 +76,38 @@ test("GET /api/books/:id scopes fetchRows to the requested book and its duplicat
   });
 });
 
+test("DELETE /api/books/:id cleans up only the deleted book's own image_cache rows, not the whole cache", async () => {
+  const profileId = seedProfile(db);
+  const target = insertBook("Dune", "Frank Herbert");
+  const survivor = insertBook("Neuromancer", "William Gibson");
+  insertGrimmorySource(target, profileId, "300");
+  insertGrimmorySource(survivor, profileId, "301");
+
+  const targetSourceId = Number((db.prepare("SELECT id FROM book_sources WHERE book_id = ?").get(target) as { id: number }).id);
+  // A leftover image_cache row for a source id that never belonged to any
+  // book — proves the scoped cleanup only touches the deleted book's own
+  // source ids, not a full-table scan that would also catch this one.
+  db.prepare("INSERT INTO image_cache (cache_key, entity_id) VALUES (?, ?)").run("cover:9999", "9999");
+  db.prepare("INSERT INTO image_cache (cache_key, entity_id) VALUES (?, ?)").run(`cover:${targetSourceId}`, String(targetSourceId));
+
+  await withServer(async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/${target}`, { method: "DELETE" });
+    assert.equal(res.status, 200);
+  });
+
+  const deletedBook = db.prepare("SELECT id FROM books WHERE id = ?").get(target);
+  assert.equal(deletedBook, undefined, "the book must be deleted");
+
+  const targetCacheRow = db.prepare("SELECT id FROM image_cache WHERE entity_id = ?").get(String(targetSourceId));
+  assert.equal(targetCacheRow, undefined, "the deleted book's own image_cache row must be cleaned up");
+
+  const unrelatedOrphanRow = db.prepare("SELECT id FROM image_cache WHERE entity_id = ?").get("9999");
+  assert.ok(unrelatedOrphanRow, "an unrelated orphaned image_cache row must be left for the full reconcile job, not the scoped DELETE cleanup");
+
+  const survivorBook = db.prepare("SELECT id FROM books WHERE id = ?").get(survivor);
+  assert.ok(survivorBook, "an unrelated book must not be affected");
+});
+
 test("POST /api/books/:bookId/duplicates/:duplicateId/merge rejects a pair that is not a live probable duplicate", async () => {
   const profileId = seedProfile(db);
   const first = insertBook("Dune", "Frank Herbert");

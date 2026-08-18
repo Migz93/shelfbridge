@@ -149,14 +149,18 @@ export async function refreshStaleGrimmoryCovers(): Promise<void> {
       if (!token) { logger.warn("ImageCache: Grimmory login failed, skipping cover refresh", { profileId }); continue; }
       for (const { entity_id, grimmory_book_id } of entries) {
         const sourceId = Number.parseInt(entity_id, 10);
-        const source = db.prepare("SELECT source_media_type FROM book_sources WHERE id = ?").get(sourceId) as { source_media_type: "physical" | "ebook" | "audiobook" | null } | undefined;
-        const data = await fetchGrimmoryCoverBuffer(baseUrl, token, grimmory_book_id, source?.source_media_type ?? null);
-        if (!data) continue;
-        const webPath = storeFetchedCover(sourceId, data);
-        if (webPath) {
-          db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(webPath, sourceId);
-          await reconcileCoverSource(db, sourceId);
-          refreshed++;
+        try {
+          const source = db.prepare("SELECT source_media_type FROM book_sources WHERE id = ?").get(sourceId) as { source_media_type: "physical" | "ebook" | "audiobook" | null } | undefined;
+          const data = await fetchGrimmoryCoverBuffer(baseUrl, token, grimmory_book_id, source?.source_media_type ?? null);
+          if (!data) continue;
+          const webPath = storeFetchedCover(sourceId, data);
+          if (webPath) {
+            db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(webPath, sourceId);
+            await reconcileCoverSource(db, sourceId);
+            refreshed++;
+          }
+        } catch (error) {
+          logger.warn("ImageCache: Grimmory cover refresh failed for source; continuing with others", { profileId, sourceId, error });
         }
       }
     } catch (error) { logger.warn("ImageCache: Grimmory cover refresh failed for instance; continuing with others", { profileId, error }); }

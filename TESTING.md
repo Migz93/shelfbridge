@@ -27,7 +27,8 @@ fresh temp-dir SQLite database with the current schema applied — no shared sta
 between tests.
 
 `sync-engine.test.ts`, `auth.test.ts`, `settings.test.ts`, `covers-reconcile.test.ts`,
-and `chaptarr-orphan-cleanup.test.ts` are the exceptions: each operates on the
+`chaptarr-orphan-cleanup.test.ts`, and `covers-refresh-isolation.test.ts` are the
+exceptions: each operates on the
 `db/index.ts` singleton rather than an injected database, so each points
 `DATA_DIR` at its own private temp dir (via a dynamic `import()` of the
 singleton after setting the env var — a static `import` would evaluate the
@@ -40,7 +41,7 @@ otherwise intermittently fail with `table already exists`; isolating each of
 these files removes the shared state the race depends on. `sync-engine.test.ts`
 additionally seeds its own profile per test and scopes assertions to that
 profile's id, since it shares one database across many tests within the file.
-Each of these five files waits for the logger to flush (`logger.end()` +
+Each of these six files waits for the logger to flush (`logger.end()` +
 `"finish"` event) before deleting its temp dir in `test.after`, since the
 logger also writes into `DATA_DIR`.
 
@@ -319,6 +320,20 @@ Adapters not relevant to a given test are left unimplemented via `createFakeAdap
 |---|---|
 | Delayed cache propagation | A cover that finishes caching (via `cacheSourceCover`, the same path a background cover-cache task uses) after a book's own reconcile has already run still updates the canonical `books.cover_cache_path`, instead of only `book_sources.cover_cache_path`. |
 
+### `tests/server/covers-refresh-isolation.test.ts` — Scheduled Grimmory cover refresh
+
+| Test | What it checks |
+|---|---|
+| Per-source failure isolation | A failure updating one stale Grimmory cover's `book_sources` row does not abort the rest of that instance's refresh batch — later sources still get refreshed and reconciled, and the failing source is left uncached rather than silently skipping its siblings. |
+
+### `tests/server/books-detail-route.test.ts` — Book detail/merge/delete routes
+
+| Test | What it checks |
+|---|---|
+| Scoped duplicate lookup | `GET /api/books/:id` scopes `fetchRows` to the requested book and its duplicate candidates, not the whole catalog. |
+| Merge validation | The merge endpoint rejects a pair that isn't a live probable-duplicate match. |
+| Scoped delete cleanup | `DELETE /api/books/:id` cleans up only the deleted book's own `image_cache` rows (via `cleanupImageCacheForSourceIds`), leaving unrelated orphaned rows for the daily full reconcile rather than scanning the whole cache table on the request's hot path. |
+
 ### `tests/server/bookIdentity.bench.test.ts` — Reconciliation benchmarks
 
 Informational timing at small/medium/large synthetic library sizes (documents reconciliation cost, not a hard pass/fail gate), plus one scaling assertion: a scoped reconcile against a large pre-reconciled catalog completes well under the cost of a full reconcile of that catalog, with a generous margin to avoid flaking on a slow runner.
@@ -326,7 +341,7 @@ Informational timing at small/medium/large synthetic library sizes (documents re
 ### Known gaps
 
 - No coverage yet for Goodreads/Chaptarr/Audiobookshelf sync paths or shelf/list syncing.
-- The Grimmory cover-caching path (`cacheGrimmoryCover` in `covers.ts`) makes a real `fetch()` call outside the adapter seam — `sync-engine.test.ts` stubs `globalThis.fetch` globally so it never hits the network. `covers-reconcile.test.ts` covers the reconcile-on-cache-completion behavior directly (via the cache-hit path, no network involved), but the network fetch/store path itself still has no dedicated test coverage.
+- The Grimmory cover-caching path (`cacheGrimmoryCover` in `covers.ts`) makes a real `fetch()` call outside the adapter seam — `sync-engine.test.ts` stubs `globalThis.fetch` globally so it never hits the network. `covers-reconcile.test.ts` covers the reconcile-on-cache-completion behavior directly (via the cache-hit path, no network involved), and `covers-refresh-isolation.test.ts` covers `refreshStaleGrimmoryCovers`'s network fetch/store path (via a local Express server standing in for Grimmory) — but `cacheGrimmoryCover`'s own live network path still has no dedicated test.
 - No forced mid-transaction failure test for `reconcileBookIdentities`'s rollback behaviour.
 - No expired-session cleanup or expiry-boundary coverage.
 
