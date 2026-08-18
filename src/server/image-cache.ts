@@ -4,6 +4,8 @@ import path from "node:path";
 import { getDb } from "./db/index.js";
 import { logger } from "./logger.js";
 import { fetchCoverImage } from "./security/outbound.js";
+import { reconcileBookIdentities } from "./db/bookIdentity.js";
+import { runExclusiveOfSyncs } from "./sync/sync-queue.js";
 
 const DATA_DIR = process.env["DATA_DIR"] ?? "./data";
 const CACHE_DIR = path.join(DATA_DIR, "image-cache");
@@ -190,7 +192,7 @@ async function fetchAndStore(cacheKey: string, entityId: string, sourceUrl: stri
   return webPath;
 }
 
-async function refreshInBackground(cacheKey: string, _entityId: string, sourceUrl: string, oldFilePath: string | null): Promise<void> {
+async function refreshInBackground(cacheKey: string, entityId: string, sourceUrl: string, oldFilePath: string | null): Promise<void> {
   const now = new Date().toISOString();
   getDb().prepare("UPDATE image_cache SET last_attempted_at = ? WHERE cache_key = ?").run(now, cacheKey);
 
@@ -231,6 +233,31 @@ async function refreshInBackground(cacheKey: string, _entityId: string, sourceUr
   `).run(sourceUrl, newFilePath, newWebPath, new Date().toISOString(), refreshAfter, cacheKey);
 
   logger.info("ImageCache: cover refreshed", { cacheKey, webPath: newWebPath });
+
+  // entityId is always a book_sources.id (see the cacheKey convention in
+  // fetchAndStore/storeFetchedCover). ensureCoverCached returns the OLD path
+  // immediately when it schedules this refresh, so book_sources.cover_cache_path
+  // (written from that stale return value) and the canonical
+  // books.cover_cache_path would otherwise keep pointing at the file just
+  // deleted above until some unrelated later write happens to re-cache this
+  // same source. Propagate the new path now instead. Isolated in its own
+  // try/catch: the refresh itself already succeeded and committed above, so a
+  // propagation failure here must not abort refreshStaleCachedCovers's loop
+  // over the rest of its batch.
+  try {
+    const sourceId = Number.parseInt(entityId, 10);
+    if (Number.isFinite(sourceId)) {
+      const db = getDb();
+      db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(newWebPath, sourceId);
+      await runExclusiveOfSyncs(async () => {
+        reconcileBookIdentities(db, { sourceIds: [sourceId] });
+      });
+    }
+  } catch (err) {
+    logger.warn("ImageCache: failed to propagate refreshed cover path to book_sources", {
+      cacheKey, error: err instanceof Error ? err.message : String(err)
+    });
+  }
 }
 
 /**

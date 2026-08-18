@@ -326,6 +326,12 @@ Adapters not relevant to a given test are left unimplemented via `createFakeAdap
 |---|---|
 | Per-source failure isolation | A failure updating one stale Grimmory cover's `book_sources` row does not abort the rest of that instance's refresh batch — later sources still get refreshed and reconciled, and the failing source is left uncached rather than silently skipping its siblings. |
 
+### `tests/server/image-cache-refresh-propagation.test.ts` — Background public-cover refresh
+
+| Test | What it checks |
+|---|---|
+| Refreshed path propagation | `ensureCoverCached` returns a cover's existing (old) local path immediately and refreshes a stale one in the background; once that background refresh completes and deletes the old file, `book_sources.cover_cache_path` and the canonical `books.cover_cache_path` are updated to the new path too, not left pointing at the now-deleted file. |
+
 ### `tests/server/books-detail-route.test.ts` — Book detail/merge/delete routes
 
 | Test | What it checks |
