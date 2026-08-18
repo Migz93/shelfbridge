@@ -611,10 +611,12 @@ test("expandScopeToRows returns null when the final candidate-book fetch would e
     `).run(isbn).lastInsertRowid);
 
     // The touched row alone (1 row) is under the cap; only the candidate book's
-    // full row set (3 more rows), pulled in during the loop, pushes past it —
-    // this must be caught at that final fetch, not missed the way the original
-    // implementation only checked the cap once per iteration.
-    const result = expandScopeToRows(db, [touchedId], { rowCap: 2 });
+    // full row set (3 more rows), pulled in during the loop, pushes past it.
+    // iterationCap: 1 pins this as the loop's only iteration, so there is no
+    // next iteration left to catch the overflow the way the original
+    // implementation's once-per-iteration check happened to — this must be
+    // caught immediately, at that final fetch itself.
+    const result = expandScopeToRows(db, [touchedId], { rowCap: 2, iterationCap: 1 });
     assert.equal(result, null, "exceeding the row cap on the final candidate fetch must return null, not a truncated result");
   } finally {
     cleanup();
