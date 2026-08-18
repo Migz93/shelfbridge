@@ -1011,8 +1011,15 @@ router.delete("/:id", (req, res) => {
     // book_sources rows cascaded away with the book, but their image_cache
     // rows don't (image_cache keys off book_sources.id via entity_id, not
     // books.id) — clean those up directly rather than waiting on the next
-    // full reconcile.
-    cleanupOrphanedImageCache(db);
+    // full reconcile. Isolated in its own try/catch: the deletion itself has
+    // already committed by this point, so a cleanup failure must not turn a
+    // successful deletion into a reported 500 — it's a stale image_cache row
+    // at worst, and the daily full reconcile catches it regardless.
+    try {
+      cleanupOrphanedImageCache(db);
+    } catch (cleanupErr) {
+      logger.warn("Orphaned image-cache cleanup failed after book deletion; the deletion itself still succeeded", { bookId, error: cleanupErr });
+    }
     logger.info("Deleted local canonical book", { bookId, title: existing.title });
     res.json({ ok: true });
   } catch (err) {

@@ -170,7 +170,17 @@ function deleteOrphanedBooks(db: Db, bookIds: number[]): void {
  *   orphaned — clean them up directly rather than waiting on a full reconcile.
  */
 export function cleanupAfterSourceRemoval(db: Db, affectedBookIds: number[], deletedSourceIds: number[]): void {
-  cleanupImageCacheForSourceIds(db, deletedSourceIds);
+  // The source rows this pass is cleaning up after have already been
+  // deleted (each caller's own DELETE already committed as its own
+  // statement) — isolated in its own try/catch so a cache-cleanup failure
+  // can't abort the orphan-deletion/reconcile steps below, or bubble up and
+  // fail the whole sync over what's ultimately a stale image_cache row the
+  // daily full reconcile would catch regardless.
+  try {
+    cleanupImageCacheForSourceIds(db, deletedSourceIds);
+  } catch (err) {
+    logger.warn("Orphaned image-cache cleanup failed after source removal; continuing", { deletedSourceIds, error: err });
+  }
   if (affectedBookIds.length === 0) return;
   const survivorSourceIds: number[] = [];
   for (const batch of chunk(affectedBookIds, BATCH_SIZE)) {

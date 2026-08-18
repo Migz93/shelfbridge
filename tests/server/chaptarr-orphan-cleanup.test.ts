@@ -17,10 +17,16 @@ process.env["DATA_DIR"] = dataDir;
 const { getDb, setSetting } = await import("../../src/server/db/index.js");
 const { syncChaptarrStatus } = await import("../../src/server/sync/chaptarr.js");
 const { seedProfile } = await import("./test-helpers.js");
+const { logger } = await import("../../src/server/logger.js");
 
 const db = getDb();
 
-test.after(() => {
+test.after(async () => {
+  await new Promise<void>((resolve) => {
+    logger.once("finish", resolve);
+    logger.end();
+  });
+  logger.close();
   db.close();
   rmSync(dataDir, { recursive: true, force: true });
 });

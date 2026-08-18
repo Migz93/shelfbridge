@@ -153,7 +153,11 @@ export async function refreshStaleGrimmoryCovers(): Promise<void> {
         const data = await fetchGrimmoryCoverBuffer(baseUrl, token, grimmory_book_id, source?.source_media_type ?? null);
         if (!data) continue;
         const webPath = storeFetchedCover(sourceId, data);
-        if (webPath) { db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(webPath, sourceId); refreshed++; }
+        if (webPath) {
+          db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(webPath, sourceId);
+          await reconcileCoverSource(db, sourceId);
+          refreshed++;
+        }
       }
     } catch (error) { logger.warn("ImageCache: Grimmory cover refresh failed for instance; continuing with others", { profileId, error }); }
   }
