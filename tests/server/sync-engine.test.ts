@@ -86,7 +86,7 @@ test("a profile with no connections configured completes without touching any Ha
   // this test's name.
   let chaptarrCalls = 0;
   const adapters = createFakeAdapters({
-    syncChaptarrStatus: async () => { chaptarrCalls++; }
+    syncChaptarrStatus: async () => { chaptarrCalls++; return []; }
   });
 
   await runSyncImpl(profileId, runId, false, adapters);

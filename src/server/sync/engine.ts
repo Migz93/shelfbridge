@@ -218,7 +218,7 @@ export async function runSyncImpl(
     }
 
     // ── Phase K: Chaptarr status pass ───────────────────────────────────────
-    await adapters.syncChaptarrStatus(profileId);
+    const chaptarrTouchedSourceIds = await adapters.syncChaptarrStatus(profileId);
 
     // ── Phase M: Audiobookshelf library sync ─────────────────────────────────
     await syncAudiobookshelfLibrary({
@@ -235,8 +235,15 @@ export async function runSyncImpl(
       sharedHardcoverOwnership, hardcoverPages, todayDate
     });
 
-    // ── Phase L: Final reconcile ─────────────────────────────────────────────
-    reconcileBookIdentities(db);
+    // ── Phase L: Reconcile Chaptarr writes ────────────────────────────────────
+    // Chaptarr is the only phase after Phase D that writes book_sources rows
+    // (Phase M's Audiobookshelf sync reconciles its own scope internally) — its
+    // own matching resolves a book_id directly, but reconcileBookIdentities'
+    // union-find still needs to run over exactly those rows to apply its
+    // stronger conflict/file-path-bridge checks.
+    if (chaptarrTouchedSourceIds.length > 0) {
+      reconcileBookIdentities(db, { sourceIds: chaptarrTouchedSourceIds });
+    }
 
     const summary = dryRun
       ? `Dry run: ${counters.written} would write, ${counters.skipped} skipped${counters.sourceFailures ? `, ${counters.sourceFailures} source unavailable` : ""}, ${grimmoryBooks.length ? `matched against ${grimmoryBooks.length} Grimmory books` : "no Grimmory connection"}`

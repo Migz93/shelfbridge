@@ -157,14 +157,21 @@ function chaptarrBookHasFile(book: Record<string, unknown>, filePaths: string[] 
  * Matching is done against the book-level book_sources table (not per-profile).
  * A Chaptarr book matching any known ShelfBridge book will be recorded once,
  * regardless of how many profiles use that book.
+ *
+ * Returns the ids of every book_sources row this pass wrote (created or
+ * updated), so the caller can reconcile identities scoped to just those rows
+ * instead of the whole catalog — chaptarr.ts's own matching (above) resolves
+ * a book_id directly from simpler identifier lookups, but reconcileBookIdentities'
+ * union-find still needs to run over these rows to apply its stronger
+ * conflict/file-path-bridge checks (e.g. an ebook/audiobook split).
  */
-export async function syncChaptarrStatus(profileId: number): Promise<void> {
+export async function syncChaptarrStatus(profileId: number): Promise<number[]> {
   const baseUrl = getSetting("chaptarr.baseUrl", "");
   const apiKey = getSetting("chaptarr.apiKey", "");
 
   if (!baseUrl || !apiKey) {
     logger.info("Chaptarr not configured, skipping status pass", { profileId });
-    return;
+    return [];
   }
 
   const db = getDb();
@@ -178,7 +185,7 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
     logger.info("Chaptarr books fetched", { profileId, total: allBooks.length, monitored });
   } catch (err) {
     logger.warn("Chaptarr books fetch failed; skipping status pass", { profileId, error: err });
-    return;
+    return [];
   }
 
   const authorNameById = new Map<number, string>();
@@ -423,9 +430,11 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
         OR chaptarr_id_mismatch IS NOT excluded.chaptarr_id_mismatch
         OR chaptarr_primary_file_path IS NOT excluded.chaptarr_primary_file_path
       THEN datetime('now') ELSE last_modified_at END
+    RETURNING id
   `);
 
   const matchedChaptarrIds = new Set<string>();
+  const touchedSourceIds: number[] = [];
   let matched = 0;
   let unmatched = 0;
 
@@ -560,7 +569,7 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
     const mediaType = inferChaptarrMediaType(book, chaptarrFilePath);
 
     if (bookId !== undefined) {
-      upsertChaptarrSource.run(
+      const written = upsertChaptarrSource.get(
         bookId, String(chaptarrId), title || null, authorName || null, series.name, series.number,
         hardcoverBookId || foreignBookId || null,
         goodreadsBookId || foreignBookIdAsGoodreads || null,
@@ -573,7 +582,8 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
         asin,
         audibleAsin,
         monitored, hasFile, idMismatch, chaptarrFilePath
-      );
+      ) as { id: number };
+      touchedSourceIds.push(written.id);
       matchedChaptarrIds.add(String(chaptarrId));
       matched++;
     } else {
@@ -629,4 +639,5 @@ export async function syncChaptarrStatus(profileId: number): Promise<void> {
   `).run();
 
   logger.info("Chaptarr status pass complete", { profileId, matched, unmatched });
+  return touchedSourceIds;
 }
