@@ -87,6 +87,20 @@ export function runSync(profileId: number, runId: number, dryRun: boolean): Prom
   return result;
 }
 
+/**
+ * Runs `task` serialized against every profile sync via the same queue —
+ * never overlapping a sync in progress or letting one start while `task`
+ * runs. A sync yields to the event loop on every await (remote I/O), and
+ * anything mutating book identities (e.g. the daily full-reconcile
+ * maintenance job) that ran unserialized during one of those gaps could
+ * merge/reassign a book_id a paused sync is mid-write against.
+ */
+export function runExclusiveOfSyncs<T>(task: () => Promise<T>): Promise<T> {
+  const result = syncQueue.then(task);
+  syncQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
 export async function runSyncImpl(
   profileId: number,
   runId: number,

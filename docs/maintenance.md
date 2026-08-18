@@ -11,7 +11,7 @@ ShelfBridge runs three scheduled housekeeping jobs, all registered in
 |---|---|---|
 | `maintenance` | Daily at 03:00 | Prunes `sync_runs` rows older than the retention window |
 | `image-cache-refresh` | Daily at 02:00 | Re-fetches stale cover images, including authenticated Grimmory covers that need a live token |
-| `full-reconcile` | Daily at 04:00 | Runs a full, unscoped `reconcileBookIdentities()` pass over the whole catalog, with progress logged at each phase |
+| `full-reconcile` | Daily at 04:00 | Runs a full, unscoped `reconcileBookIdentities()` pass over the whole catalog, with progress logged at each phase. Serialized against every profile sync via `runExclusiveOfSyncs` in `engine.ts` — it never runs while a sync is mid-flight, since a sync yields to the event loop between remote I/O calls and an unserialized reconcile could merge/reassign a book_id it's mid-write against |
 
 Book identity reconciliation itself is not primarily a scheduled task: every
 sync phase and book-mutating route calls `reconcileBookIdentities()` scoped to

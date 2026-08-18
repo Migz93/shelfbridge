@@ -32,7 +32,7 @@ process.env["DATA_DIR"] = dataDir;
 // network, regardless of which test triggers the queue.
 globalThis.fetch = (async () => new Response(null, { status: 404 })) as typeof fetch;
 
-const { runSyncImpl } = await import("../../src/server/sync/engine.js");
+const { runSyncImpl, runSync, runExclusiveOfSyncs } = await import("../../src/server/sync/engine.js");
 const { getDb } = await import("../../src/server/db/index.js");
 const { logger } = await import("../../src/server/logger.js");
 
@@ -267,4 +267,24 @@ test("two profiles syncing different Hardcover books do not cross-contaminate ea
 
   assert.deepEqual(sourceA.map((s) => s.external_id), ["1001"]);
   assert.deepEqual(sourceB.map((s) => s.external_id), ["1002"]);
+});
+
+test("runExclusiveOfSyncs never runs concurrently with a queued sync — it waits for the sync to finish first", async () => {
+  // Both runSync and runExclusiveOfSyncs chain onto the same module-level
+  // queue synchronously, at call time — so calling runSync() first and then
+  // runExclusiveOfSyncs() immediately after deterministically orders the
+  // exclusive task after the sync's queue slot settles, regardless of actual
+  // timing (no real race/sleep involved). This is what protects a scheduled
+  // full-reconcile pass from merging/reassigning a book_id a sync is mid-write
+  // against during one of its own await points.
+  const profileId = seedProfile(db);
+  const runId = insertSyncRun(db, profileId);
+  const order: string[] = [];
+
+  const syncPromise = runSync(profileId, runId, false).then(() => { order.push("sync"); });
+  const exclusivePromise = runExclusiveOfSyncs(async () => { order.push("exclusive"); });
+
+  await Promise.all([syncPromise, exclusivePromise]);
+
+  assert.deepEqual(order, ["sync", "exclusive"], "the exclusive task must only run after the queued sync ahead of it has fully settled");
 });

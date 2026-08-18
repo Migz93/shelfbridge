@@ -89,3 +89,29 @@ test("syncChaptarrStatus does not delete a book that still has other sources aft
   const remainingChaptarr = db.prepare("SELECT COUNT(*) AS count FROM book_sources WHERE book_id = ? AND source_type = 'chaptarr'").get(bookId) as { count: number };
   assert.equal(remainingChaptarr.count, 0, "the stale Chaptarr source itself must still be removed");
 });
+
+test("syncChaptarrStatus reconciles the survivor when a removed Chaptarr row was the only audiobook-format signal", async () => {
+  const profileId = seedProfile(db);
+
+  // The Hardcover row carries no format signal of its own (no edition format,
+  // no media type) — the book's audiobook classification comes only from the
+  // Chaptarr row's .m4b file path. books.media_type starts as 'audiobook',
+  // simulating what a prior reconcile computed while the Chaptarr row existed.
+  const bookId = Number(db.prepare("INSERT INTO books (title, media_type) VALUES ('Format Book', 'audiobook')").run().lastInsertRowid);
+  db.prepare(`
+    INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title)
+    VALUES (?, 'hardcover', 1, 'hc-3', 'Format Book')
+  `).run(bookId);
+  db.prepare(`
+    INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, chaptarr_monitored, chaptarr_has_file, chaptarr_primary_file_path)
+    VALUES (?, 'chaptarr', 0, '3', 'Format Book', 1, 1, '/library/format-book.m4b')
+  `).run(bookId);
+
+  await withFakeChaptarr({ books: [], authors: [] }, async () => {
+    await syncChaptarrStatus(profileId);
+  });
+
+  const book = db.prepare("SELECT media_type FROM books WHERE id = ?").get(bookId) as { media_type: string } | undefined;
+  assert.ok(book, "the book must survive — it still has a Hardcover source");
+  assert.notEqual(book.media_type, "audiobook", "media_type must be recomputed from the surviving Hardcover row, not left stale from the deleted Chaptarr row's format signal");
+});

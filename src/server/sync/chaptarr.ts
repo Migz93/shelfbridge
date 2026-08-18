@@ -3,7 +3,7 @@ import { logger } from "../logger.js";
 import { identifierVariants, normalizeExternalId } from "../identifiers.js";
 import { mapWithConcurrency } from "./concurrency.js";
 import { fetchIntegration } from "../security/outbound.js";
-import { stageFetchedIds, deleteOrphanedBooks } from "./pruning.js";
+import { stageFetchedIds, cleanupAfterSourceRemoval } from "./pruning.js";
 
 const DEFAULT_BOOKFILE_CONCURRENCY = 5;
 const MAX_BOOKFILE_CONCURRENCY = 10;
@@ -608,13 +608,13 @@ export async function syncChaptarrStatus(profileId: number): Promise<number[]> {
       DELETE FROM book_sources
       WHERE source_type = 'chaptarr' AND external_id NOT IN (SELECT id FROM shelfbridge_fetched_ids)
     `).run();
-    deleteOrphanedBooks(db, staleBookIds);
+    cleanupAfterSourceRemoval(db, staleBookIds);
   } else {
     const staleBookIds = (db.prepare(`
       SELECT DISTINCT book_id FROM book_sources WHERE source_type = 'chaptarr' AND book_id IS NOT NULL
     `).all() as { book_id: number }[]).map((row) => row.book_id);
     db.prepare("DELETE FROM book_sources WHERE source_type = 'chaptarr'").run();
-    deleteOrphanedBooks(db, staleBookIds);
+    cleanupAfterSourceRemoval(db, staleBookIds);
   }
 
   // Promote 'missing' Grimmory user_book_states to 'pending_download' when Chaptarr

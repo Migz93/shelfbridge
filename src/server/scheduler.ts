@@ -1,7 +1,7 @@
 import { JobScheduler } from "./job-scheduler.js";
 import { getDb, getSetting } from "./db/index.js";
 import { logger } from "./logger.js";
-import { getActiveSyncStatus, runSync } from "./sync/engine.js";
+import { getActiveSyncStatus, runSync, runExclusiveOfSyncs } from "./sync/engine.js";
 import { refreshStaleCachedCovers } from "./image-cache.js";
 import { refreshStaleGrimmoryCovers } from "./sync/engine.js";
 import { reconcileBookIdentities, type ReconcileProgressPhase } from "./db/bookIdentity.js";
@@ -140,20 +140,26 @@ async function runProfileSync(): Promise<void> {
 }
 
 async function runFullReconcile(): Promise<void> {
-  const db = getDb();
-  const bookCount = (db.prepare("SELECT COUNT(*) AS count FROM books").get() as { count: number }).count;
-  const sourceCount = (db.prepare("SELECT COUNT(*) AS count FROM book_sources").get() as { count: number }).count;
-  logger.info("Full reconcile starting", { bookCount, sourceCount });
+  // Serialized against every profile sync (see runExclusiveOfSyncs) — this
+  // mutates shared book identity state exactly like a sync does, and a sync
+  // yields to the event loop between remote I/O calls, so it must never run
+  // unserialized while a sync could be mid-flight.
+  await runExclusiveOfSyncs(async () => {
+    const db = getDb();
+    const bookCount = (db.prepare("SELECT COUNT(*) AS count FROM books").get() as { count: number }).count;
+    const sourceCount = (db.prepare("SELECT COUNT(*) AS count FROM book_sources").get() as { count: number }).count;
+    logger.info("Full reconcile starting", { bookCount, sourceCount });
 
-  const startedAt = Date.now();
-  let lastPhaseAt = startedAt;
-  reconcileBookIdentities(db, undefined, (phase: ReconcileProgressPhase, details) => {
-    const now = Date.now();
-    logger.info("Full reconcile progress", { phase, ...details, phaseMs: now - lastPhaseAt, elapsedMs: now - startedAt });
-    lastPhaseAt = now;
+    const startedAt = Date.now();
+    let lastPhaseAt = startedAt;
+    reconcileBookIdentities(db, undefined, (phase: ReconcileProgressPhase, details) => {
+      const now = Date.now();
+      logger.info("Full reconcile progress", { phase, ...details, phaseMs: now - lastPhaseAt, elapsedMs: now - startedAt });
+      lastPhaseAt = now;
+    });
+
+    logger.info("Full reconcile complete", { elapsedMs: Date.now() - startedAt });
   });
-
-  logger.info("Full reconcile complete", { elapsedMs: Date.now() - startedAt });
 }
 
 async function runMaintenance(): Promise<void> {

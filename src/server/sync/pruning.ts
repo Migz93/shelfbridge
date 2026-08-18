@@ -1,5 +1,6 @@
 import type { getDb } from "../db/index.js";
 import { logger } from "../logger.js";
+import { reconcileBookIdentities } from "../db/bookIdentity.js";
 
 type Db = ReturnType<typeof getDb>;
 export type SourceSnapshotStatus = "complete" | "partial" | "failed";
@@ -86,16 +87,14 @@ function pruneSources(db: Db, profileId: number, sourceType: "hardcover" | "grim
     )
   `;
   const params = [sourceType, profileId, sourceType, profileId];
-  // Captured before the delete: a book left with zero remaining sources has
-  // nothing left to anchor a scoped reconcile on, so it must be checked
-  // directly here (see deleteOrphanedBooks) rather than relying on
-  // reconcileBookIdentities' stale-book cleanup, which only ever sees rows
-  // it was scoped to.
+  // Captured before the delete: a book left with a surviving source or with
+  // zero remaining sources both need explicit handling afterward — see
+  // cleanupAfterSourceRemoval.
   const staleBookIds = (db.prepare(`SELECT DISTINCT book_id FROM book_sources WHERE ${whereClause}`).all(...params) as { book_id: number }[])
     .map((row) => row.book_id);
   const result = db.prepare(`DELETE FROM book_sources WHERE ${whereClause}`).run(...params);
   if (result.changes > 0) logger.info(`Pruned ${sourceName} book_sources with no remaining user states`, { profileId, deleted: result.changes });
-  deleteOrphanedBooks(db, staleBookIds);
+  cleanupAfterSourceRemoval(db, staleBookIds);
 }
 
 /** Stages ids into a temp table so a large id set can be joined against instead of built into an inline SQL list. */
@@ -117,21 +116,24 @@ function canPruneSnapshot(profileId: number, sourceName: string, fetchedCount: n
   return false;
 }
 
-const ORPHAN_CHECK_BATCH_SIZE = 500;
+const BATCH_SIZE = 500;
+
+function chunk<T>(values: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < values.length; i += size) chunks.push(values.slice(i, i + size));
+  return chunks;
+}
 
 /**
  * Deletes any of the given book ids left with zero remaining book_sources
- * rows and zero user_book_states rows — used after pruning a source (Chaptarr,
- * Hardcover, Grimmory) removes what may have been a book's last source.
- * Batched rather than one IN (...) clause for every id, since a large
- * upstream removal could otherwise exceed SQLite's bound-parameter limit —
- * the same reason the caller stages its own ids into a temp table.
+ * rows and zero user_book_states rows. Batched rather than one IN (...)
+ * clause for every id, since a large upstream removal could otherwise exceed
+ * SQLite's bound-parameter limit — the same reason the caller stages its own
+ * ids into a temp table.
  */
-export function deleteOrphanedBooks(db: Db, bookIds: number[]): void {
-  if (bookIds.length === 0) return;
+function deleteOrphanedBooks(db: Db, bookIds: number[]): void {
   const orphaned: { id: number }[] = [];
-  for (let i = 0; i < bookIds.length; i += ORPHAN_CHECK_BATCH_SIZE) {
-    const batch = bookIds.slice(i, i + ORPHAN_CHECK_BATCH_SIZE);
+  for (const batch of chunk(bookIds, BATCH_SIZE)) {
     const placeholders = batch.map(() => "?").join(",");
     orphaned.push(...(db.prepare(`
       SELECT b.id FROM books b
@@ -146,4 +148,30 @@ export function deleteOrphanedBooks(db: Db, bookIds: number[]): void {
   logger.info("Removed canonical books left with no sources after pruning", {
     bookIds: orphaned.map((row) => row.id)
   });
+}
+
+/**
+ * Handles both possible outcomes for a book that just lost one of its
+ * sources (Chaptarr, Hardcover, or Grimmory pruning a stale row): if it now
+ * has zero sources and zero user state, it's a ghost canonical — delete it.
+ * If it still has other sources, those survivors may now need a different
+ * canonical title/cover/identifier (the deleted row could have been the
+ * preferred one) and book_identity_keys may still hold keys that only came
+ * from the deleted row — reconcile scoped to the survivors so
+ * reconcileBookIdentities recomputes both from what's actually left. Either
+ * way, this book has nothing to do with what a scoped reconcile of the
+ * *newly written* rows elsewhere in the same sync would already cover.
+ */
+export function cleanupAfterSourceRemoval(db: Db, affectedBookIds: number[]): void {
+  if (affectedBookIds.length === 0) return;
+  const survivorSourceIds: number[] = [];
+  for (const batch of chunk(affectedBookIds, BATCH_SIZE)) {
+    const placeholders = batch.map(() => "?").join(",");
+    survivorSourceIds.push(...(db.prepare(`SELECT id FROM book_sources WHERE book_id IN (${placeholders})`).all(...batch) as { id: number }[])
+      .map((row) => row.id));
+  }
+  deleteOrphanedBooks(db, affectedBookIds);
+  if (survivorSourceIds.length > 0) {
+    reconcileBookIdentities(db, { sourceIds: survivorSourceIds });
+  }
 }

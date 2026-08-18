@@ -20,12 +20,13 @@ function insertBookSource(
   bookId: number,
   sourceType: string,
   sourceInstanceId: number,
-  externalId: string
+  externalId: string,
+  title?: string
 ): void {
   db.prepare(`
-    INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id)
-    VALUES (?, ?, ?, ?)
-  `).run(bookId, sourceType, sourceInstanceId, externalId);
+    INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type)
+    VALUES (?, ?, ?, ?, ?, 'book')
+  `).run(bookId, sourceType, sourceInstanceId, externalId, title ?? null);
 }
 
 function insertUserState(
@@ -292,6 +293,30 @@ test("pruneGrimmorySourcesMissingFromFetch deletes a book left with no sources a
 
     const book = db.prepare("SELECT id FROM books WHERE id = ?").get(staleId);
     assert.equal(book, undefined, "a book left with no sources and no user state after pruning its only Grimmory source must be deleted, not left as a ghost canonical");
+  } finally {
+    cleanup();
+  }
+});
+
+test("pruning a preferred source reconciles the survivor, updating the canonical title away from the stale value", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    // canonicalValues' bestRow() scores hardcover above grimmory when neither
+    // has a cover, so the book's title starts out sourced from Hardcover —
+    // simulating the state a prior reconcile would have left it in.
+    const bookId = insertBook(db, "HC Title");
+    insertBookSource(db, bookId, "hardcover", profileId, "111", "HC Title");
+    insertBookSource(db, bookId, "grimmory", profileId, "222", "Grimmory Title");
+
+    pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set(), "complete");
+
+    const remainingHc = db.prepare("SELECT COUNT(*) AS count FROM book_sources WHERE book_id = ? AND source_type = 'hardcover'").get(bookId) as { count: number };
+    assert.equal(remainingHc.count, 0, "the stale Hardcover source must be removed");
+
+    const book = db.prepare("SELECT title FROM books WHERE id = ?").get(bookId) as { title: string } | undefined;
+    assert.ok(book, "the book must survive — it still has a Grimmory source");
+    assert.equal(book.title, "Grimmory Title", "the canonical title must be recomputed from the surviving source, not left stale from the deleted Hardcover row");
   } finally {
     cleanup();
   }
