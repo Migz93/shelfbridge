@@ -259,7 +259,9 @@ type/branch-name branch → PR into develop → develop → chore/bump-version �
    go to "The Review Gate" below and ask the user how they want to proceed.
 4. **Open a PR** from that branch into `develop`. This is what feeds the release
    notes — the PR title becomes the changelog entry. Use a semantic title
-   (`feat:`, `fix:`, `chore:`, etc.).
+   (`feat:`, `fix:`, `chore:`, etc.). Open it as a draft; see
+   [docs/workflow.md](docs/workflow.md)'s Pull Request Conventions for when to
+   mark it ready for review.
 5. **Merge the PR** into `develop`. Delete the branch after merging.
 6. **Repeat** steps 1–5 for each piece of work. `develop` accumulates all the
    merged PRs.
@@ -267,8 +269,10 @@ type/branch-name branch → PR into develop → develop → chore/bump-version �
    `develop`, bump the version files, open a PR into `develop`, and merge it. A
    version bump does not go through the review gate — see below.
 8. **Open a PR** from `develop` into `main`. This one **does** go through the
-   review gate first. Merge it. This triggers the release-drafter to generate
-   release notes from all the PR titles since the last release.
+   review gate first. Open it as a draft too, marking it ready per the same
+   conventions once the review gate is satisfied and no further fixes are
+   pending. Merge it. This triggers the release-drafter to generate release
+   notes from all the PR titles since the last release.
 9. **Tag `main`** with `vX.Y.Z` and push the tag. This triggers the Docker build
    workflow.
 10. **Publish the GitHub release** — review the auto-generated draft and publish

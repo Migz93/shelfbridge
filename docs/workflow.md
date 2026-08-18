@@ -26,10 +26,13 @@ moment rather than up front.
 
 Use `gh` for all GitHub operations:
 
-- `gh pr create --base develop --title "..." --body "..."`
+- `gh pr create --draft --base develop --title "..." --body "..."`
 - `gh pr merge --squash --delete-branch`
 - `gh release create vX.Y.Z --generate-notes`
 - `gh issue create --title "..." --body "..."`
+
+PRs are opened as drafts and only marked ready-for-review once finished (see
+[Pull Request Conventions](#pull-request-conventions)).
 
 Always confirm the base branch is correct before creating a PR. Work-branch PRs
 target `develop`; only the release PR targets `main`.
@@ -85,6 +88,15 @@ rather than implying the container was rebuilt and verified.
 - One logical change per PR. Split unrelated work.
 - Squash-merge into `develop` so each PR is one commit in the history.
 - Delete the branch after merging.
+- PRs are opened as drafts (`gh pr create --draft`). Mark ready for review only
+  once the changeset is actually finished — no more fix commits expected — via
+  `gh pr ready`. This includes staying in draft through any post-open fix
+  cycle: if CodeRabbit's own automated PR review (or anything else) surfaces
+  something after the PR is opened, fix it, push, and only call `gh pr ready`
+  once nothing further is pending. If a PR was already marked ready and then
+  needs more fixes, convert it back to draft (`gh pr ready --undo`) before
+  pushing the fix, so the follow-up commit doesn't trigger another automatic
+  review.
 
 ---
 
