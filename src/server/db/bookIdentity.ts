@@ -494,7 +494,16 @@ function expansionKeyValues(row: BookSourceRow): string[] {
 //
 // Returns null if the closure grows past a safety cap — the caller should fall
 // back to a full reconcile in that case rather than silently truncate it.
-function expandScopeToRows(db: Database.Database, initialSourceIds: number[]): BookSourceRow[] | null {
+// `caps` defaults to the module constants; it's only overridable so tests can
+// exercise the cap-hit paths cheaply, without needing tens of thousands of
+// rows or a genuinely 7-hop chain to prove the fallback triggers correctly.
+export function expandScopeToRows(
+  db: Database.Database,
+  initialSourceIds: number[],
+  caps: { rowCap?: number; iterationCap?: number } = {}
+): BookSourceRow[] | null {
+  const rowCap = caps.rowCap ?? SCOPE_EXPANSION_ROW_CAP;
+  const iterationCap = caps.iterationCap ?? SCOPE_EXPANSION_ITERATION_CAP;
   const rowsById = new Map<number, BookSourceRow>();
   const visitedBookIds = new Set<number>();
   const processedKeyValues = new Set<string>();
@@ -521,31 +530,43 @@ function expandScopeToRows(db: Database.Database, initialSourceIds: number[]): B
     return Array.from(results);
   };
 
-  for (const row of fetchByIds("id", initialSourceIds)) rowsById.set(row.id, row);
+  // Adds rows and checks the row cap immediately, at every point rows are
+  // added — not just once per iteration — so no fetch (including the very
+  // last one before the iteration cap would trip) can push the closure past
+  // the cap undetected.
+  const addRows = (rows: BookSourceRow[]): boolean => {
+    for (const row of rows) rowsById.set(row.id, row);
+    return rowsById.size > rowCap;
+  };
 
-  for (let iteration = 0; iteration < SCOPE_EXPANSION_ITERATION_CAP; iteration++) {
+  if (addRows(fetchByIds("id", initialSourceIds))) return null;
+
+  for (let iteration = 0; iteration < iterationCap; iteration++) {
     const newBookIds = Array.from(new Set(
       Array.from(rowsById.values())
         .map((row) => row.book_id)
         .filter((id): id is number => id !== null && !visitedBookIds.has(id))
     ));
     for (const id of newBookIds) visitedBookIds.add(id);
-    for (const row of fetchByIds("book_id", newBookIds)) rowsById.set(row.id, row);
-
-    if (rowsById.size > SCOPE_EXPANSION_ROW_CAP) return null;
+    if (addRows(fetchByIds("book_id", newBookIds))) return null;
 
     const keyValues = Array.from(new Set(Array.from(rowsById.values()).flatMap(expansionKeyValues)))
       .filter((value) => !processedKeyValues.has(value));
-    if (keyValues.length === 0) break;
+    // Fixed point: nothing new to expand from. This is the only path that
+    // returns a result — every other exit (including exhausting the
+    // iteration cap below) means the closure might still be incomplete, so
+    // it must return null and let the caller fall back to a full reconcile
+    // rather than silently return a partial scope.
+    if (keyValues.length === 0) return Array.from(rowsById.values()).sort((a, b) => a.id - b.id);
     for (const value of keyValues) processedKeyValues.add(value);
 
     const newCandidateBookIds = candidateBookIdsForKeys(keyValues).filter((id) => !visitedBookIds.has(id));
-    if (newCandidateBookIds.length === 0) break;
+    if (newCandidateBookIds.length === 0) return Array.from(rowsById.values()).sort((a, b) => a.id - b.id);
 
-    for (const row of fetchByIds("book_id", newCandidateBookIds)) rowsById.set(row.id, row);
+    if (addRows(fetchByIds("book_id", newCandidateBookIds))) return null;
   }
 
-  return Array.from(rowsById.values()).sort((a, b) => a.id - b.id);
+  return null;
 }
 
 export type ReconcileProgressPhase = "rows_loaded" | "groups_computed" | "transaction_committed" | "image_cache_cleaned";

@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { reconcileBookIdentities } from "../../src/server/db/bookIdentity.js";
+import { reconcileBookIdentities, expandScopeToRows } from "../../src/server/db/bookIdentity.js";
 import { logger } from "../../src/server/logger.js";
 import { createTestDatabase } from "./test-db.js";
 import { seedProfile } from "./test-helpers.js";
+
+/** A valid, checksummed ISBN13 for synthetic test data. */
+function validIsbn13(n: number): string {
+  const body = `978${String(n).padStart(9, "0")}`;
+  let sum = 0;
+  for (let i = 0; i < 12; i++) sum += Number(body[i]) * (i % 2 === 0 ? 1 : 3);
+  const check = (10 - (sum % 10)) % 10;
+  return `${body}${check}`;
+}
 
 /** Inserts a book_sources row with book_id left NULL, as a fresh sync would. */
 function insertSource(
@@ -541,6 +550,72 @@ test("reconcileBookIdentities with an empty scope is a no-op", () => {
     reconcileBookIdentities(db, { sourceIds: [] });
 
     assert.deepEqual(booksByTitle(db), before);
+  } finally {
+    cleanup();
+  }
+});
+
+test("expandScopeToRows returns null (never a partial closure) when a chain needs more hops than the iteration cap allows", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    // Directly constructs already-reconciled DB state (bypassing reconcileBookIdentities,
+    // which would just merge the whole chain in one unbounded pass) to exercise
+    // expandScopeToRows' own hop-by-hop discovery in isolation. Each Chain Book i has
+    // an "entry" row indexed under isbn(i) (so a prior hop's discovered key finds it)
+    // and an "exit" row whose own isbn13 column is isbn(i+1) — a key only revealed once
+    // this book's full row set is pulled in, forcing genuine multi-iteration discovery.
+    const chainLength = 6;
+    for (let i = 1; i <= chainLength; i++) {
+      const bookId = Number(db.prepare("INSERT INTO books (title) VALUES (?)").run(`Chain Book ${i}`).lastInsertRowid);
+      const insertRow = db.prepare(`
+        INSERT INTO book_sources (book_id, source_type, external_id, title, author, isbn13, source_media_type)
+        VALUES (?, 'hardcover', ?, ?, 'Author', ?, 'book')
+      `);
+      insertRow.run(bookId, `chain-${i}-entry`, `Chain ${i} Entry`, validIsbn13(i));
+      insertRow.run(bookId, `chain-${i}-exit`, `Chain ${i} Exit`, validIsbn13(i + 1));
+      db.prepare(`INSERT INTO book_identity_keys (book_id, key_type, key_value) VALUES (?, 'book.isbn13', ?)`)
+        .run(bookId, validIsbn13(i));
+    }
+
+    const touchedId = Number(db.prepare(`
+      INSERT INTO book_sources (source_type, external_id, title, author, isbn13, source_media_type)
+      VALUES ('grimmory', 'new-touch', 'New Touch', 'Author', ?, 'book')
+    `).run(validIsbn13(1)).lastInsertRowid);
+
+    const withLowCap = expandScopeToRows(db, [touchedId], { iterationCap: 3 });
+    assert.equal(withLowCap, null, "a chain longer than the iteration cap must return null, not a truncated closure");
+
+    const withEnoughCap = expandScopeToRows(db, [touchedId], { iterationCap: chainLength + 1 });
+    assert.notEqual(withEnoughCap, null, "the same chain must fully resolve given enough iterations");
+    assert.equal(withEnoughCap!.length, 1 + chainLength * 2, "a sufficient cap must discover every book in the chain, not stop partway");
+  } finally {
+    cleanup();
+  }
+});
+
+test("expandScopeToRows returns null when the final candidate-book fetch would exceed the row cap", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const isbn = validIsbn13(1);
+    const bookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Big Book')").run().lastInsertRowid);
+    const insertRow = db.prepare(`
+      INSERT INTO book_sources (book_id, source_type, external_id, title, author, isbn13, source_media_type)
+      VALUES (?, 'hardcover', ?, 'Big Book', 'Author', ?, 'book')
+    `);
+    for (let i = 0; i < 3; i++) insertRow.run(bookId, `big-${i}`, isbn);
+    db.prepare(`INSERT INTO book_identity_keys (book_id, key_type, key_value) VALUES (?, 'book.isbn13', ?)`).run(bookId, isbn);
+
+    const touchedId = Number(db.prepare(`
+      INSERT INTO book_sources (source_type, external_id, title, author, isbn13, source_media_type)
+      VALUES ('grimmory', 'new-touch', 'Big Book', 'Author', ?, 'book')
+    `).run(isbn).lastInsertRowid);
+
+    // The touched row alone (1 row) is under the cap; only the candidate book's
+    // full row set (3 more rows), pulled in during the loop, pushes past it —
+    // this must be caught at that final fetch, not missed the way the original
+    // implementation only checked the cap once per iteration.
+    const result = expandScopeToRows(db, [touchedId], { rowCap: 2 });
+    assert.equal(result, null, "exceeding the row cap on the final candidate fetch must return null, not a truncated result");
   } finally {
     cleanup();
   }

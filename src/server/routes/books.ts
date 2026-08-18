@@ -995,10 +995,14 @@ router.delete("/:id", (req, res) => {
     return;
   }
 
+  // No reconcile needed after this: book_sources, user_book_states,
+  // book_identity_keys, and book_duplicate_dismissals all reference books(id)
+  // ON DELETE CASCADE, so deleting the book already removes every row that
+  // referenced it. No other book's data is touched by this deletion, so
+  // there is nothing left to re-cluster.
   const deleteBook = db.prepare("DELETE FROM books WHERE id = ?");
   const transaction = db.transaction(() => {
     deleteBook.run(bookId);
-    reconcileBookIdentities(db);
   });
 
   try {
