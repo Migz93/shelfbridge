@@ -239,7 +239,7 @@ export async function runSyncImpl(
       db, profileId, runId, hasAbs, absBaseUrl, absApiKey, adapters, counters, recordEvent
     });
 
-    await syncAudiobookshelfProgress({
+    const resolvedAudioEditionSourceIds = await syncAudiobookshelfProgress({
       db, profileId, runId, hasAbs, hasHardcover, grimmoryAvailable, adapters,
       absBaseUrl, absApiKey, profile, baseUrl, grimmoryToken, hardcoverToken,
       dryRun, counters, grimmoryBooks, grimmoryProgressById, hcBooks, recordEvent, getUserState, localGrimmoryBookForBookId,
@@ -249,14 +249,18 @@ export async function runSyncImpl(
       sharedHardcoverOwnership, hardcoverPages, todayDate
     });
 
-    // ── Phase L: Reconcile Chaptarr writes ────────────────────────────────────
-    // Chaptarr is the only phase after Phase D that writes book_sources rows
-    // (Phase M's Audiobookshelf sync reconciles its own scope internally) — its
-    // own matching resolves a book_id directly, but reconcileBookIdentities'
-    // union-find still needs to run over exactly those rows to apply its
-    // stronger conflict/file-path-bridge checks.
-    if (chaptarrTouchedSourceIds.length > 0) {
-      reconcileBookIdentities(db, { sourceIds: chaptarrTouchedSourceIds });
+    // ── Phase L: Reconcile Chaptarr writes and resolved audio editions ───────
+    // Two things after Phase D can change a book_sources row's identity-format
+    // bucket without going through a scoped reconcile of their own: Chaptarr's
+    // own matching resolves a book_id directly but still needs union-find's
+    // stronger conflict/file-path-bridge checks, and Phase N's
+    // persistResolvedHardcoverAudioEdition flips an existing Hardcover row's
+    // source_media_type to 'audiobook', which can change that row's identity
+    // keys and the book's canonical media_type. (Phase M's Audiobookshelf
+    // library sync reconciles its own scope internally.)
+    const phaseLTouchedSourceIds = [...chaptarrTouchedSourceIds, ...resolvedAudioEditionSourceIds];
+    if (phaseLTouchedSourceIds.length > 0) {
+      reconcileBookIdentities(db, { sourceIds: phaseLTouchedSourceIds });
     }
 
     const summary = dryRun

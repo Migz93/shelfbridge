@@ -6,8 +6,14 @@ import { hasActiveOwningBook } from "./hardcover-ownership.js";
 /**
  * Runs Audiobookshelf's three-way progress propagation. The explicit context
  * keeps this phase independent from the top-level sync orchestration.
+ *
+ * Returns the ids of every Hardcover book_sources row persistResolvedHardcoverAudioEdition
+ * actually updated below — resolving/writing an audio edition flips that row's
+ * source_media_type to 'audiobook', which changes its identity-key format
+ * bucket and can change the book's canonical media_type, so the caller must
+ * reconcile scoped to these rows too (see engine.ts's Phase L).
  */
-export async function syncAudiobookshelfProgress(context: any): Promise<void> {
+export async function syncAudiobookshelfProgress(context: any): Promise<number[]> {
   const {
     db, profileId, runId, hasAbs, hasHardcover, grimmoryAvailable, adapters,
     absBaseUrl, absApiKey, baseUrl, grimmoryToken, hardcoverToken,
@@ -15,6 +21,7 @@ export async function syncAudiobookshelfProgress(context: any): Promise<void> {
     meaningfulProgress, effectiveAbsCurrentTimeSeconds, persistResolvedHardcoverAudioEdition,
     clampPercent, sharedHardcoverOwnership, localGrimmoryBookForBookId, todayDate
   } = context;
+  const resolvedAudioEditionSourceIds: number[] = [];
 // ── Phase N: Audiobookshelf progress sync ────────────────────────────────
 // ABS is the source of truth for audiobook listening progress.
 // When ABS reports progress for a matched audiobook, push that progress
@@ -393,7 +400,8 @@ if (hasAbs && absApiKey && (hasHardcover || grimmoryAvailable)) {
           preferredEditionId = hcLibraryBook?.book.default_audio_edition_id ?? null;
         }
 
-        persistResolvedHardcoverAudioEdition(db, profileId, absSource.book_id, preferredEditionId);
+        const resolvedAudioEditionSourceId = persistResolvedHardcoverAudioEdition(db, profileId, absSource.book_id, preferredEditionId);
+        if (resolvedAudioEditionSourceId !== null) resolvedAudioEditionSourceIds.push(resolvedAudioEditionSourceId);
 
         if (hcState?.hardcover_user_book_id) {
           const progressSeconds = absProgress
@@ -575,5 +583,7 @@ if (hasAbs && absApiKey && (hasHardcover || grimmoryAvailable)) {
     recordEvent(db, runId, profileId, "Audiobookshelf", "api_failure", "audiobookshelf", "progress_sync_failed", { error: String(err) });
   }
 }
+
+return resolvedAudioEditionSourceIds;
 
 }

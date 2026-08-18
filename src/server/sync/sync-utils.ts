@@ -305,21 +305,30 @@ export function effectiveAbsCurrentTimeSeconds(absProgress: { currentTime: numbe
   return 0;
 }
 
+/**
+ * Returns the updated row's book_sources.id, or null if nothing changed (no
+ * matching row, or it already had this edition/media type). Flipping
+ * source_media_type to 'audiobook' changes that row's identity-key format
+ * bucket and can change the book's canonical media_type, so callers must
+ * reconcile scoped to the returned id — see syncAudiobookshelfProgress.
+ */
 export function persistResolvedHardcoverAudioEdition(
   db: ReturnType<typeof getDb>,
   profileId: number,
   bookId: number,
   editionId: number | null
-): void {
-  if (!editionId || editionId <= 0) return;
+): number | null {
+  if (!editionId || editionId <= 0) return null;
   // Scoped to this profile's own Hardcover instance — each profile can track a
   // different edition of the same shared book.
-  db.prepare(`
+  const row = db.prepare(`
     UPDATE book_sources
     SET source_edition_id = ?, source_media_type = 'audiobook', last_modified_at = datetime('now')
     WHERE source_type = 'hardcover' AND source_instance_id = ? AND book_id = ?
       AND (source_edition_id IS NULL OR source_edition_id != ? OR source_media_type IS NULL OR source_media_type != 'audiobook')
-  `).run(String(editionId), profileId, bookId, String(editionId));
+    RETURNING id
+  `).get(String(editionId), profileId, bookId, String(editionId)) as { id: number } | undefined;
+  return row?.id ?? null;
 }
 
 export function progressPagesFromPercent(percent: number, pages: number | null): number | null {

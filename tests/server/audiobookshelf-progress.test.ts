@@ -81,6 +81,75 @@ test("Audiobookshelf repairs a blank live Hardcover read when cached progress is
   assert.equal(readWrites[0]!.fields.progress_seconds, 200);
 });
 
+test("syncAudiobookshelfProgress returns the Hardcover book_sources id whose audio edition it resolved, so the caller can reconcile it", async (t) => {
+  const { db, cleanup } = createTestDatabase();
+  t.after(cleanup);
+
+  const profileId = Number(db.prepare("INSERT INTO profiles (display_name) VALUES ('Test Profile')").run().lastInsertRowid);
+  const bookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Test Audiobook')").run().lastInsertRowid);
+  // No source_edition_id/source_media_type='audiobook' yet — persistResolvedHardcoverAudioEdition
+  // has to actually resolve and write it below, via the hcBooks default_audio_edition_id fallback.
+  const hcSourceId = Number(db.prepare(`
+    INSERT INTO book_sources
+      (book_id, source_type, source_instance_id, external_id, source_media_type)
+    VALUES (?, 'hardcover', ?, '555', 'book')
+  `).run(bookId, profileId).lastInsertRowid);
+  db.prepare(`
+    INSERT INTO book_sources
+      (book_id, source_type, source_instance_id, external_id, source_media_type, audiobookshelf_duration, audiobookshelf_runtime_validated)
+    VALUES (?, 'audiobookshelf', ?, 'abs-1', 'audiobook', 1000, 1)
+  `).run(bookId, profileId);
+  db.prepare(`
+    INSERT INTO user_book_states
+      (book_id, profile_id, source_type, progress, hardcover_status_id, hardcover_read_id, hardcover_user_book_id, hardcover_edition_id)
+    VALUES (?, ?, 'hardcover', 20, 2, 99, 10, 10)
+  `).run(bookId, profileId);
+
+  const touchedSourceIds = await syncAudiobookshelfProgress({
+    db,
+    profileId,
+    runId: 1,
+    hasAbs: true,
+    hasHardcover: true,
+    grimmoryAvailable: false,
+    absBaseUrl: "https://abs.example",
+    absApiKey: "key",
+    baseUrl: "",
+    grimmoryToken: null,
+    hardcoverToken: "token",
+    dryRun: false,
+    counters: { written: 0, skipped: 0, superseded: 0, sourceFailures: 0 },
+    grimmoryBooks: [],
+    grimmoryProgressById: new Map(),
+    hcBooks: [{
+      id: 10,
+      edition_id: 10,
+      status_id: 2,
+      book: { id: 555, default_audio_edition_id: 10 },
+      user_book_reads: [{ id: 99, edition_id: 10, progress: 0, progress_seconds: 0, finished_at: null, started_at: "2026-08-16" }]
+    }],
+    adapters: {
+      fetchAudiobookshelfAllProgress: async () => [{ libraryItemId: "abs-1", progress: 0.2, currentTime: 200, duration: 1000, lastUpdate: "2026-08-16T00:00:00.000Z" }],
+      updateHardcoverUserBook: async () => {},
+      updateHardcoverUserBookRead: async () => {}
+    },
+    recordEvent: () => {},
+    meaningfulProgress,
+    effectiveAbsCurrentTimeSeconds,
+    persistResolvedHardcoverAudioEdition,
+    clampPercent,
+    sharedHardcoverOwnership: noSharedHardcoverOwnership,
+    localGrimmoryBookForBookId: () => undefined,
+    todayDate
+  });
+
+  assert.deepEqual(touchedSourceIds, [hcSourceId], "must return the Hardcover source row it resolved an audio edition for");
+  const updated = db.prepare("SELECT source_media_type, source_edition_id FROM book_sources WHERE id = ?").get(hcSourceId) as
+    { source_media_type: string; source_edition_id: string };
+  assert.equal(updated.source_media_type, "audiobook");
+  assert.equal(updated.source_edition_id, "10");
+});
+
 test("an active book sibling owning the shared Hardcover record suppresses the ABS-to-Hardcover write", async (t) => {
   const { db, cleanup } = createTestDatabase();
   t.after(cleanup);
