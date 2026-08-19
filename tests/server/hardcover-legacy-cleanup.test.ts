@@ -150,6 +150,65 @@ test("reconciling without cleaning up the legacy row first strands the merge (do
   }
 });
 
+test("cleanupLegacyHardcoverSources migrates state already stranded on the legacy row's orphan book", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    // Simulates a database that already hit the "No Exit" split (see the test
+    // above) before this cleanup existed: the profile's user_book_states row is
+    // sitting on the legacy row's own orphan book_id, not the live row's book.
+    const orphanBookId = insertBook(db, "Orphan");
+    const canonicalBookId = insertBook(db, "Canonical");
+    seedProfile(db, "Profile");
+    insertHardcoverSource(db, orphanBookId, null, "hc-5");
+    insertHardcoverSource(db, canonicalBookId, 1, "hc-5");
+    db.prepare(`
+      INSERT INTO user_book_states (book_id, profile_id, source_type, status, rating)
+      VALUES (?, 1, 'hardcover', 'READ', 4)
+    `).run(orphanBookId);
+
+    cleanupLegacyHardcoverSources(db);
+
+    const migrated = db.prepare("SELECT book_id, rating FROM user_book_states WHERE profile_id = 1 AND source_type = 'hardcover'").get() as
+      { book_id: number; rating: number } | undefined;
+    assert.ok(migrated, "the stranded state must survive the cleanup");
+    assert.equal(migrated!.book_id, canonicalBookId, "it must follow the live row's book, not stay on the deleted orphan");
+    assert.equal(migrated!.rating, 4);
+  } finally {
+    cleanup();
+  }
+});
+
+test("cleanupLegacyHardcoverSources drops a stranded state duplicate instead of colliding with the live row's own state", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const orphanBookId = insertBook(db, "Orphan");
+    const canonicalBookId = insertBook(db, "Canonical");
+    seedProfile(db, "Profile");
+    insertHardcoverSource(db, orphanBookId, null, "hc-6");
+    insertHardcoverSource(db, canonicalBookId, 1, "hc-6");
+    // The live row already has its own current state on the canonical book...
+    db.prepare(`
+      INSERT INTO user_book_states (book_id, profile_id, source_type, status, rating)
+      VALUES (?, 1, 'hardcover', 'READ', 5)
+    `).run(canonicalBookId);
+    // ...while a stale duplicate is stranded on the orphan from before the fix.
+    db.prepare(`
+      INSERT INTO user_book_states (book_id, profile_id, source_type, status, rating)
+      VALUES (?, 1, 'hardcover', 'READING', 2)
+    `).run(orphanBookId);
+
+    cleanupLegacyHardcoverSources(db);
+
+    const states = db.prepare("SELECT book_id, rating FROM user_book_states WHERE profile_id = 1 AND source_type = 'hardcover'").all() as
+      { book_id: number; rating: number }[];
+    assert.equal(states.length, 1, "the stale stranded duplicate must be dropped rather than left behind or clobbering the live state");
+    assert.equal(states[0]!.book_id, canonicalBookId);
+    assert.equal(states[0]!.rating, 5, "the live row's own current state must be the one that survives");
+  } finally {
+    cleanup();
+  }
+});
+
 test("cleaning up legacy rows before reconciling merges cleanly (verifies the fix)", () => {
   const { db, cleanup } = createTestDatabase();
   try {

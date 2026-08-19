@@ -310,6 +310,7 @@ const USER_LISTS_QUERY = `
           edition {
             id
             edition_format
+            reading_format_id
             isbn_13
             isbn_10
             asin
@@ -323,6 +324,9 @@ const USER_LISTS_QUERY = `
             pages
             image { url }
             contributions { author { name } }
+            default_physical_edition_id
+            default_ebook_edition_id
+            default_audio_edition_id
             default_physical_edition { isbn_13 isbn_10 pages }
             default_ebook_edition { asin isbn_13 isbn_10 }
             default_audio_edition { asin isbn_13 isbn_10 }
