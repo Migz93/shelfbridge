@@ -32,8 +32,9 @@ own state for that profile) is resolved with the same rule
 `reconcileBookIdentities()` uses: `shouldMoveState()` in `db/bookIdentity.ts`
 (prefer meaningful progress, then the newer `last_modified_at`).
 
-Runs at two points, both before reconciliation so a stale legacy row is never
-present to strand a live row's merge:
+Runs at two points, both before reconciliation. An eligible row is removed
+before the merge pass runs, so it's never present to strand a live row's
+merge; a deferred row (see the table above) remains for a later pass:
 
 1. At the start of every Hardcover sync's own Phase D, in `engine.ts`, before
    that sync's scoped `reconcileBookIdentities()` call

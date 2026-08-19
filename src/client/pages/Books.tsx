@@ -147,6 +147,13 @@ function CatalogPage({ mediaType, title }: { mediaType: "book" | "audiobook"; ti
     if (rawAction === "probable-duplicates") setParam({ action: "possible-duplicates" });
   }, [rawAction]);
 
+  // "hidden" is a Books-only param (see hiddenOnly above) — strip it from the
+  // URL on Audiobooks so it doesn't linger there and reappear if the user
+  // navigates back to Books via history.
+  useEffect(() => {
+    if (mediaType === "audiobook" && searchParams.has("hidden")) setParam({ hidden: null });
+  }, [mediaType, searchParams]);
+
   const [searchInput, setSearchInput] = useState(q);
 
   // Debounce: commit searchInput to URL after 300ms of no typing
