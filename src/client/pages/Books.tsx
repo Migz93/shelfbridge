@@ -400,7 +400,7 @@ function CatalogPage({ mediaType, title }: { mediaType: "book" | "audiobook"; ti
                 count={facets?.probableDuplicateCount}
                 onClick={() => toggleAction("possible-duplicates")}
               />
-              {facets && (facets.hiddenCount > 0 || hiddenOnly) && (
+              {mediaType === "book" && facets && (facets.hiddenCount > 0 || hiddenOnly) && (
                 <FilterChip
                   label="Needs Fix"
                   active={hiddenOnly}

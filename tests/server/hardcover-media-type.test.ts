@@ -46,12 +46,19 @@ function edition(overrides: Partial<HardcoverEdition> = {}): HardcoverEdition {
   };
 }
 
-test("inferHardcoverMediaType resolves via reading_format_id, ignoring a blank/uninformative edition_format", () => {
+test("inferHardcoverMediaType resolves via reading_format_id, ignoring a blank/uninformative edition_format and a conflicting default-edition pointer", () => {
   // Mirrors the real "No Exit" case: Hardcover auto-assigned a generic edition
   // with an empty edition_format string, but reading_format_id was populated
-  // (1 = Read/physical) the whole time.
+  // (1 = Read/physical) the whole time. Also gives the same edition id as the
+  // book's default_audio_edition_id, proving reading_format_id short-circuits
+  // before the default-pointer fallback is ever consulted, not just before
+  // edition_format.
+  const book = userBook({
+    edition_id: 100,
+    book: { ...userBook().book, default_audio_edition_id: 100 }
+  });
   assert.equal(
-    inferHardcoverMediaType(userBook(), edition({ edition_format: "", reading_format_id: 1 })),
+    inferHardcoverMediaType(book, edition({ edition_format: "", reading_format_id: 1 })),
     "physical"
   );
 });
