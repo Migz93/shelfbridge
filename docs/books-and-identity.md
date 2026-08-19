@@ -69,9 +69,8 @@ Before those keys are generated, each source row is bucketed into `book`,
 |---|---|
 | Bucket inputs | Source media type, Hardcover reading format, Grimmory/Chaptarr file paths, narrator presence |
 | Hardcover precedence | Structured `reading_format_id` (Physical/Audiobook/E-Book/Both) wins over the free-text `edition_format` field and over `default_*_edition_id` pointers — `edition_format` is often blank or inconsistently labeled, and a book can expose the same edition ID as its physical, ebook, and audio default simultaneously |
-| Bucket-prefixed keys | HC book ID, Grimmory ID — e.g. separate HC library entries for the physical and audio editions of the same work are not incorrectly merged |
+| Bucket-prefixed keys | HC book ID, Grimmory ID, and the title+author key (`titleAuthorKey` emits `${bucket}.title_author:…`) — e.g. separate HC library entries for the physical and audio editions of the same work are not incorrectly merged, and a book row and an audiobook row with identical title/author stay in separate canonical records rather than collapsing together |
 | ISBN exception | `isbnIdentityKeys` emits unprefixed `isbn13:`/`isbn10:` keys — an ISBN identifies a specific edition regardless of bucket, and a row's bucket is often "unknown" for reasons unrelated to actual format (e.g. no Hardcover edition data yet); prefixing would block a valid exact-ISBN match |
-| Title+author key | Format-agnostic — physical, ebook, and audiobook editions with no shared high-confidence identifier are merged by normalised title+author rather than kept as separate canonical records, preventing duplicate `books` rows (e.g. an HC edition pointing at the physical book, an ABS file matched via the audiobook edition) |
 
 Key `user_book_states` fields:
 
