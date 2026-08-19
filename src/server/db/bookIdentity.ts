@@ -252,8 +252,15 @@ function highIdentityKeys(row: BookSourceRow): IdentityKey[] {
   ));
 }
 
+// Deliberately NOT bucket-prefixed like highIdentityKeys/filePathIdentityKeys: an
+// ISBN identifies a specific edition regardless of the format bucket a row happens
+// to resolve to, and a row's bucket is often unresolved ("unknown") for reasons
+// that have nothing to do with the book's actual format (e.g. a Hardcover source
+// with no edition data yet — see rowFormatBucket). Prefixing here would silently
+// block an exact-ISBN match between such a row and its already-canonicalized
+// counterpart. The merge loop below still guards this with highKeyConflict(), so
+// a shared ISBN alone can never override a genuinely conflicting authoritative ID.
 function isbnIdentityKeys(row: BookSourceRow): IdentityKey[] {
-  const bucket = rowFormatBucket(row);
   const pairs: Array<[string, string | null]> = [
     ["isbn13", normalizeIsbn(row.isbn13)],
     ["isbn10", normalizeIsbn(row.isbn10)],
@@ -262,7 +269,7 @@ function isbnIdentityKeys(row: BookSourceRow): IdentityKey[] {
   return Array.from(new Set(
     pairs
       .filter((pair): pair is [string, string] => pair[1] !== null)
-      .map(([type, value]) => `${bucket}.${type}:${value}` as IdentityKey)
+      .map(([type, value]) => `${type}:${value}` as IdentityKey)
   ));
 }
 

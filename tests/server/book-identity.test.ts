@@ -61,6 +61,36 @@ test("reconcileBookIdentities merges two sources that share an ISBN13 into one b
   }
 });
 
+test("reconcileBookIdentities merges an ISBN match even when one row's format bucket is unresolved", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    // A Hardcover-only row with no edition_format/media_type data (as happens when
+    // Hardcover hasn't resolved a default edition for the book) resolves to the
+    // "unknown" format bucket. It must still merge with an existing canonical book
+    // via a shared ISBN — ISBN identity should not be gated by format bucket.
+    db.prepare(`
+      INSERT INTO book_sources (source_type, external_id, title, author, isbn13, source_media_type, source_edition_format)
+      VALUES ('hardcover', 'hc-1', 'Dune', 'Frank Herbert', '9780441013593', NULL, NULL)
+    `).run();
+    db.prepare(`
+      INSERT INTO book_sources (source_type, external_id, title, author, isbn13, source_media_type)
+      VALUES ('grimmory', 'gr-1', 'Dune', 'Frank Herbert', '9780441013593', 'book')
+    `).run();
+
+    reconcileBookIdentities(db);
+
+    const books = booksByTitle(db);
+    assert.equal(books.length, 1, "an unresolved-format Hardcover row sharing an ISBN should still merge into the canonical book");
+
+    const sources = db.prepare("SELECT source_type, book_id FROM book_sources").all() as
+      { source_type: string; book_id: number }[];
+    assert.equal(sources.length, 2);
+    for (const source of sources) assert.equal(source.book_id, books[0]!.id);
+  } finally {
+    cleanup();
+  }
+});
+
 test("reconcileBookIdentities keeps sources with conflicting hardcover_book_id as separate books", () => {
   const { db, cleanup } = createTestDatabase();
   try {
