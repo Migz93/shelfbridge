@@ -106,6 +106,12 @@ test("refreshStaleGrimmoryCovers isolates a per-source failure so later sources 
   const okCache = db.prepare("SELECT local_web_path FROM image_cache WHERE entity_id = ?").get(String(okSourceId)) as { local_web_path: string | null } | undefined;
   assert.ok(okCache?.local_web_path, "the source after the failing one must still be refreshed, not skipped");
 
+  const okSource = db.prepare("SELECT cover_cache_path FROM book_sources WHERE id = ?").get(okSourceId) as { cover_cache_path: string | null } | undefined;
+  assert.equal(okSource?.cover_cache_path, okCache.local_web_path, "the succeeding source's book_sources row must be updated to the refreshed path, not just image_cache");
+
+  const okBook = db.prepare("SELECT cover_cache_path FROM books WHERE id = ?").get(okBookId) as { cover_cache_path: string | null } | undefined;
+  assert.equal(okBook?.cover_cache_path, okCache.local_web_path, "the succeeding source's canonical book must be reconciled to the refreshed path too");
+
   const failingSource = db.prepare("SELECT cover_cache_path FROM book_sources WHERE id = ?").get(failingSourceId) as { cover_cache_path: string | null } | undefined;
   assert.equal(failingSource?.cover_cache_path ?? null, null, "the failing source's own book_sources row must not end up with a cached path, since its UPDATE threw");
 });

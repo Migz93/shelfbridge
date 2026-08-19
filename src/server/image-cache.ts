@@ -219,11 +219,6 @@ async function refreshInBackground(cacheKey: string, entityId: string, sourceUrl
     return;
   }
 
-  // Delete old file only after new one is safely written
-  if (oldFilePath && oldFilePath !== newFilePath) {
-    try { fs.unlinkSync(oldFilePath); } catch { /* best-effort */ }
-  }
-
   const refreshAfter = computeRefreshAfter();
   getDb().prepare(`
     UPDATE image_cache SET
@@ -231,6 +226,13 @@ async function refreshInBackground(cacheKey: string, entityId: string, sourceUrl
       last_refresh_at = ?, refresh_after = ?, last_error = NULL
     WHERE cache_key = ?
   `).run(sourceUrl, newFilePath, newWebPath, new Date().toISOString(), refreshAfter, cacheKey);
+
+  // Delete the old file only once image_cache itself is durably pointing at
+  // the new one — deleting it first would leave the row referencing a path
+  // that no longer exists on disk if the process died in between.
+  if (oldFilePath && oldFilePath !== newFilePath) {
+    try { fs.unlinkSync(oldFilePath); } catch { /* best-effort */ }
+  }
 
   logger.info("ImageCache: cover refreshed", { cacheKey, webPath: newWebPath });
 
