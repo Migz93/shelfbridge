@@ -11,7 +11,30 @@ ShelfBridge runs three scheduled housekeeping jobs, all registered in
 |---|---|---|
 | `maintenance` | Daily at 03:00 | Prunes `sync_runs` rows older than the retention window |
 | `image-cache-refresh` | Daily at 02:00 | Re-fetches stale cover images, including authenticated Grimmory covers that need a live token |
-| `full-reconcile` | Daily at 04:00 | Runs a full, unscoped `reconcileBookIdentities()` pass over the whole catalog, with progress logged at each phase. Serialized against every profile sync via `runExclusiveOfSyncs` in `engine.ts` — it never runs while a sync is mid-flight, since a sync yields to the event loop between remote I/O calls and an unserialized reconcile could merge/reassign a book_id it's mid-write against |
+| `full-reconcile` | Daily at 04:00 | First runs `cleanupLegacyHardcoverSources()` (`sync/hardcover-legacy-cleanup.ts`), then a full, unscoped `reconcileBookIdentities()` pass over the whole catalog, with progress logged at each phase. Serialized against every profile sync via `runExclusiveOfSyncs` in `engine.ts` — it never runs while a sync is mid-flight, since a sync yields to the event loop between remote I/O calls and an unserialized reconcile could merge/reassign a book_id it's mid-write against |
+
+`cleanupLegacyHardcoverSources()` deletes instance-less (`source_instance_id
+IS NULL`) `hardcover` `book_sources` rows once a live, profile-scoped row
+exists for the same Hardcover book — a pre-per-profile-scoping artifact that
+no sync path writes anymore, but that a fresh install migrated forward as a
+duplicate of every currently-tracked Hardcover book. Safe unconditionally:
+`user_book_states` is keyed by `(book_id, profile_id, source_type)` with
+`profile_id NOT NULL`, so it can never reference an instance-less row.
+Deleting one can leave its book sourceless (if the pair had already drifted
+onto separate books), which the following full-reconcile pass cleans up in
+the same run.
+
+It also runs at the start of every Hardcover sync's own Phase D, in
+`engine.ts`, before that sync's own scoped `reconcileBookIdentities()` call —
+not just once a day. Leaving a legacy row in place is not just inert clutter:
+if that book's live row resolves its format and needs to merge into its
+Grimmory/Chaptarr canonical in this same sync, the still-present legacy row
+(stuck at an unresolved format bucket, since nothing ever updates it) can
+itself get treated as a distinct, already-claimed book id before the real
+merge is processed — stranding the live row's `book_sources` and
+`user_book_states` behind on that id instead of following the merge. Running
+the cleanup immediately before every sync's reconcile, not just once a day,
+means the legacy row is never there to cause that conflict.
 
 Book identity reconciliation itself is not primarily a scheduled task: every
 sync phase and book-mutating route reconciles just the records it touched, so

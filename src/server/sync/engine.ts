@@ -29,6 +29,7 @@ import { syncGoodreadsEnrichment } from "./goodreads-phase.js";
 import { fetchSourceSnapshots } from "./source-snapshots.js";
 import { persistGrimmorySources } from "./grimmory-sources.js";
 import { persistHardcoverSources } from "./hardcover-sources.js";
+import { cleanupLegacyHardcoverSources } from "./hardcover-legacy-cleanup.js";
 import { applySourceTags } from "./source-tags.js";
 import { recordSyncEvent } from "./events.js";
 import { getActiveSyncStatus, trackActiveSyncRun, untrackActiveSyncRun, runExclusiveOfSyncs } from "./sync-queue.js";
@@ -147,6 +148,16 @@ export async function runSyncImpl(
       pruneHardcoverUserStatesMissingFromFetch, pruneHardcoverSourcesMissingFromFetch, hardcoverSnapshotStatus });
 
     // ── Phase D: Reconcile identities ────────────────────────────────────────
+    // Cleaned up before reconciling, not just in the once-daily full-reconcile
+    // job: a legacy instance-less row left in place can still be sitting on a
+    // book's id when this sync's freshly-resolved live row needs to merge into
+    // its canonical book, and reconciliation will (correctly, conservatively)
+    // refuse to touch a book id it doesn't know is safe to reclaim — stranding
+    // the real merge instead of completing it. Running the cleanup right here,
+    // before every sync's own reconcile, means that stale row is never present
+    // to cause the conflict in the first place.
+    if (hasHardcover) cleanupLegacyHardcoverSources(db);
+
     // Now that both Grimmory and HC sources are written, reconcile so every
     // book_sources row gets a book_id. This is what links HC sources to
     // Grimmory sources for the HC sync loop below.
