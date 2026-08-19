@@ -270,14 +270,20 @@ book-style Grimmory fallback when Hardcover has the correct square audiobook art
 `cover_cache_path` in `book_sources` is updated after a successful cache write
 and is the only cover path returned to API clients.
 
-After a full (unscoped) identity reconciliation, ShelfBridge removes orphaned
-`image_cache` rows whose `entity_id` no longer points at an existing
-`book_sources.id`. The cached file is deleted only when no other cache row
-references it and the file path is inside `DATA_DIR/image-cache/`. This cleanup
-scans the whole `image_cache` table, so it does not run after the scoped
-reconciles that follow individual syncs and book writes (see below) — it runs
-at startup and as part of the daily `full-reconcile` maintenance job instead
-(`docs/maintenance.md`).
+ShelfBridge removes orphaned `image_cache` rows whose `entity_id` no longer
+points at an existing `book_sources.id`. The cached file is deleted only when
+no other cache row references it and the file path is inside
+`DATA_DIR/image-cache/`. Two cleanup paths exist:
+
+- A full-table scan, run after a full (unscoped) identity reconciliation — at
+  startup and as part of the daily `full-reconcile` maintenance job
+  (`docs/maintenance.md`). It does not run after the scoped reconciles that
+  follow individual syncs and book writes (see below), since scanning the
+  whole table on every write would defeat the point of scoping.
+- A targeted cleanup for a known set of just-removed `book_sources` ids,
+  looked up directly rather than scanned — run whenever a book is deleted
+  (`DELETE /api/books/:id`) or a source is pruned (Chaptarr, Hardcover, or
+  Grimmory rows falling out of a sync), immediately after the removal.
 
 ---
 

@@ -19,11 +19,16 @@ identities stay correct on the fly without scanning the whole catalog on
 every write. The `full-reconcile` job exists as a periodic correction pass
 for the narrow cases on-the-fly reconciliation can miss.
 
-A related cleanup is not scheduled but runs inline: orphaned `image_cache`
-rows are removed whenever a full reconciliation runs (startup, and the
-`full-reconcile` job) or a book is deleted. It isn't run after every
-write-triggered scoped reconcile, since it scans the whole `image_cache`
-table and would defeat the point of scoping if it did.
+A related cleanup is not scheduled but runs inline, via two paths:
+
+- A full-table scan whenever a full reconciliation runs (startup, and the
+  `full-reconcile` job). It isn't run after every write-triggered scoped
+  reconcile, since scanning the whole `image_cache` table would defeat the
+  point of scoping.
+- A targeted lookup by the specific `book_sources` ids just removed —
+  cheap enough to run inline on every book deletion or source pruning pass
+  (Chaptarr, Hardcover, Grimmory), without waiting for the next full
+  reconciliation.
 
 ## Data Retention
 
