@@ -104,6 +104,7 @@ function CatalogPage({ mediaType, title }: { mediaType: "book" | "audiobook"; ti
   const action: ActionFilter = rawAction === "probable-duplicates"
     ? "possible-duplicates"
     : ACTION_OPTIONS.some((o) => o.value === rawAction) ? rawAction as ActionFilter : null;
+  const hiddenOnly = searchParams.get("hidden") === "1";
 
   // Multi-select filter state stored as comma-separated URL params.
   const VALID_SOURCES = new Set<SourceFilter>(["hardcover", "goodreads", "on-disk"]);
@@ -161,7 +162,7 @@ function CatalogPage({ mediaType, title }: { mediaType: "book" | "audiobook"; ti
 
   async function load(background = false) {
     setLoading((c) => c || !background);
-    const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE), sortBy, mediaType });
+    const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE), sortBy, mediaType: hiddenOnly ? "hidden" : mediaType });
     if (includedProfileIds.size > 0) params.set("profileId", [...includedProfileIds].join(","));
     if (excludedProfileIds.size > 0) params.set("excludeProfileId", [...excludedProfileIds].join(","));
     if (status !== "all") params.set("status", status);
@@ -183,7 +184,7 @@ function CatalogPage({ mediaType, title }: { mediaType: "book" | "audiobook"; ti
 
   const getIntervalMs = useCallback(() => BOOKS_REFRESH_MS, []);
   const { refreshNow } = useLiveRefresh(async () => { await load(true); }, { getIntervalMs });
-  useEffect(() => { void load(); }, [status, rawSource, rawExcludeSource, chaptarr, action, rawProfileId, rawExcludeProfileId, page, q]);
+  useEffect(() => { void load(); }, [status, rawSource, rawExcludeSource, chaptarr, action, rawProfileId, rawExcludeProfileId, page, q, hiddenOnly]);
 
   const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 0;
   const facets: BookFacets | undefined = data?.facets;
@@ -224,6 +225,10 @@ function CatalogPage({ mediaType, title }: { mediaType: "book" | "audiobook"; ti
 
   function toggleAction(next: NonNullable<ActionFilter>) {
     setParam({ action: action === next ? null : next }, true);
+  }
+
+  function toggleHidden() {
+    setParam({ hidden: hiddenOnly ? null : "1" }, true);
   }
 
   return (
@@ -391,6 +396,15 @@ function CatalogPage({ mediaType, title }: { mediaType: "book" | "audiobook"; ti
                 count={facets?.probableDuplicateCount}
                 onClick={() => toggleAction("possible-duplicates")}
               />
+              {facets && (facets.hiddenCount > 0 || hiddenOnly) && (
+                <FilterChip
+                  label="Hidden"
+                  active={hiddenOnly}
+                  count={facets.hiddenCount}
+                  onClick={toggleHidden}
+                  title="Books with an unresolved media type — not shown on Books or Audiobooks until fixed"
+                />
+              )}
             </div>
             <span className="text-[11px] font-medium text-on-surface-variant/50 uppercase tracking-wide sm:w-16 sm:shrink-0">Review</span>
           </div>
@@ -1460,13 +1474,15 @@ function FilterChip({
   active,
   subtracting = false,
   count,
-  onClick
+  onClick,
+  title
 }: {
   label: string;
   active: boolean;
   subtracting?: boolean;
   count?: number;
   onClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  title?: string;
 }) {
   return (
     <button
@@ -1478,7 +1494,7 @@ function FilterChip({
           ? "bg-primary-dim text-on-surface border-primary-dim"
           : "bg-background-container border-outline-variant/20 text-on-surface-variant hover:text-on-surface hover:border-outline-variant/40"
       }`}
-      title={subtracting ? `${label} is being subtracted` : undefined}
+      title={subtracting ? `${label} is being subtracted` : title}
     >
       {subtracting && <Minus size={14} strokeWidth={3} />}
       {label}

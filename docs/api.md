@@ -483,7 +483,7 @@ matching the selected criteria.
 | `excludeSource` | comma-separated strings | — | Exclude sources: `hardcover`, `goodreads`, `on-disk` |
 | `chaptarr` | string | — | Chaptarr presence filter: `in` or `out` |
 | `action` | string | — | Shortcut filter: `add-to-chaptarr`, `grab-in-chaptarr`, `review-in-grimmory`, `fix-chaptarr-id`, `id-review`, `possible-duplicates`, `abs-runtime-mismatch` |
-| `mediaType` | string | `book` | Canonical media bucket: `book`, `audiobook`, or `all` |
+| `mediaType` | string | `book` | Canonical media bucket: `book`, `audiobook`, `all`, or `hidden` (books whose media type could not be classified — see `hiddenCount` below) |
 | `q` | string | — | Free-text search: case-insensitive substring match against `title` and `author` |
 | `sortBy` | string | `updated-desc` | Sort order: `updated-desc`, `updated-asc`, `title-asc`, `title-desc` |
 
@@ -509,7 +509,8 @@ matching the selected criteria.
     "fixChaptarrIdCount": 0,
     "idReviewCount": 3,
     "probableDuplicateCount": 1,
-    "absRuntimeMismatchCount": 0
+    "absRuntimeMismatchCount": 0,
+    "hiddenCount": 2
   }
 }
 ```
@@ -524,6 +525,11 @@ audiobooks from its totals and the Audiobooks page excludes non-audiobook books.
 Profile facet counts also use actual per-user relationships only; passive
 catalog presence from shared sources like Grimmory and Chaptarr does not count
 toward a user's chip total.
+
+`hiddenCount` is always computed against the full unfiltered catalog (independent
+of the current `mediaType`) so the UI can show a "Hidden" filter chip on either
+page whenever unclassified books exist. Passing `mediaType=hidden` switches the
+result set to just those books instead of applying the book/audiobook split.
 
 ### `GET /api/books/:id`
 

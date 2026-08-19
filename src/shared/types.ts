@@ -273,6 +273,7 @@ export interface BookFacets {
   idReviewCount: number;
   probableDuplicateCount: number;
   absRuntimeMismatchCount: number;
+  hiddenCount: number;
 }
 
 // ─── Sync ──────────────────────────────────────────────────────────────────────
