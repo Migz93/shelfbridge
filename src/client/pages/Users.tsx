@@ -428,6 +428,7 @@ export function UserDetailPage() {
   const [hardcoverSyncListId, setHardcoverSyncListId] = useState<number | null>(null);
   const [hardcoverSyncListName, setHardcoverSyncListName] = useState<string | null>(null);
   const [hardcoverTargetShelfName, setHardcoverTargetShelfName] = useState<string | null>(null);
+  const [hardcoverOwnedImportEnabled, setHardcoverOwnedImportEnabled] = useState(false);
   const [hardcoverListMappings, setHardcoverListMappings] = useState<Record<string, string>>({});
   const [hardcoverListNames, setHardcoverListNames] = useState<Record<string, string>>({});
   const [hardcoverMappingsLoaded, setHardcoverMappingsLoaded] = useState(false);
@@ -462,6 +463,7 @@ export function UserDetailPage() {
       setHardcoverSyncListId(p.hardcover?.syncListId ?? null);
       setHardcoverSyncListName(p.hardcover?.syncListName ?? null);
       setHardcoverTargetShelfName(p.hardcover?.targetShelfName ?? null);
+      setHardcoverOwnedImportEnabled(p.hardcover?.ownedImportEnabled ?? false);
       setGoodreadsId(p.goodreads?.goodreadsUserId ?? "");
       setGoodreadsEnabled(p.goodreads?.enabled ?? false);
       setGoodreadsSyncShelfName(p.goodreads?.syncShelfName ?? null);
@@ -500,14 +502,16 @@ export function UserDetailPage() {
         hardcoverToken ||
         hardcoverSyncListId !== (profile?.hardcover?.syncListId ?? null) ||
         hardcoverSyncListName !== (profile?.hardcover?.syncListName ?? null) ||
-        hardcoverTargetShelfName !== (profile?.hardcover?.targetShelfName ?? null)
+        hardcoverTargetShelfName !== (profile?.hardcover?.targetShelfName ?? null) ||
+        hardcoverOwnedImportEnabled !== (profile?.hardcover?.ownedImportEnabled ?? false)
       ) {
         patch["hardcover"] = {
           enabled: hardcoverEnabled,
           ...(hardcoverToken ? { apiToken: hardcoverToken } : {}),
           syncListId: hardcoverSyncListId,
           syncListName: hardcoverSyncListName,
-          targetShelfName: hardcoverTargetShelfName
+          targetShelfName: hardcoverTargetShelfName,
+          ownedImportEnabled: hardcoverOwnedImportEnabled
         };
       }
       if (
@@ -693,6 +697,8 @@ export function UserDetailPage() {
               setSyncList={(id, name) => { setHardcoverSyncListId(id); setHardcoverSyncListName(name); }}
               targetShelfName={hardcoverTargetShelfName}
               setTargetShelfName={setHardcoverTargetShelfName}
+              ownedImportEnabled={hardcoverOwnedImportEnabled}
+              setOwnedImportEnabled={setHardcoverOwnedImportEnabled}
               listMappings={hardcoverListMappings}
               setListMappings={setHardcoverListMappings}
               setListNames={setHardcoverListNames}
@@ -834,6 +840,8 @@ function HardcoverTabContent({
   setSyncList,
   targetShelfName,
   setTargetShelfName,
+  ownedImportEnabled,
+  setOwnedImportEnabled,
   listMappings,
   setListMappings,
   setListNames,
@@ -854,6 +862,8 @@ function HardcoverTabContent({
   setSyncList: (id: number | null, name: string | null) => void;
   targetShelfName: string | null;
   setTargetShelfName: (v: string | null) => void;
+  ownedImportEnabled: boolean;
+  setOwnedImportEnabled: (v: boolean) => void;
   listMappings: Record<string, string>;
   setListMappings: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   setListNames: React.Dispatch<React.SetStateAction<Record<string, string>>>;
@@ -930,6 +940,12 @@ function HardcoverTabContent({
           hint="Sync reading progress percentages bidirectionally between Hardcover and Grimmory when Hardcover is connected."
           checked={Boolean(syncSettings.syncProgressEnabled ?? true)}
           onChange={(v) => setSyncSettings((s) => ({ ...s, syncProgressEnabled: v }))}
+        />
+        <ToggleField
+          label="Owned Import"
+          hint="Also check your Hardcover Owned list. When an owned edition's format (book vs. audiobook) differs from your current edition, track both separately."
+          checked={ownedImportEnabled}
+          onChange={setOwnedImportEnabled}
         />
       </div>
 

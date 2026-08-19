@@ -46,6 +46,7 @@ export interface HardcoverConnectionView {
   syncListId: number | null;
   syncListName: string | null;
   targetShelfName: string | null;
+  ownedImportEnabled: boolean;
   status: ConnectionStatus;
   lastTestedAt: string | null;
   lastSuccessAt: string | null;

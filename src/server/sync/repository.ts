@@ -11,10 +11,32 @@ export interface UserStateSnapshot {
 
 type Db = ReturnType<typeof getDb>;
 
-export function getBookSource(db: Db, sourceType: string, instanceId: number, externalId: string | number): { id: number; book_id: number | null; source_media_type: string | null; source_edition_id: string | null } | undefined {
+export interface BookSourceLookup {
+  id: number;
+  book_id: number | null;
+  source_media_type: string | null;
+  source_edition_id: string | null;
+  source_bucket: string;
+}
+
+/**
+ * `bucket` defaults to `"primary"` — every source except Hardcover only ever
+ * writes that bucket, so every existing caller is unaffected. Hardcover can
+ * also have an `"owned"` row for the same (profile, external id) when the
+ * user's Owned-list edition disagrees with their current edition's format
+ * (see hardcover-sources.ts) — pass `"owned"` explicitly to look that up.
+ */
+export function getBookSource(db: Db, sourceType: string, instanceId: number, externalId: string | number, bucket = "primary"): BookSourceLookup | undefined {
   return db.prepare(
-    "SELECT id, book_id, source_media_type, source_edition_id FROM book_sources WHERE source_type = ? AND source_instance_id = ? AND external_id = ?"
-  ).get(sourceType, instanceId, String(externalId)) as { id: number; book_id: number | null; source_media_type: string | null; source_edition_id: string | null } | undefined;
+    "SELECT id, book_id, source_media_type, source_edition_id, source_bucket FROM book_sources WHERE source_type = ? AND source_instance_id = ? AND external_id = ? AND source_bucket = ?"
+  ).get(sourceType, instanceId, String(externalId), bucket) as BookSourceLookup | undefined;
+}
+
+/** Every bucket row for a (source_type, instance, external_id) key — at most two for Hardcover ('primary' + 'owned'), always exactly one (or zero) for every other source. */
+export function getBookSources(db: Db, sourceType: string, instanceId: number, externalId: string | number): BookSourceLookup[] {
+  return db.prepare(
+    "SELECT id, book_id, source_media_type, source_edition_id, source_bucket FROM book_sources WHERE source_type = ? AND source_instance_id = ? AND external_id = ?"
+  ).all(sourceType, instanceId, String(externalId)) as BookSourceLookup[];
 }
 
 /** Look up a user_book_states row by (book_id, profile_id, source_type) */
@@ -57,8 +79,12 @@ function bookSourceColumns(db: Db): Set<string> {
   return columns;
 }
 
-/** Upsert a book_sources row, scoped to (source_type, source_instance_id, external_id). Returns the row id. */
-export function upsertBookSource(db: Db, sourceType: string, instanceId: number, externalId: string | number, fields: Record<string, unknown>): number {
+/**
+ * Upsert a book_sources row, scoped to (source_type, source_instance_id,
+ * external_id, bucket). `bucket` defaults to `"primary"` — see getBookSource's
+ * doc comment. Returns the row id.
+ */
+export function upsertBookSource(db: Db, sourceType: string, instanceId: number, externalId: string | number, fields: Record<string, unknown>, bucket = "primary"): number {
   // fields keys become raw SQL identifiers below; callers only ever pass fixed
   // literal keys, but validating against the real schema is cheap
   // defense-in-depth against a future caller building keys dynamically.
@@ -67,7 +93,7 @@ export function upsertBookSource(db: Db, sourceType: string, instanceId: number,
     if (!validColumns.has(key)) throw new Error(`upsertBookSource: "${key}" is not a book_sources column`);
   }
 
-  const existing = getBookSource(db, sourceType, instanceId, externalId);
+  const existing = getBookSource(db, sourceType, instanceId, externalId, bucket);
   if (existing) {
     const setClauses = Object.keys(fields).map((k) => `${k} = ?`).join(", ");
     const modifiedFields = Object.entries(fields)
@@ -82,10 +108,10 @@ export function upsertBookSource(db: Db, sourceType: string, instanceId: number,
     `).run(...Object.values(fields), ...modifiedFields.map(([, value]) => value), existing.id);
     return existing.id;
   } else {
-    const cols = ["source_type", "source_instance_id", "external_id", ...Object.keys(fields)].join(", ");
-    const placeholders = Array(Object.keys(fields).length + 3).fill("?").join(", ");
+    const cols = ["source_type", "source_instance_id", "external_id", "source_bucket", ...Object.keys(fields)].join(", ");
+    const placeholders = Array(Object.keys(fields).length + 4).fill("?").join(", ");
     const result = db.prepare(`INSERT INTO book_sources (${cols}) VALUES (${placeholders})`)
-      .run(sourceType, instanceId, String(externalId), ...Object.values(fields));
+      .run(sourceType, instanceId, String(externalId), bucket, ...Object.values(fields));
     return Number(result.lastInsertRowid);
   }
 }
