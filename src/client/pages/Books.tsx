@@ -398,7 +398,7 @@ function CatalogPage({ mediaType, title }: { mediaType: "book" | "audiobook"; ti
               />
               {facets && (facets.hiddenCount > 0 || hiddenOnly) && (
                 <FilterChip
-                  label="Hidden"
+                  label="Needs Fix"
                   active={hiddenOnly}
                   count={facets.hiddenCount}
                   onClick={toggleHidden}
