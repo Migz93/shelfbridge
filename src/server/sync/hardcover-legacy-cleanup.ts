@@ -1,4 +1,5 @@
 import type { getDb } from "../db/index.js";
+import { shouldMoveState, type UserBookStateMoveRow } from "../db/bookIdentity.js";
 import { cleanupImageCacheForSourceIds } from "../db/imageCacheMaintenance.js";
 import { logger } from "../logger.js";
 
@@ -46,21 +47,11 @@ export function cleanupLegacyHardcoverSources(db: Db): { deleted: number; affect
   const stateProfilesOnBook = db.prepare(`
     SELECT DISTINCT profile_id FROM user_book_states WHERE book_id = ? AND source_type = 'hardcover'
   `);
-  // Moves a profile's stranded Hardcover state onto the live row's book, unless
-  // that profile already has its own (correct, current) state there — in which
-  // case the stranded row is just a stale duplicate of it, dropped below instead.
-  const migrateUserState = db.prepare(`
-    UPDATE user_book_states
-    SET book_id = ?
-    WHERE book_id = ? AND profile_id = ? AND source_type = 'hardcover'
-      AND NOT EXISTS (
-        SELECT 1 FROM user_book_states existing
-        WHERE existing.book_id = ? AND existing.profile_id = ? AND existing.source_type = 'hardcover'
-      )
+  const selectState = db.prepare(`
+    SELECT * FROM user_book_states WHERE book_id = ? AND profile_id = ? AND source_type = 'hardcover'
   `);
-  const dropStrandedUserState = db.prepare(`
-    DELETE FROM user_book_states WHERE book_id = ? AND profile_id = ? AND source_type = 'hardcover'
-  `);
+  const deleteUserState = db.prepare("DELETE FROM user_book_states WHERE id = ?");
+  const updateUserStateBook = db.prepare("UPDATE user_book_states SET book_id = ? WHERE id = ?");
   const deleteRow = db.prepare("DELETE FROM book_sources WHERE id = ?");
 
   const affectedBookIds = new Set<number>();
@@ -97,11 +88,27 @@ export function cleanupLegacyHardcoverSources(db: Db): { deleted: number; affect
           continue;
         }
 
+        // Moves a profile's stranded state onto the live row's book, resolving a
+        // conflict with the live row's own state there the same way a book merge
+        // does (see shouldMoveState in bookIdentity.ts): prefer whichever side has
+        // meaningful progress, then whichever was modified more recently — never
+        // unconditionally favor the live side, since the stranded state can be the
+        // more current one.
         for (const live of liveRows) {
           if (live.book_id === null || live.book_id === row.book_id) continue;
-          const result = migrateUserState.run(live.book_id, row.book_id, live.profile_id, live.book_id, live.profile_id);
-          if (result.changes > 0) migratedStates += result.changes;
-          else dropStrandedUserState.run(row.book_id, live.profile_id);
+          const stranded = selectState.get(row.book_id, live.profile_id) as UserBookStateMoveRow | undefined;
+          if (!stranded) continue;
+          const conflict = selectState.get(live.book_id, live.profile_id) as UserBookStateMoveRow | undefined;
+          if (!conflict) {
+            updateUserStateBook.run(live.book_id, stranded.id);
+            migratedStates++;
+          } else if (shouldMoveState(stranded, conflict)) {
+            deleteUserState.run(conflict.id);
+            updateUserStateBook.run(live.book_id, stranded.id);
+            migratedStates++;
+          } else {
+            deleteUserState.run(stranded.id);
+          }
         }
       }
 

@@ -178,7 +178,7 @@ test("cleanupLegacyHardcoverSources migrates state already stranded on the legac
   }
 });
 
-test("cleanupLegacyHardcoverSources drops a stranded state duplicate instead of colliding with the live row's own state", () => {
+test("cleanupLegacyHardcoverSources drops a stranded duplicate when the live row's own state is more current", () => {
   const { db, cleanup } = createTestDatabase();
   try {
     const orphanBookId = insertBook(db, "Orphan");
@@ -186,15 +186,15 @@ test("cleanupLegacyHardcoverSources drops a stranded state duplicate instead of 
     seedProfile(db, "Profile");
     insertHardcoverSource(db, orphanBookId, null, "hc-6");
     insertHardcoverSource(db, canonicalBookId, 1, "hc-6");
-    // The live row already has its own current state on the canonical book...
+    // The live row's own state on the canonical book was modified more recently...
     db.prepare(`
-      INSERT INTO user_book_states (book_id, profile_id, source_type, status, rating)
-      VALUES (?, 1, 'hardcover', 'READ', 5)
+      INSERT INTO user_book_states (book_id, profile_id, source_type, status, rating, last_modified_at)
+      VALUES (?, 1, 'hardcover', 'READ', 5, '2026-01-02T00:00:00.000Z')
     `).run(canonicalBookId);
     // ...while a stale duplicate is stranded on the orphan from before the fix.
     db.prepare(`
-      INSERT INTO user_book_states (book_id, profile_id, source_type, status, rating)
-      VALUES (?, 1, 'hardcover', 'READING', 2)
+      INSERT INTO user_book_states (book_id, profile_id, source_type, status, rating, last_modified_at)
+      VALUES (?, 1, 'hardcover', 'READING', 2, '2026-01-01T00:00:00.000Z')
     `).run(orphanBookId);
 
     cleanupLegacyHardcoverSources(db);
@@ -203,7 +203,45 @@ test("cleanupLegacyHardcoverSources drops a stranded state duplicate instead of 
       { book_id: number; rating: number }[];
     assert.equal(states.length, 1, "the stale stranded duplicate must be dropped rather than left behind or clobbering the live state");
     assert.equal(states[0]!.book_id, canonicalBookId);
-    assert.equal(states[0]!.rating, 5, "the live row's own current state must be the one that survives");
+    assert.equal(states[0]!.rating, 5, "the more current live-row state must be the one that survives");
+  } finally {
+    cleanup();
+  }
+});
+
+test("cleanupLegacyHardcoverSources keeps the stranded state when it is more current than the live row's own state", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    // The regular identity reconciler resolves this exact collision by
+    // preferring meaningful progress, then the newest timestamp (see
+    // shouldMoveState in bookIdentity.ts) — this cleanup must apply the same
+    // rule rather than always favoring the live row's own state, since the
+    // orphaned state can be the more current side (e.g. a listening session
+    // recorded before the profile's Hardcover connection was reconnected).
+    const orphanBookId = insertBook(db, "Orphan");
+    const canonicalBookId = insertBook(db, "Canonical");
+    seedProfile(db, "Profile");
+    insertHardcoverSource(db, orphanBookId, null, "hc-9");
+    insertHardcoverSource(db, canonicalBookId, 1, "hc-9");
+    // The live row's own state is stale...
+    db.prepare(`
+      INSERT INTO user_book_states (book_id, profile_id, source_type, status, rating, last_modified_at)
+      VALUES (?, 1, 'hardcover', 'READ', 3, '2026-01-01T00:00:00.000Z')
+    `).run(canonicalBookId);
+    // ...while the stranded orphan state has real listening progress recorded later.
+    db.prepare(`
+      INSERT INTO user_book_states (book_id, profile_id, source_type, status, rating, progress_seconds, last_modified_at)
+      VALUES (?, 1, 'hardcover', 'READING', 4, 1800, '2026-01-02T00:00:00.000Z')
+    `).run(orphanBookId);
+
+    cleanupLegacyHardcoverSources(db);
+
+    const states = db.prepare("SELECT book_id, rating, progress_seconds FROM user_book_states WHERE profile_id = 1 AND source_type = 'hardcover'").all() as
+      { book_id: number; rating: number; progress_seconds: number | null }[];
+    assert.equal(states.length, 1, "exactly one state must survive per profile");
+    assert.equal(states[0]!.book_id, canonicalBookId, "it must still end up on the live row's book, not the deleted orphan");
+    assert.equal(states[0]!.rating, 4, "the more current stranded state must win, not be discarded in favor of the stale live one");
+    assert.equal(states[0]!.progress_seconds, 1800);
   } finally {
     cleanup();
   }

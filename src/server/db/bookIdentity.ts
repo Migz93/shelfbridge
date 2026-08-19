@@ -42,7 +42,7 @@ interface BookSourceRow {
   created_at: string | null;
 }
 
-interface UserBookStateMoveRow {
+export interface UserBookStateMoveRow {
   id: number;
   book_id: number;
   profile_id: number;
@@ -453,7 +453,12 @@ function stateHasProgress(row: Pick<UserBookStateMoveRow, "progress" | "progress
     || (row.progress !== null && Math.abs(row.progress) > 0.001);
 }
 
-function shouldMoveState(source: UserBookStateMoveRow, existing: UserBookStateMoveRow): boolean {
+// Also used by hardcover-legacy-cleanup.ts, so a stranded state being migrated
+// off a legacy row resolves a conflict with the live row's own state the same
+// way a book merge would — preferring meaningful progress, then the newer
+// timestamp — rather than a cleanup-specific rule that could discard the more
+// current side.
+export function shouldMoveState(source: UserBookStateMoveRow, existing: UserBookStateMoveRow): boolean {
   const sourceHasProgress = stateHasProgress(source);
   const existingHasProgress = stateHasProgress(existing);
   if (sourceHasProgress !== existingHasProgress) return sourceHasProgress;
