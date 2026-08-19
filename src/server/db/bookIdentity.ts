@@ -174,8 +174,13 @@ function rowFormatBucket(row: Pick<BookSourceRow,
   "source_type" | "source_media_type" | "source_edition_format" | "source_narrator" | "grimmory_primary_file_path" | "chaptarr_primary_file_path"
 >): FormatBucket {
   const editionBucket = inferEditionFormatBucket(row.source_edition_format);
-  if (row.source_type === "hardcover" && editionBucket !== "unknown") return editionBucket;
 
+  // source_media_type is now trusted first for every source type, including
+  // Hardcover: it's derived from Hardcover's structured reading_format_id
+  // (see inferHardcoverMediaType in sync-utils.ts), which is far more
+  // reliable than the free-text edition_format this function otherwise
+  // parses — that field is user-submitted and can be blank, absent, or
+  // mislabeled relative to the edition's actual reading_format.
   if (row.source_media_type === "audiobook") return "audiobook";
   if (row.source_media_type === "ebook" || row.source_media_type === "physical" || row.source_media_type === "book") return "book";
 
