@@ -197,6 +197,7 @@ so all tests start already authenticated.
 | Never touches the live row | A live, profile-scoped row is never deleted |
 | Migrates state already stranded on the orphan | A profile's `user_book_states` row already sitting on the legacy row's own orphan book (from before this cleanup existed) is moved onto the live row's book, not left behind when the legacy row is deleted |
 | Drops a stranded duplicate instead of colliding | When the live row's book already has its own current state, a stranded duplicate on the orphan is dropped rather than causing a unique-constraint conflict or overwriting the live state |
+| Leaves the row alone when only some profiles are matched | A legacy row with state from two profiles on its orphan book, only one of which has a live counterpart, is left entirely undeleted — the unmatched profile's state is never stranded |
 | Reconciling without cleanup first strands the merge | Documents the underlying bug: a legacy row left in place when a book's live row needs to merge into its Grimmory canonical leaves the merge stranded — book_sources reassigned, but the book row and its user_book_states left behind |
 | Cleaning up before reconciling merges cleanly | Verifies the fix: running the cleanup immediately before reconciling (what `engine.ts` now does on every Hardcover sync, not just the daily job) avoids the conflict entirely — sources and state both end up on the single surviving book |
 

@@ -209,6 +209,42 @@ test("cleanupLegacyHardcoverSources drops a stranded state duplicate instead of 
   }
 });
 
+test("cleanupLegacyHardcoverSources leaves the legacy row alone when only some profiles on its orphan book have a live counterpart", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    // A legacy row predates per-profile scoping, so it can have accumulated
+    // state from more profiles than currently happen to have re-synced (and so
+    // gotten a live counterpart) since. Deleting it once *any* profile has a
+    // live row would strand the unmatched profile's state permanently.
+    const orphanBookId = insertBook(db, "Orphan");
+    const canonicalBookId = insertBook(db, "Canonical");
+    const matchedProfileId = seedProfile(db, "Matched Profile");
+    const unmatchedProfileId = seedProfile(db, "Unmatched Profile");
+    const legacyId = insertHardcoverSource(db, orphanBookId, null, "hc-7");
+    insertHardcoverSource(db, canonicalBookId, matchedProfileId, "hc-7");
+    db.prepare(`
+      INSERT INTO user_book_states (book_id, profile_id, source_type, status, rating)
+      VALUES (?, ?, 'hardcover', 'READ', 4)
+    `).run(orphanBookId, matchedProfileId);
+    db.prepare(`
+      INSERT INTO user_book_states (book_id, profile_id, source_type, status, rating)
+      VALUES (?, ?, 'hardcover', 'READING', 3)
+    `).run(orphanBookId, unmatchedProfileId);
+
+    const result = cleanupLegacyHardcoverSources(db);
+
+    assert.equal(result.deleted, 0, "the legacy row must not be deleted while any profile's state has nowhere to go");
+    const remaining = db.prepare("SELECT id FROM book_sources WHERE id = ?").get(legacyId);
+    assert.notEqual(remaining, undefined);
+    const matchedState = db.prepare("SELECT book_id FROM user_book_states WHERE profile_id = ?").get(matchedProfileId) as { book_id: number };
+    assert.equal(matchedState.book_id, orphanBookId, "the matched profile's state is also left in place, since the row itself was not deleted");
+    const unmatchedState = db.prepare("SELECT book_id FROM user_book_states WHERE profile_id = ?").get(unmatchedProfileId) as { book_id: number };
+    assert.equal(unmatchedState.book_id, orphanBookId, "the unmatched profile's state must never be stranded");
+  } finally {
+    cleanup();
+  }
+});
+
 test("cleaning up legacy rows before reconciling merges cleanly (verifies the fix)", () => {
   const { db, cleanup } = createTestDatabase();
   try {

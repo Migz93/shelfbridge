@@ -20,12 +20,16 @@ type Db = ReturnType<typeof getDb>;
  * is keyed by (book_id, profile_id, source_type) with profile_id NOT NULL, so a
  * fresh instance-less row can never pick up its own state — only the live row's
  * state is ever at risk under current invariants. But a database that predates
- * this cleanup can already have a profile's state stranded on the legacy row's
- * own orphan book_id from before those invariants held, so each deletion below
- * first migrates any such state onto the matching live row's book — otherwise
- * it's left on a now-sourceless book that neither this sync's own reconcile nor
- * the daily full reconcile will ever remove (both explicitly preserve books that
- * still have user state, so it would strand there permanently).
+ * this cleanup can already have state stranded on the legacy row's own orphan
+ * book_id from before those invariants held — potentially from more than one
+ * profile, since a legacy row predates per-profile scoping entirely. Each
+ * deletion below migrates any such state onto the matching live row's book, but
+ * only once every profile with state on that orphan book has a live counterpart
+ * to migrate onto; otherwise the whole row is left alone for a later pass
+ * rather than stranding whichever profile has nowhere to go. Left in place, a
+ * now-sourceless book with leftover state is never removed — neither this
+ * sync's own reconcile nor the daily full reconcile touches a book that still
+ * has user state.
  */
 export function cleanupLegacyHardcoverSources(db: Db): { deleted: number; affectedBookIds: number[] } {
   const legacyRows = db.prepare(`
@@ -38,6 +42,9 @@ export function cleanupLegacyHardcoverSources(db: Db): { deleted: number; affect
   const liveCounterparts = db.prepare(`
     SELECT source_instance_id AS profile_id, book_id FROM book_sources
     WHERE source_type = 'hardcover' AND source_instance_id IS NOT NULL AND external_id = ?
+  `);
+  const stateProfilesOnBook = db.prepare(`
+    SELECT DISTINCT profile_id FROM user_book_states WHERE book_id = ? AND source_type = 'hardcover'
   `);
   // Moves a profile's stranded Hardcover state onto the live row's book, unless
   // that profile already has its own (correct, current) state there — in which
@@ -67,6 +74,24 @@ export function cleanupLegacyHardcoverSources(db: Db): { deleted: number; affect
       if (liveRows.length === 0) continue;
 
       if (row.book_id !== null) {
+        // Every profile with state stranded on this orphan book must have a live
+        // row to migrate onto before the legacy row can go — a legacy row can
+        // predate per-profile scoping and so have accumulated state from more
+        // profiles than currently happen to have a live counterpart for this
+        // external id. Deleting it anyway would strand whichever profile's state
+        // has nowhere to go, on a now-sourceless book that reconciliation will
+        // never remove. Leave the whole row alone until every profile is
+        // covered — it's retried on the next cleanup pass.
+        const liveProfileIds = new Set(liveRows.map((live) => live.profile_id));
+        const stateProfileIds = (stateProfilesOnBook.all(row.book_id) as { profile_id: number }[]).map((r) => r.profile_id);
+        const unmatchedProfileIds = stateProfileIds.filter((profileId) => !liveProfileIds.has(profileId));
+        if (unmatchedProfileIds.length > 0) {
+          logger.warn("Deferred legacy Hardcover source cleanup: a profile's state on its orphan book has no live counterpart yet", {
+            legacySourceId: row.id, bookId: row.book_id, unmatchedProfileIds
+          });
+          continue;
+        }
+
         for (const live of liveRows) {
           if (live.book_id === null || live.book_id === row.book_id) continue;
           const result = migrateUserState.run(live.book_id, row.book_id, live.profile_id, live.book_id, live.profile_id);
