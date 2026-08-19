@@ -1,4 +1,5 @@
 import type { getDb } from "../db/index.js";
+import { cleanupImageCacheForSourceIds } from "../db/imageCacheMaintenance.js";
 import { logger } from "../logger.js";
 
 type Db = ReturnType<typeof getDb>;
@@ -36,6 +37,7 @@ export function cleanupLegacyHardcoverSources(db: Db): { deleted: number; affect
   const deleteRow = db.prepare("DELETE FROM book_sources WHERE id = ?");
 
   const affectedBookIds = new Set<number>();
+  const deletedSourceIds: number[] = [];
   let deleted = 0;
 
   db.transaction(() => {
@@ -43,12 +45,18 @@ export function cleanupLegacyHardcoverSources(db: Db): { deleted: number; affect
       if (!hasLiveCounterpart.get(row.external_id)) continue;
       deleteRow.run(row.id);
       deleted++;
+      deletedSourceIds.push(row.id);
       if (row.book_id !== null) affectedBookIds.add(row.book_id);
     }
   })();
 
   if (deleted > 0) {
     logger.info("Cleaned up legacy instance-less Hardcover sources", { deleted, affectedBookCount: affectedBookIds.size });
+    try {
+      cleanupImageCacheForSourceIds(db, deletedSourceIds);
+    } catch (err) {
+      logger.warn("Orphaned image-cache cleanup failed after legacy Hardcover source removal; continuing", { deletedSourceIds, error: err });
+    }
   }
 
   return { deleted, affectedBookIds: Array.from(affectedBookIds) };

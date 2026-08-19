@@ -125,7 +125,10 @@ export default function Dashboard() {
         <div>
           <div className="flex items-center justify-between mb-3">
             <h2 className="font-headline font-semibold text-base text-on-surface">Recently Added</h2>
-            <Link to="/books" className="text-sm text-primary hover:text-primary-dim">View All</Link>
+            <div className="flex items-center gap-3 text-sm">
+              <Link to="/books" className="text-primary hover:text-primary-dim">Books</Link>
+              <Link to="/audiobooks" className="text-primary hover:text-primary-dim">Audiobooks</Link>
+            </div>
           </div>
           {data && data.recentlyAdded.length > 0 ? (
             <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-2">
@@ -215,8 +218,10 @@ function BookCoverCard({ book }: { book: BookSummary }) {
   };
   const healthDot = healthDots[book.syncHealth] ?? "bg-on-surface-variant/50";
 
+  const detailPath = book.mediaType === "audiobook" ? `/audiobooks/${book.id}` : `/books/${book.id}`;
+
   return (
-    <Link to={`/books/${book.id}`} className="group block">
+    <Link to={detailPath} className="group block">
       <div className="relative aspect-[2/3] rounded-lg overflow-hidden bg-background-container-high transition-transform duration-300 group-hover:scale-105">
         {book.coverUrl ? (
           <img

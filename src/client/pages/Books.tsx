@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -159,8 +159,10 @@ function CatalogPage({ mediaType, title }: { mediaType: "book" | "audiobook"; ti
   const [data, setData] = useState<BooksPageResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const requestIdRef = useRef(0);
 
   async function load(background = false) {
+    const requestId = ++requestIdRef.current;
     setLoading((c) => c || !background);
     const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE), sortBy, mediaType: hiddenOnly ? "hidden" : mediaType });
     if (includedProfileIds.size > 0) params.set("profileId", [...includedProfileIds].join(","));
@@ -173,12 +175,14 @@ function CatalogPage({ mediaType, title }: { mediaType: "book" | "audiobook"; ti
     if (q) params.set("q", q);
     try {
       const result = await apiGet<BooksPageResponse>(`/api/books?${params}`);
+      if (requestId !== requestIdRef.current) return;
       setData(result);
       setError(null);
     } catch (e) {
+      if (requestId !== requestIdRef.current) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) setLoading(false);
     }
   }
 
@@ -445,7 +449,7 @@ function CatalogPage({ mediaType, title }: { mediaType: "book" | "audiobook"; ti
         <div className="bg-background-container rounded-2xl border border-outline-variant/20 flex flex-col items-center justify-center py-16 text-center gap-3">
           <BookOpen size={24} className="text-on-surface-variant" />
           <p className="text-on-surface-variant text-sm max-w-xs">
-            {data?.total === 0 && status === "all" && !action && !chaptarr
+            {data?.total === 0 && status === "all" && !action && !chaptarr && !hiddenOnly
               ? "No books yet. Add users and run a sync to populate your library."
               : "No books match the current filters."}
           </p>

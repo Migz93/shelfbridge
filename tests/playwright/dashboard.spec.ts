@@ -21,15 +21,15 @@ test.describe("Dashboard UI", () => {
   });
 
   test("Books Tracked stat chip links to the books page", async ({ page }) => {
-    await expect(page.locator('a[href="/books"]').first()).toBeVisible();
+    await expect(page.getByRole("link", { name: /Books Tracked/ })).toHaveAttribute("href", "/books");
   });
 
   test("Audiobooks Tracked stat chip links to the audiobooks page", async ({ page }) => {
-    await expect(page.locator('a[href="/audiobooks"]').first()).toBeVisible();
+    await expect(page.getByRole("link", { name: /Audiobooks Tracked/ })).toHaveAttribute("href", "/audiobooks");
   });
 
   test("Not in Chaptarr stat chip links to the filtered books view", async ({ page }) => {
-    await expect(page.locator('a[href="/books?action=add-to-chaptarr"]')).toBeVisible();
+    await expect(page.getByRole("link", { name: /Not in Chaptarr/ }).first()).toHaveAttribute("href", "/books?action=add-to-chaptarr");
   });
 
   test("Recently Added section heading is visible", async ({ page }) => {

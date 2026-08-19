@@ -673,7 +673,7 @@ Returns everything needed to render the dashboard in a single request.
     }
   },
   "recentlyAdded": [ /* BookSummary[] — up to 20 */ ],
-  "recentActivity": [ /* SyncRun[] — up to 10 */ ]
+  "recentActivity": [ /* SyncRun[] — up to 5 */ ]
 }
 ```
 

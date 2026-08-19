@@ -516,11 +516,7 @@ function dbToSummary(rows: DbBookRow[]): BookSummary {
     title: row.book_title,
     author: row.book_author,
     coverUrl: row.book_cover_cache_path ?? null,
-    mediaType: aggregateMediaType(rows.flatMap((candidate) => [
-      candidate.hardcover_media_type,
-      candidate.grimmory_media_type,
-      candidate.chaptarr_media_type
-    ])),
+    mediaType: coerceMediaType(row.book_media_type) ?? "unknown",
     userCount: profileIds.length,
     profileIds,
     grimmoryBookId: first(rows, (candidate) => candidate.grimmory_book_id),
