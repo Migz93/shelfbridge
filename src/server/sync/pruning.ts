@@ -1,5 +1,7 @@
 import type { getDb } from "../db/index.js";
 import { logger } from "../logger.js";
+import { reconcileBookIdentities } from "../db/bookIdentity.js";
+import { cleanupImageCacheForSourceIds } from "../db/imageCacheMaintenance.js";
 
 type Db = ReturnType<typeof getDb>;
 export type SourceSnapshotStatus = "complete" | "partial" | "failed";
@@ -77,16 +79,25 @@ function pruneSources(db: Db, profileId: number, sourceType: "hardcover" | "grim
   if (!canPruneSnapshot(profileId, sourceName, fetchedIds.size, snapshotStatus)) return;
   stageFetchedIds(db, fetchedIds);
   // Scope both the source and its state guard to this profile's integration.
-  const result = db.prepare(`
-    DELETE FROM book_sources
-    WHERE source_type = ? AND source_instance_id = ?
-      AND CAST(external_id AS TEXT) NOT IN (SELECT id FROM shelfbridge_fetched_ids)
-      AND NOT EXISTS (
-        SELECT 1 FROM user_book_states
-        WHERE book_id = book_sources.book_id AND source_type = ? AND profile_id = ?
-      )
-  `).run(sourceType, profileId, sourceType, profileId);
+  const whereClause = `
+    source_type = ? AND source_instance_id = ?
+    AND CAST(external_id AS TEXT) NOT IN (SELECT id FROM shelfbridge_fetched_ids)
+    AND NOT EXISTS (
+      SELECT 1 FROM user_book_states
+      WHERE book_id = book_sources.book_id AND source_type = ? AND profile_id = ?
+    )
+  `;
+  const params = [sourceType, profileId, sourceType, profileId];
+  // Captured before the delete: a book left with a surviving source or with
+  // zero remaining sources both need explicit handling afterward, and the
+  // deleted source ids' own image_cache rows need cleaning up too — see
+  // cleanupAfterSourceRemoval.
+  const staleRows = db.prepare(`SELECT id, book_id FROM book_sources WHERE ${whereClause}`).all(...params) as { id: number; book_id: number | null }[];
+  const staleSourceIds = staleRows.map((row) => row.id);
+  const staleBookIds = staleRows.map((row) => row.book_id).filter((id): id is number => id !== null);
+  const result = db.prepare(`DELETE FROM book_sources WHERE ${whereClause}`).run(...params);
   if (result.changes > 0) logger.info(`Pruned ${sourceName} book_sources with no remaining user states`, { profileId, deleted: result.changes });
+  cleanupAfterSourceRemoval(db, staleBookIds, staleSourceIds);
 }
 
 /** Stages ids into a temp table so a large id set can be joined against instead of built into an inline SQL list. */
@@ -106,4 +117,79 @@ function canPruneSnapshot(profileId: number, sourceName: string, fetchedCount: n
     fetchedCount
   });
   return false;
+}
+
+const BATCH_SIZE = 500;
+
+function chunk<T>(values: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < values.length; i += size) chunks.push(values.slice(i, i + size));
+  return chunks;
+}
+
+/**
+ * Deletes any of the given book ids left with zero remaining book_sources
+ * rows and zero user_book_states rows. Batched rather than one IN (...)
+ * clause for every id, since a large upstream removal could otherwise exceed
+ * SQLite's bound-parameter limit — the same reason the caller stages its own
+ * ids into a temp table.
+ */
+function deleteOrphanedBooks(db: Db, bookIds: number[]): void {
+  const orphaned: { id: number }[] = [];
+  for (const batch of chunk(bookIds, BATCH_SIZE)) {
+    const placeholders = batch.map(() => "?").join(",");
+    orphaned.push(...(db.prepare(`
+      SELECT b.id FROM books b
+      WHERE b.id IN (${placeholders})
+        AND NOT EXISTS (SELECT 1 FROM book_sources bs WHERE bs.book_id = b.id)
+        AND NOT EXISTS (SELECT 1 FROM user_book_states ubs WHERE ubs.book_id = b.id)
+    `).all(...batch) as { id: number }[]));
+  }
+  if (orphaned.length === 0) return;
+  const deleteBook = db.prepare("DELETE FROM books WHERE id = ?");
+  db.transaction(() => {
+    for (const row of orphaned) deleteBook.run(row.id);
+  })();
+  logger.info("Removed canonical books left with no sources after pruning", {
+    bookIds: orphaned.map((row) => row.id)
+  });
+}
+
+/**
+ * Handles everything that follows deleting a set of book_sources rows
+ * (Chaptarr, Hardcover, or Grimmory pruning stale rows):
+ * - a book left with zero sources and zero user state is a ghost canonical —
+ *   delete it;
+ * - a book left with surviving sources may now need a different canonical
+ *   title/cover/identifier (the deleted row could have been the preferred
+ *   one) and book_identity_keys may still hold keys that only came from the
+ *   deleted row — reconcile scoped to the survivors so reconcileBookIdentities
+ *   recomputes both from what's actually left;
+ * - the deleted rows' own image_cache entries (keyed by book_sources.id, so
+ *   they don't cascade away with the source row) are now unconditionally
+ *   orphaned — clean them up directly rather than waiting on a full reconcile.
+ */
+export function cleanupAfterSourceRemoval(db: Db, affectedBookIds: number[], deletedSourceIds: number[]): void {
+  // The source rows this pass is cleaning up after have already been
+  // deleted (each caller's own DELETE already committed as its own
+  // statement) — isolated in its own try/catch so a cache-cleanup failure
+  // can't abort the orphan-deletion/reconcile steps below, or bubble up and
+  // fail the whole sync over what's ultimately a stale image_cache row the
+  // daily full reconcile would catch regardless.
+  try {
+    cleanupImageCacheForSourceIds(db, deletedSourceIds);
+  } catch (err) {
+    logger.warn("Orphaned image-cache cleanup failed after source removal; continuing", { deletedSourceIds, error: err });
+  }
+  if (affectedBookIds.length === 0) return;
+  const survivorSourceIds: number[] = [];
+  for (const batch of chunk(affectedBookIds, BATCH_SIZE)) {
+    const placeholders = batch.map(() => "?").join(",");
+    survivorSourceIds.push(...(db.prepare(`SELECT id FROM book_sources WHERE book_id IN (${placeholders})`).all(...batch) as { id: number }[])
+      .map((row) => row.id));
+  }
+  deleteOrphanedBooks(db, affectedBookIds);
+  if (survivorSourceIds.length > 0) {
+    reconcileBookIdentities(db, { sourceIds: survivorSourceIds });
+  }
 }

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { syncGoodreadsEnrichment } from "../../src/server/sync/goodreads-phase.js";
+import { reconcileBookIdentities } from "../../src/server/db/bookIdentity.js";
 import { cacheSourceCover } from "../../src/server/sync/covers.js";
 import { getUserState, upsertBookSource } from "../../src/server/sync/repository.js";
 import { pruneGoodreadsUserStatesMissingFromFetch } from "../../src/server/sync/pruning.js";
@@ -39,6 +40,52 @@ test("a changed Goodreads shelf writes its mapped status to the matched Grimmory
     assert.equal(state.status, "READING");
     assert.ok(events.some((e) => e.eventType === "written" && e.decision === "goodreads_latest_status"), "expected the status write to be recorded as an event");
     assert.ok(!events.some((e) => e.eventType === "api_failure"), "phase should not have swallowed a failure");
+  } finally { cleanup(); }
+});
+
+test("a matched Goodreads book's updated ISBN is reconciled, merging it with the book that now shares that ISBN", async () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+
+    // Book A: already matched to Goodreads via gr-1, no ISBN yet.
+    const bookA = Number(db.prepare("INSERT INTO books (title) VALUES ('Old Title')").run().lastInsertRowid);
+    db.prepare(`
+      INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type, source_goodreads_book_id)
+      VALUES (?, 'goodreads', ?, 'gr-1', 'Old Title', 'book', 'gr-1')
+    `).run(bookA, profileId);
+
+    // Book B: an unrelated existing book that happens to carry the ISBN
+    // Goodreads is about to report for gr-1.
+    const bookB = Number(db.prepare("INSERT INTO books (title) VALUES ('New Title')").run().lastInsertRowid);
+    db.prepare(`
+      INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type, isbn13)
+      VALUES (?, 'hardcover', 1, 'hc-1', 'New Title', 'book', '9780000000019')
+    `).run(bookB);
+    // Establishes book_identity_keys for both pre-existing books (a scoped
+    // reconcile discovers candidates only through already-persisted keys —
+    // see bookIdentity.ts's expandScopeToRows), matching what a real prior
+    // sync would have already done for both.
+    reconcileBookIdentities(db);
+
+    await syncGoodreadsEnrichment({
+      db, profileId, runId: 1,
+      profile: { goodreads_enabled: 1, goodreads_user_id: "user", sync_goodreads_status_enabled: 0 },
+      adapters: {
+        fetchAllGoodreadsBooks: async () => [
+          { goodreadsId: "gr-1", title: "New Title", author: null, coverUrl: null, isbn13: "9780000000019", isbn10: null, seriesName: null, seriesNumber: null, shelf: "to-read", rating: 0, readAt: null, updatedAt: null, bookLink: null }
+        ],
+        updateGrimmoryStatus: async () => {}
+      },
+      counters: { written: 0, skipped: 0 }, dryRun: false, grimmoryAvailable: false, hasGrimmory: false, baseUrl: "https://grim", grimmoryToken: null,
+      recordEvent: () => {}, pruneGoodreadsUserStatesMissingFromFetch, getUserState, hardcoverToGrimmoryRating,
+      writeTagEnabled: false, taggedSourceGrimmoryIds: new Set(), taggedSourceTitles: new Map(), goodreadsSourceGrimmoryIds: new Set(),
+      hasMeaningfulGoodreadsChange, upsertBookSource, sqliteNow, cacheSourceCover, shouldGoodreadsOverwriteGrimmory, sameNumber,
+      syncGoodreadsShelvesToGrimmory: async () => false
+    });
+
+    const books = db.prepare("SELECT id FROM books ORDER BY id").all() as { id: number }[];
+    assert.equal(books.length, 1, "the matched Goodreads update's new ISBN must be reconciled, merging it with the book that shares it, not left stale");
   } finally { cleanup(); }
 });
 

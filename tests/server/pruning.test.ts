@@ -20,12 +20,13 @@ function insertBookSource(
   bookId: number,
   sourceType: string,
   sourceInstanceId: number,
-  externalId: string
-): void {
-  db.prepare(`
-    INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id)
-    VALUES (?, ?, ?, ?)
-  `).run(bookId, sourceType, sourceInstanceId, externalId);
+  externalId: string,
+  title?: string
+): number {
+  return Number(db.prepare(`
+    INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type)
+    VALUES (?, ?, ?, ?, ?, 'book')
+  `).run(bookId, sourceType, sourceInstanceId, externalId, title ?? null).lastInsertRowid);
 }
 
 function insertUserState(
@@ -243,6 +244,101 @@ test("partial and failed snapshots never prune, including when they are empty", 
     const states = db.prepare("SELECT COUNT(*) AS count FROM user_book_states WHERE source_type = 'hardcover'").get() as { count: number };
     assert.equal(sources.count, 1);
     assert.equal(states.count, 1);
+  } finally {
+    cleanup();
+  }
+});
+
+test("pruneHardcoverSourcesMissingFromFetch deletes a book left with no sources and no user state", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const staleId = insertBook(db, "Hardcover Only Book");
+    insertBookSource(db, staleId, "hardcover", profileId, "222");
+
+    pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set(), "complete");
+
+    const book = db.prepare("SELECT id FROM books WHERE id = ?").get(staleId);
+    assert.equal(book, undefined, "a book left with no sources and no user state after pruning its only Hardcover source must be deleted, not left as a ghost canonical");
+  } finally {
+    cleanup();
+  }
+});
+
+test("pruneHardcoverSourcesMissingFromFetch does not delete a book that still has another source", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const bookId = insertBook(db, "Multi-Source Book");
+    insertBookSource(db, bookId, "hardcover", profileId, "222");
+    insertBookSource(db, bookId, "grimmory", profileId, "333");
+
+    pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set(), "complete");
+
+    const book = db.prepare("SELECT id FROM books WHERE id = ?").get(bookId);
+    assert.ok(book, "a book with a surviving Grimmory source must not be deleted just because its Hardcover source was pruned");
+  } finally {
+    cleanup();
+  }
+});
+
+test("pruneGrimmorySourcesMissingFromFetch deletes a book left with no sources and no user state", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const staleId = insertBook(db, "Grimmory Only Book");
+    insertBookSource(db, staleId, "grimmory", profileId, "222");
+
+    pruneGrimmorySourcesMissingFromFetch(db, profileId, new Set(), "complete");
+
+    const book = db.prepare("SELECT id FROM books WHERE id = ?").get(staleId);
+    assert.equal(book, undefined, "a book left with no sources and no user state after pruning its only Grimmory source must be deleted, not left as a ghost canonical");
+  } finally {
+    cleanup();
+  }
+});
+
+test("pruning a preferred source reconciles the survivor, updating the canonical title away from the stale value", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    // canonicalValues' bestRow() scores hardcover above grimmory when neither
+    // has a cover, so the book's title starts out sourced from Hardcover —
+    // simulating the state a prior reconcile would have left it in.
+    const bookId = insertBook(db, "HC Title");
+    insertBookSource(db, bookId, "hardcover", profileId, "111", "HC Title");
+    insertBookSource(db, bookId, "grimmory", profileId, "222", "Grimmory Title");
+
+    pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set(), "complete");
+
+    const remainingHc = db.prepare("SELECT COUNT(*) AS count FROM book_sources WHERE book_id = ? AND source_type = 'hardcover'").get(bookId) as { count: number };
+    assert.equal(remainingHc.count, 0, "the stale Hardcover source must be removed");
+
+    const book = db.prepare("SELECT title FROM books WHERE id = ?").get(bookId) as { title: string } | undefined;
+    assert.ok(book, "the book must survive — it still has a Grimmory source");
+    assert.equal(book.title, "Grimmory Title", "the canonical title must be recomputed from the surviving source, not left stale from the deleted Hardcover row");
+  } finally {
+    cleanup();
+  }
+});
+
+test("pruning a source cleans up its orphaned image_cache row, not just the source itself", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const bookId = insertBook(db, "Cached Cover Book");
+    const hcSourceId = insertBookSource(db, bookId, "hardcover", profileId, "111");
+    // local_file_path left NULL so cleanup only has to delete the row, not
+    // touch the filesystem — this test is about the row-level relationship,
+    // not file deletion (already covered by imageCacheMaintenance's own tests).
+    db.prepare(`
+      INSERT INTO image_cache (cache_key, entity_id) VALUES (?, ?)
+    `).run(`cover:${hcSourceId}`, String(hcSourceId));
+
+    pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set(), "complete");
+
+    const cacheRow = db.prepare("SELECT id FROM image_cache WHERE entity_id = ?").get(String(hcSourceId));
+    assert.equal(cacheRow, undefined, "the pruned source's image_cache row must be cleaned up, not left as a ghost referencing a deleted book_sources id");
   } finally {
     cleanup();
   }

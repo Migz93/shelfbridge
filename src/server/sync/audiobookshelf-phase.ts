@@ -34,6 +34,7 @@ if (hasAbs && absApiKey) {
     const absLibraries = await adapters.fetchAudiobookshelfLibraries(absBaseUrl, absApiKey);
     const bookLibraries = absLibraries.filter((lib) => lib.mediaType === "book");
     const liveAbsIds = new Set<string>();
+    const touchedSourceIds: number[] = [];
     let absSnapshotComplete = true;
     logger.info("Audiobookshelf libraries fetched", { profileId, total: absLibraries.length, bookLibraries: bookLibraries.length });
 
@@ -155,7 +156,7 @@ if (hasAbs && absApiKey) {
           absFields["book_id"] = linkedBookId;
         }
 
-        upsertBookSource(db, "audiobookshelf", profileId, item.id, absFields);
+        touchedSourceIds.push(upsertBookSource(db, "audiobookshelf", profileId, item.id, absFields));
       }
     }
 
@@ -184,7 +185,9 @@ if (hasAbs && absApiKey) {
           AND audiobookshelf_item_id IS NOT NULL
       `).run(profileId);
     }
-    reconcileBookIdentities(db);
+    if (touchedSourceIds.length > 0) {
+      reconcileBookIdentities(db, { sourceIds: touchedSourceIds });
+    }
   } catch (err) {
     logger.warn("Audiobookshelf library sync failed; skipping ABS phase", { profileId, error: String(err) });
     recordEvent(db, runId, profileId, "Audiobookshelf", "api_failure", "audiobookshelf", "source_unavailable", { error: String(err) });

@@ -93,9 +93,10 @@ export function createFakeAdapters(overrides: Partial<SyncAdapters>): SyncAdapte
   const stub: Record<string, unknown> = {
     // Chaptarr is a single global connection (not per-profile — see the v14 schema
     // migration comment), so runSyncImpl calls this unconditionally on every sync
-    // regardless of whether Chaptarr is configured. Default it to a no-op so tests
-    // that don't care about Chaptarr don't have to override it every time.
-    syncChaptarrStatus: async () => {}
+    // regardless of whether Chaptarr is configured. Default it to a no-op (no
+    // touched source ids) so tests that don't care about Chaptarr don't have to
+    // override it every time.
+    syncChaptarrStatus: async () => []
   };
   for (const name of names) {
     stub[name] = overrides[name] ?? stub[name] ?? (() => {

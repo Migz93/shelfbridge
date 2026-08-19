@@ -3,6 +3,8 @@ import { logger } from "../logger.js";
 import { ensureCoverCached, getCachedCoverPath, storeFetchedCover } from "../image-cache.js";
 import { getGrimmoryToken } from "./grimmory.js";
 import { fetchIntegration } from "../security/outbound.js";
+import { reconcileBookIdentities } from "../db/bookIdentity.js";
+import { runExclusiveOfSyncs } from "./sync-queue.js";
 
 type Db = ReturnType<typeof getDb>;
 const MAX_COVER_BYTES = 20 * 1024 * 1024;
@@ -66,21 +68,47 @@ export async function fetchGrimmoryCoverBuffer(baseUrl: string, token: string, g
   return null;
 }
 
+// Cover caching is a fire-and-forget background task (see enqueueImageCacheTask),
+// entirely decoupled from the sync that queued it — it can finish during a
+// sync, after one, or via the scheduled refresh job. Nothing else re-reconciles
+// this source afterward, so book_sources.cover_cache_path landing here would
+// otherwise never propagate into the canonical books.cover_cache_path (see
+// bookIdentity.ts's canonicalValues/bestCoverRow) until the next unrelated
+// reconcile touches this book. Serialized via runExclusiveOfSyncs since this
+// can fire concurrently with an in-flight sync or the full-reconcile job.
+async function reconcileCoverSource(db: Db, sourceId: number): Promise<void> {
+  await runExclusiveOfSyncs(async () => {
+    reconcileBookIdentities(db, { sourceIds: [sourceId] });
+  });
+}
+
 export async function cacheSourceCover(db: Db, sourceId: number, sourceType: string, coverUrl: string): Promise<void> {
   try {
     const localPath = await ensureCoverCached(sourceId, coverUrl);
-    if (localPath) { db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(localPath, sourceId); logger.info("Cached source cover", { sourceType, sourceId }); }
+    if (localPath) {
+      db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(localPath, sourceId);
+      logger.info("Cached source cover", { sourceType, sourceId });
+      await reconcileCoverSource(db, sourceId);
+    }
   } catch (err) { logger.warn("Failed to cache source cover", { sourceType, sourceId, coverUrl, error: err }); }
 }
 
 export async function cacheGrimmoryCover(db: Db, bookSourceId: number, baseUrl: string, token: string, grimmoryBookId: number, mediaType: "physical" | "ebook" | "audiobook" | null = null): Promise<void> {
   try {
     const cachedPath = getCachedCoverPath(bookSourceId);
-    if (cachedPath) { db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(cachedPath, bookSourceId); return; }
+    if (cachedPath) {
+      db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(cachedPath, bookSourceId);
+      await reconcileCoverSource(db, bookSourceId);
+      return;
+    }
     const data = await fetchGrimmoryCoverBuffer(baseUrl, token, grimmoryBookId, mediaType);
     if (!data) { logger.info("No Grimmory cover available; leaving other source covers eligible", { bookSourceId, grimmoryBookId }); return; }
     const webPath = storeFetchedCover(bookSourceId, data);
-    if (webPath) { db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(webPath, bookSourceId); logger.info("Cached Grimmory source cover", { bookSourceId, grimmoryBookId }); }
+    if (webPath) {
+      db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(webPath, bookSourceId);
+      logger.info("Cached Grimmory source cover", { bookSourceId, grimmoryBookId });
+      await reconcileCoverSource(db, bookSourceId);
+    }
   } catch (err) { logger.warn("Failed to cache Grimmory source cover", { bookSourceId, grimmoryBookId, error: err }); }
 }
 
@@ -121,11 +149,19 @@ export async function refreshStaleGrimmoryCovers(): Promise<void> {
       if (!token) { logger.warn("ImageCache: Grimmory login failed, skipping cover refresh", { profileId }); continue; }
       for (const { entity_id, grimmory_book_id } of entries) {
         const sourceId = Number.parseInt(entity_id, 10);
-        const source = db.prepare("SELECT source_media_type FROM book_sources WHERE id = ?").get(sourceId) as { source_media_type: "physical" | "ebook" | "audiobook" | null } | undefined;
-        const data = await fetchGrimmoryCoverBuffer(baseUrl, token, grimmory_book_id, source?.source_media_type ?? null);
-        if (!data) continue;
-        const webPath = storeFetchedCover(sourceId, data);
-        if (webPath) { db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(webPath, sourceId); refreshed++; }
+        try {
+          const source = db.prepare("SELECT source_media_type FROM book_sources WHERE id = ?").get(sourceId) as { source_media_type: "physical" | "ebook" | "audiobook" | null } | undefined;
+          const data = await fetchGrimmoryCoverBuffer(baseUrl, token, grimmory_book_id, source?.source_media_type ?? null);
+          if (!data) continue;
+          const webPath = storeFetchedCover(sourceId, data);
+          if (webPath) {
+            db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(webPath, sourceId);
+            await reconcileCoverSource(db, sourceId);
+            refreshed++;
+          }
+        } catch (error) {
+          logger.warn("ImageCache: Grimmory cover refresh failed for source; continuing with others", { profileId, sourceId, error });
+        }
       }
     } catch (error) { logger.warn("ImageCache: Grimmory cover refresh failed for instance; continuing with others", { profileId, error }); }
   }

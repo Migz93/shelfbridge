@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { cleanupOrphanedImageCache } from "./imageCacheMaintenance.js";
 import { logger } from "../logger.js";
 import { normalizeExternalId, normalizeIsbn } from "../identifiers.js";
+import { probableDuplicateTitleKey, probableDuplicateAuthorKey } from "./duplicateKeys.js";
 
 interface BookSourceRow {
   id: number;
@@ -447,15 +448,160 @@ function shouldMoveState(source: UserBookStateMoveRow, existing: UserBookStateMo
   return (source.last_modified_at ?? "") >= (existing.last_modified_at ?? "");
 }
 
-export function reconcileBookIdentities(db: Database.Database): void {
-  const rows = db.prepare(`SELECT * FROM book_sources ORDER BY id`).all() as BookSourceRow[];
+export interface ReconcileScope {
+  /** book_sources.id values that just changed and need identity resolution. */
+  sourceIds: number[];
+}
+
+const SCOPE_EXPANSION_ROW_CAP = 20000;
+const SCOPE_EXPANSION_ITERATION_CAP = 6;
+
+function chunk<T>(values: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < values.length; i += size) chunks.push(values.slice(i, i + size));
+  return chunks;
+}
+
+// The identity-key values a row could be found by during scoped expansion —
+// every key type the merge passes below can act on (high-confidence IDs, ISBN,
+// file path, title+author). Deliberately over-inclusive: a value collision
+// across unrelated key *types* just pulls in a harmless extra candidate, which
+// the real merge passes below will correctly decline to merge — only a missed
+// value would be dangerous.
+function expansionKeyValues(row: BookSourceRow): string[] {
+  const keys: IdentityKey[] = [...highIdentityKeys(row), ...isbnIdentityKeys(row), ...filePathIdentityKeys(row)];
+  const titleKey = titleAuthorKey(row);
+  if (titleKey) keys.push(titleKey);
+  return Array.from(new Set(keys.map((key) => key.slice(key.indexOf(":") + 1))));
+}
+
+// Expands a set of just-changed book_sources ids into the full row set a
+// correct reconcile pass needs: every row belonging to any book that could
+// possibly merge with a touched row. This is a closure, not a heuristic — a
+// multi-hop chain (row A shares an ISBN with book B, book B shares a
+// title/author with book C) is still found, because candidate books discovered
+// on one iteration have their own rows re-scanned for further candidates on
+// the next, until a fixed point is reached.
+//
+// Known gap: the "corroborated Chaptarr->Goodreads bridge" merge pass further
+// below keys off a Chaptarr row's own (possibly stale) source_goodreads_edition_id
+// field, which is never persisted to book_identity_keys — Chaptarr's IDs aren't
+// trusted as identity keys. A brand-new row that could *only* reach its match
+// through that specific bridge, with no shared ISBN/high-key/file-path/title-
+// author to ride along on, will not be discovered here. That bridge is already
+// a narrow fallback for stale/conflicting data, and the daily full-reconcile
+// maintenance job (scheduler.ts) closes any such gap within 24 hours.
+//
+// Returns null if the closure grows past a safety cap — the caller should fall
+// back to a full reconcile in that case rather than silently truncate it.
+// `caps` defaults to the module constants; it's only overridable so tests can
+// exercise the cap-hit paths cheaply, without needing tens of thousands of
+// rows or a genuinely 7-hop chain to prove the fallback triggers correctly.
+export function expandScopeToRows(
+  db: Database.Database,
+  initialSourceIds: number[],
+  caps: { rowCap?: number; iterationCap?: number } = {}
+): BookSourceRow[] | null {
+  const rowCap = caps.rowCap ?? SCOPE_EXPANSION_ROW_CAP;
+  const iterationCap = caps.iterationCap ?? SCOPE_EXPANSION_ITERATION_CAP;
+  const rowsById = new Map<number, BookSourceRow>();
+  const visitedBookIds = new Set<number>();
+  const processedKeyValues = new Set<string>();
+
+  const fetchByIds = (column: "id" | "book_id", ids: number[]): BookSourceRow[] => {
+    const unique = Array.from(new Set(ids));
+    if (unique.length === 0) return [];
+    const results: BookSourceRow[] = [];
+    for (const batch of chunk(unique, 500)) {
+      const placeholders = batch.map(() => "?").join(",");
+      results.push(...(db.prepare(`SELECT * FROM book_sources WHERE ${column} IN (${placeholders})`).all(...batch) as BookSourceRow[]));
+    }
+    return results;
+  };
+
+  const candidateBookIdsForKeys = (values: string[]): number[] => {
+    const results = new Set<number>();
+    for (const batch of chunk(values, 500)) {
+      const placeholders = batch.map(() => "?").join(",");
+      for (const row of db.prepare(`SELECT DISTINCT book_id FROM book_identity_keys WHERE key_value IN (${placeholders})`).all(...batch) as { book_id: number }[]) {
+        results.add(row.book_id);
+      }
+    }
+    return Array.from(results);
+  };
+
+  // Adds rows and checks the row cap immediately, at every point rows are
+  // added — not just once per iteration — so no fetch (including the very
+  // last one before the iteration cap would trip) can push the closure past
+  // the cap undetected.
+  const addRows = (rows: BookSourceRow[]): boolean => {
+    for (const row of rows) rowsById.set(row.id, row);
+    return rowsById.size > rowCap;
+  };
+
+  if (addRows(fetchByIds("id", initialSourceIds))) return null;
+
+  for (let iteration = 0; iteration < iterationCap; iteration++) {
+    const newBookIds = Array.from(new Set(
+      Array.from(rowsById.values())
+        .map((row) => row.book_id)
+        .filter((id): id is number => id !== null && !visitedBookIds.has(id))
+    ));
+    for (const id of newBookIds) visitedBookIds.add(id);
+    if (addRows(fetchByIds("book_id", newBookIds))) return null;
+
+    const keyValues = Array.from(new Set(Array.from(rowsById.values()).flatMap(expansionKeyValues)))
+      .filter((value) => !processedKeyValues.has(value));
+    // Fixed point: nothing new to expand from. This is the only path that
+    // returns a result — every other exit (including exhausting the
+    // iteration cap below) means the closure might still be incomplete, so
+    // it must return null and let the caller fall back to a full reconcile
+    // rather than silently return a partial scope.
+    if (keyValues.length === 0) return Array.from(rowsById.values()).sort((a, b) => a.id - b.id);
+    for (const value of keyValues) processedKeyValues.add(value);
+
+    const newCandidateBookIds = candidateBookIdsForKeys(keyValues).filter((id) => !visitedBookIds.has(id));
+    if (newCandidateBookIds.length === 0) return Array.from(rowsById.values()).sort((a, b) => a.id - b.id);
+
+    if (addRows(fetchByIds("book_id", newCandidateBookIds))) return null;
+  }
+
+  return null;
+}
+
+export type ReconcileProgressPhase = "rows_loaded" | "groups_computed" | "transaction_committed" | "image_cache_cleaned";
+export type ReconcileProgressCallback = (phase: ReconcileProgressPhase, details: Record<string, unknown>) => void;
+
+export function reconcileBookIdentities(db: Database.Database, scope?: ReconcileScope, onProgress?: ReconcileProgressCallback): void {
+  if (scope && scope.sourceIds.length === 0) return;
+
+  let rows: BookSourceRow[];
+  if (scope) {
+    const expanded = expandScopeToRows(db, scope.sourceIds);
+    if (expanded === null) {
+      logger.warn("Scoped reconcile exceeded expansion cap; falling back to a full reconcile", {
+        sourceIdCount: scope.sourceIds.length
+      });
+      reconcileBookIdentities(db, undefined, onProgress);
+      return;
+    }
+    rows = expanded;
+  } else {
+    rows = db.prepare(`SELECT * FROM book_sources ORDER BY id`).all() as BookSourceRow[];
+  }
+  onProgress?.("rows_loaded", { rowCount: rows.length, scoped: Boolean(scope) });
+
   if (rows.length === 0) {
-    cleanupOrphanedImageCache(db);
+    if (!scope) cleanupOrphanedImageCache(db);
     return;
   }
   const rowsById = new Map(rows.map((row) => [row.id, row]));
+  // A book_sources row's book_id is FK-enforced (foreign_keys=ON, ON DELETE CASCADE),
+  // so every non-null book_id appearing in `rows` is guaranteed to reference a book
+  // that currently exists — no need for a separate `SELECT id FROM books` query, and
+  // this stays correct whether `rows` is the full catalog or a scoped expansion.
   const validBookIds = new Set(
-    (db.prepare("SELECT id FROM books").all() as { id: number }[]).map((row) => row.id)
+    rows.map((row) => row.book_id).filter((id): id is number => id !== null)
   );
 
   // Books that have at least one non-Chaptarr source are "canonical" — they were
@@ -751,17 +897,20 @@ export function reconcileBookIdentities(db: Database.Database): void {
     group.push(row);
     groups.set(root, group);
   }
+  onProgress?.("groups_computed", { groupCount: groups.size });
 
   const insertBook = db.prepare(`
     INSERT INTO books (
       media_type, title, author, cover_url, cover_cache_path, isbn13, isbn10,
-      series_name, series_number, last_sync_at, last_modified_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))
+      series_name, series_number, duplicate_title_key, duplicate_author_key,
+      last_sync_at, last_modified_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))
   `);
   const updateBook = db.prepare(`
     UPDATE books SET
       media_type = ?, title = ?, author = ?, cover_url = ?, cover_cache_path = ?,
       isbn13 = ?, isbn10 = ?, series_name = ?, series_number = ?,
+      duplicate_title_key = ?, duplicate_author_key = ?,
       last_sync_at = ?, last_modified_at = COALESCE(?, datetime('now'))
     WHERE id = ?
   `);
@@ -777,7 +926,9 @@ export function reconcileBookIdentities(db: Database.Database): void {
     WHERE book_id = ? AND profile_id = ? AND source_type = ?
   `);
   const clearKeys = db.prepare("DELETE FROM book_identity_keys");
+  const clearKeysForBook = db.prepare("DELETE FROM book_identity_keys WHERE book_id = ?");
   const insertKey = db.prepare("INSERT OR IGNORE INTO book_identity_keys (book_id, key_type, key_value) VALUES (?, ?, ?)");
+  const selectHasUserState = db.prepare("SELECT 1 FROM user_book_states WHERE book_id = ? LIMIT 1");
 
   const moveUserStates = (targetBookId: number, sourceBookId: number): void => {
     const states = selectUserStatesForBook.all(sourceBookId) as UserBookStateMoveRow[];
@@ -855,9 +1006,17 @@ export function reconcileBookIdentities(db: Database.Database): void {
     }
   };
 
-  const repairAudiobookshelfStates = (): void => {
+  // scopeBookIds, when given, restricts the repair to book_sources rows whose
+  // (already-reassigned-above) book_id is one this pass touched — a new mismatch
+  // can only appear against a book_id this pass just wrote, so this is a
+  // sufficient scope, not a heuristic. Any pre-existing mismatch elsewhere in
+  // the catalog is left for the next full reconcile (see the daily maintenance
+  // job in scheduler.ts).
+  const repairAudiobookshelfStates = (scopeBookIds?: number[]): void => {
+    if (scopeBookIds && scopeBookIds.length === 0) return;
     // Matched by (external_id AND instance) — a colliding local item id on a
     // different profile's ABS server must not move this profile's user state.
+    const scopeClause = scopeBookIds ? `AND bs.book_id IN (${scopeBookIds.map(() => "?").join(",")})` : "";
     const rows = db.prepare(`
       SELECT ubs.*, bs.book_id AS source_book_id
       FROM user_book_states ubs
@@ -869,16 +1028,19 @@ export function reconcileBookIdentities(db: Database.Database): void {
         AND ubs.audiobookshelf_item_id IS NOT NULL
         AND bs.book_id IS NOT NULL
         AND ubs.book_id != bs.book_id
-    `).all() as Array<UserBookStateMoveRow & { source_book_id: number }>;
+        ${scopeClause}
+    `).all(...(scopeBookIds ?? [])) as Array<UserBookStateMoveRow & { source_book_id: number }>;
 
     for (const row of rows) {
       repairLinkedState(row, "Audiobookshelf");
     }
   };
 
-  const repairGrimmoryStates = (): void => {
+  const repairGrimmoryStates = (scopeBookIds?: number[]): void => {
+    if (scopeBookIds && scopeBookIds.length === 0) return;
     // Matched by (external_id AND instance) — a colliding local book id on a
     // different profile's Grimmory server must not move this profile's user state.
+    const scopeClause = scopeBookIds ? `AND bs.book_id IN (${scopeBookIds.map(() => "?").join(",")})` : "";
     const rows = db.prepare(`
       SELECT ubs.*, bs.book_id AS source_book_id
       FROM user_book_states ubs
@@ -890,7 +1052,8 @@ export function reconcileBookIdentities(db: Database.Database): void {
         AND ubs.grimmory_book_id IS NOT NULL
         AND bs.book_id IS NOT NULL
         AND ubs.book_id != bs.book_id
-    `).all() as Array<UserBookStateMoveRow & { source_book_id: number }>;
+        ${scopeClause}
+    `).all(...(scopeBookIds ?? [])) as Array<UserBookStateMoveRow & { source_book_id: number }>;
 
     for (const row of rows) {
       repairLinkedState(row, "Grimmory");
@@ -923,7 +1086,17 @@ export function reconcileBookIdentities(db: Database.Database): void {
   };
 
   const transaction = db.transaction(() => {
-    clearKeys.run();
+    // Unscoped: this pass reprocesses every row, so it's safe (and simplest) to
+    // wipe and fully repopulate the whole table. Scoped: only the books whose
+    // rows are in this pass's closure are being reprocessed, so only their keys
+    // are cleared — an unconditional full wipe here would erase identity keys
+    // for every book *outside* the scope, breaking the next scoped call's
+    // candidate expansion.
+    if (!scope) {
+      clearKeys.run();
+    } else {
+      for (const bookId of validBookIds) clearKeysForBook.run(bookId);
+    }
 
     for (const group of groups.values()) {
       const isChaptarrOnly = group.every((r) => r.source_type === "chaptarr");
@@ -1003,6 +1176,7 @@ export function reconcileBookIdentities(db: Database.Database): void {
         const result = insertBook.run(
           values.mediaType, values.title, values.author, values.coverUrl, values.coverCachePath,
           values.isbn13, values.isbn10, values.seriesName, values.seriesNumber,
+          probableDuplicateTitleKey(values.title), probableDuplicateAuthorKey(values.author),
           values.lastSyncAt, values.lastModifiedAt
         );
         bookId = Number(result.lastInsertRowid);
@@ -1024,6 +1198,7 @@ export function reconcileBookIdentities(db: Database.Database): void {
         updateBook.run(
           values.mediaType, values.title, values.author, values.coverUrl, values.coverCachePath,
           values.isbn13, values.isbn10, values.seriesName, values.seriesNumber,
+          probableDuplicateTitleKey(values.title), probableDuplicateAuthorKey(values.author),
           values.lastSyncAt, values.lastModifiedAt, bookId
         );
       }
@@ -1059,7 +1234,10 @@ export function reconcileBookIdentities(db: Database.Database): void {
         updateSource.run(bookId, row.id);
       }
 
-      for (const key of new Set(group.flatMap((row) => [...highIdentityKeys(row), ...isbnIdentityKeys(row), ...filePathIdentityKeys(row)]))) {
+      for (const key of new Set(group.flatMap((row) => {
+        const titleKey = titleAuthorKey(row);
+        return [...highIdentityKeys(row), ...isbnIdentityKeys(row), ...filePathIdentityKeys(row), ...(titleKey ? [titleKey] : [])];
+      }))) {
         const [keyType, ...rest] = key.split(":");
         insertKey.run(bookId, keyType, rest.join(":"));
       }
@@ -1075,21 +1253,32 @@ export function reconcileBookIdentities(db: Database.Database): void {
       }
     }
 
-    // Clean up books that have no source rows
-    const staleBooks = db.prepare(`
-      SELECT b.id FROM books b
-      LEFT JOIN book_sources bs ON bs.book_id = b.id
-      WHERE bs.id IS NULL
-        AND NOT EXISTS (SELECT 1 FROM user_book_states ubs WHERE ubs.book_id = b.id)
-    `).all() as { id: number }[];
-    for (const stale of staleBooks) deleteBook.run(stale.id);
+    // Clean up books that have no source rows. Scoped to the books this pass
+    // touched — an unscoped LEFT JOIN here would scan the whole `books` table
+    // on every scoped call, undoing the point of scoping.
+    const staleBookIds = scope
+      ? Array.from(validBookIds).filter((id) => !(selectRemainingSources.get(id)))
+      : (db.prepare(`
+          SELECT b.id FROM books b
+          LEFT JOIN book_sources bs ON bs.book_id = b.id
+          WHERE bs.id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM user_book_states ubs WHERE ubs.book_id = b.id)
+        `).all() as { id: number }[]).map((row) => row.id);
+    for (const staleId of staleBookIds) {
+      if (scope && selectHasUserState.get(staleId)) continue;
+      deleteBook.run(staleId);
+    }
 
-    repairAudiobookshelfStates();
-    repairGrimmoryStates();
+    repairAudiobookshelfStates(scope ? Array.from(validBookIds) : undefined);
+    repairGrimmoryStates(scope ? Array.from(validBookIds) : undefined);
   });
 
   transaction();
-  cleanupOrphanedImageCache(db);
+  onProgress?.("transaction_committed", { created, reassigned, merged });
+  if (!scope) {
+    cleanupOrphanedImageCache(db);
+    onProgress?.("image_cache_cleaned", {});
+  }
 
   if (skippedCrossProfileGroups > 0) {
     logger.warn("Skipped Chaptarr file-path reassignment across scoped source profiles", {

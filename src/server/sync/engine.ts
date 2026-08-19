@@ -3,7 +3,6 @@ import { reconcileBookIdentities } from "../db/bookIdentity.js";
 import { logger } from "../logger.js";
 import { buildGrimmoryIndex } from "./matcher.js";
 import { enqueueImageCacheTask } from "../image-cache.js";
-import type { SyncStatus } from "../../shared/types.js";
 import { defaultAdapters, type SyncAdapters } from "./adapters.js";
 import { computeSyncDecision, type ConflictStrategy } from "./conflict-policy.js";
 import {
@@ -32,6 +31,7 @@ import { persistGrimmorySources } from "./grimmory-sources.js";
 import { persistHardcoverSources } from "./hardcover-sources.js";
 import { applySourceTags } from "./source-tags.js";
 import { recordSyncEvent } from "./events.js";
+import { getActiveSyncStatus, trackActiveSyncRun, untrackActiveSyncRun, runExclusiveOfSyncs } from "./sync-queue.js";
 
 import * as syncUtils from "./sync-utils.js";
 
@@ -58,33 +58,14 @@ interface SyncCounters {
 }
 
 const { sameNumber, positiveRating, grimmoryToHardcoverRating, hardcoverToGrimmoryRating, hasMeaningfulHcChange, hasMeaningfulGrChange, hasMeaningfulGoodreadsChange, hardcoverDate, hardcoverPages, firstHardcoverSeries, latestHardcoverRead, cleanupDuplicateBlankHardcoverReads, meaningfulProgress, audiobookRuntimeForBook, hardcoverProgressPercent, effectiveAbsCurrentTimeSeconds, persistResolvedHardcoverAudioEdition, progressPagesFromPercent, todayDate, sqliteNow, sourceTagName, hardcoverFieldsFromGrimmory, normalizeEditionFormat, inferHardcoverMediaType, hasGrimmoryUserActivity, clampPercent } = syncUtils;
-// Serialise all profile syncs because identity reconciliation mutates shared state.
-let syncQueue = Promise.resolve();
-const activeSyncRuns = new Map<number, { profileId: number; startedAt: string }>();
 
-export function getActiveSyncStatus(): SyncStatus {
-  const rows = Array.from(activeSyncRuns.entries()).map(([runId, run]) => ({
-    runId,
-    ...run
-  })).sort((a, b) => a.startedAt.localeCompare(b.startedAt) || a.runId - b.runId);
-
-  return {
-    isRunning: rows.length > 0,
-    runIds: rows.map((row) => row.runId),
-    profileIds: Array.from(new Set(rows.map((row) => row.profileId))),
-    startedAt: rows[0]?.startedAt ?? null
-  };
-}
+export { getActiveSyncStatus, runExclusiveOfSyncs };
 
 export function runSync(profileId: number, runId: number, dryRun: boolean): Promise<void> {
-  activeSyncRuns.set(runId, { profileId, startedAt: new Date().toISOString() });
-  const result = syncQueue
-    .then(() => runSyncImpl(profileId, runId, dryRun))
-    .finally(() => {
-      activeSyncRuns.delete(runId);
-    });
-  syncQueue = result.catch(() => {});
-  return result;
+  trackActiveSyncRun(runId, profileId);
+  return runExclusiveOfSyncs(() => runSyncImpl(profileId, runId, dryRun).finally(() => {
+    untrackActiveSyncRun(runId);
+  }));
 }
 
 export async function runSyncImpl(
@@ -146,9 +127,21 @@ export async function runSyncImpl(
       db, profileId, runId, profile, adapters, counters, recordEvent,
       hasHardcover, hardcoverToken, baseUrl, username, password, hasGrimmory
     });
-    await persistGrimmorySources({ db, profileId, grimmoryAvailable, grimmoryBooks, upsertBookSource, enqueueImageCacheTask, cacheSourceCover, sqliteNow, grimmoryToken, cacheGrimmoryCover, baseUrl });
+    // Tracks every book_sources row upserted by the two persist calls below, so
+    // Phase D's reconcile can be scoped to just what this profile's sync touched
+    // instead of the whole catalog. upsertBookSource is injected as plain context
+    // data by both persist* functions (see grimmory-sources.ts/hardcover-sources.ts),
+    // so wrapping it here needs no changes to either.
+    const phaseDTouchedSourceIds: number[] = [];
+    const trackingUpsertBookSource: typeof upsertBookSource = (db, sourceType, instanceId, externalId, fields) => {
+      const id = upsertBookSource(db, sourceType, instanceId, externalId, fields);
+      phaseDTouchedSourceIds.push(id);
+      return id;
+    };
 
-    await persistHardcoverSources({ db, profileId, hcBooks, hcEditions, upsertBookSource, cacheSourceCover, sqliteNow,
+    await persistGrimmorySources({ db, profileId, grimmoryAvailable, grimmoryBooks, upsertBookSource: trackingUpsertBookSource, enqueueImageCacheTask, cacheSourceCover, sqliteNow, grimmoryToken, cacheGrimmoryCover, baseUrl });
+
+    await persistHardcoverSources({ db, profileId, hcBooks, hcEditions, upsertBookSource: trackingUpsertBookSource, cacheSourceCover, sqliteNow,
       hasHardcover, sharedHardcoverOwnership,
       inferHardcoverMediaType, firstHardcoverSeries, normalizeEditionFormat, enqueueImageCacheTask,
       pruneHardcoverUserStatesMissingFromFetch, pruneHardcoverSourcesMissingFromFetch, hardcoverSnapshotStatus });
@@ -157,7 +150,7 @@ export async function runSyncImpl(
     // Now that both Grimmory and HC sources are written, reconcile so every
     // book_sources row gets a book_id. This is what links HC sources to
     // Grimmory sources for the HC sync loop below.
-    reconcileBookIdentities(db);
+    reconcileBookIdentities(db, { sourceIds: phaseDTouchedSourceIds });
     if (hasHardcover) pruneOrphanedHardcoverUserStates(db, profileId);
 
     // ── Phase E: Build Grimmory in-memory match index (for HC loop) ─────────
@@ -206,14 +199,14 @@ export async function runSyncImpl(
     }
 
     // ── Phase K: Chaptarr status pass ───────────────────────────────────────
-    await adapters.syncChaptarrStatus(profileId);
+    const chaptarrTouchedSourceIds = await adapters.syncChaptarrStatus(profileId);
 
     // ── Phase M: Audiobookshelf library sync ─────────────────────────────────
     await syncAudiobookshelfLibrary({
       db, profileId, runId, hasAbs, absBaseUrl, absApiKey, adapters, counters, recordEvent
     });
 
-    await syncAudiobookshelfProgress({
+    const resolvedAudioEditionSourceIds = await syncAudiobookshelfProgress({
       db, profileId, runId, hasAbs, hasHardcover, grimmoryAvailable, adapters,
       absBaseUrl, absApiKey, profile, baseUrl, grimmoryToken, hardcoverToken,
       dryRun, counters, grimmoryBooks, grimmoryProgressById, hcBooks, recordEvent, getUserState, localGrimmoryBookForBookId,
@@ -223,8 +216,19 @@ export async function runSyncImpl(
       sharedHardcoverOwnership, hardcoverPages, todayDate
     });
 
-    // ── Phase L: Final reconcile ─────────────────────────────────────────────
-    reconcileBookIdentities(db);
+    // ── Phase L: Reconcile Chaptarr writes and resolved audio editions ───────
+    // Two things after Phase D can change a book_sources row's identity-format
+    // bucket without going through a scoped reconcile of their own: Chaptarr's
+    // own matching resolves a book_id directly but still needs union-find's
+    // stronger conflict/file-path-bridge checks, and Phase N's
+    // persistResolvedHardcoverAudioEdition flips an existing Hardcover row's
+    // source_media_type to 'audiobook', which can change that row's identity
+    // keys and the book's canonical media_type. (Phase M's Audiobookshelf
+    // library sync reconciles its own scope internally.)
+    const phaseLTouchedSourceIds = [...chaptarrTouchedSourceIds, ...resolvedAudioEditionSourceIds];
+    if (phaseLTouchedSourceIds.length > 0) {
+      reconcileBookIdentities(db, { sourceIds: phaseLTouchedSourceIds });
+    }
 
     const summary = dryRun
       ? `Dry run: ${counters.written} would write, ${counters.skipped} skipped${counters.sourceFailures ? `, ${counters.sourceFailures} source unavailable` : ""}, ${grimmoryBooks.length ? `matched against ${grimmoryBooks.length} Grimmory books` : "no Grimmory connection"}`

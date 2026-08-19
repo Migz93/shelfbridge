@@ -73,6 +73,16 @@ function profileExists(db: Database.Database, id: number): boolean {
   return Boolean(db.prepare("SELECT 1 FROM profiles WHERE id = ?").get(id));
 }
 
+// A profile's own connections use its profile id as their source_instance_id
+// (see routes/books.ts's write-grimmory-id route for the same convention).
+// Chaptarr is the one source type this doesn't apply to (its instance is the
+// single, shared Chaptarr install, not per-profile) — irrelevant here since
+// neither cleanup below touches Chaptarr data.
+function profileSourceIds(db: Database.Database, profileId: number): number[] {
+  return (db.prepare("SELECT id FROM book_sources WHERE source_instance_id = ?").all(profileId) as { id: number }[])
+    .map((row) => row.id);
+}
+
 function cleanupHardcoverSourceData(profileId: number): void {
   const db = getDb();
   const result = db.transaction(() => {
@@ -99,7 +109,7 @@ function cleanupHardcoverSourceData(profileId: number): void {
     return { deleted, detached };
   })();
 
-  reconcileBookIdentities(db);
+  reconcileBookIdentities(db, { sourceIds: profileSourceIds(db, profileId) });
   logger.info("Cleaned local Hardcover source data after disabling connection", { profileId, ...result });
 }
 
@@ -117,7 +127,7 @@ function cleanupGoodreadsSourceData(profileId: number): void {
     return { deleted, detached: 0 };
   })();
 
-  reconcileBookIdentities(db);
+  reconcileBookIdentities(db, { sourceIds: profileSourceIds(db, profileId) });
   logger.info("Cleaned local Goodreads source data after disabling connection", { profileId, ...result });
 }
 

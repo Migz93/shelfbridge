@@ -355,7 +355,79 @@ const migration2: Migration = {
   }
 };
 
-export const migrations: Migration[] = [migration1, migration2];
+// Backs indexed identity-key lookups so reconciliation can scope its reads to
+// rows sharing a key with the changed set instead of scanning every book_sources
+// row on every call (see reconcileBookIdentities in bookIdentity.ts).
+const migration3: Migration = {
+  version: 3,
+  description: "Indexes for identifier-based reconciliation and duplicate lookups",
+  up(db: Database.Database): void {
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_books_author ON books(author);
+      CREATE INDEX IF NOT EXISTS idx_books_series ON books(series_name, series_number);
+      CREATE INDEX IF NOT EXISTS idx_books_isbn13 ON books(isbn13);
+      CREATE INDEX IF NOT EXISTS idx_books_isbn10 ON books(isbn10);
+      CREATE INDEX IF NOT EXISTS idx_book_sources_isbn13 ON book_sources(isbn13);
+      CREATE INDEX IF NOT EXISTS idx_book_sources_isbn10 ON book_sources(isbn10);
+      CREATE INDEX IF NOT EXISTS idx_book_sources_hardcover_book_id ON book_sources(source_hardcover_book_id);
+      CREATE INDEX IF NOT EXISTS idx_book_sources_goodreads_book_id ON book_sources(source_goodreads_book_id);
+      CREATE INDEX IF NOT EXISTS idx_book_sources_asin ON book_sources(source_asin);
+      CREATE INDEX IF NOT EXISTS idx_book_identity_keys_value ON book_identity_keys(key_value);
+    `);
+  }
+};
+
+// Backs the duplicate-candidate lookup in routes/books.ts so it can do an
+// indexed WHERE match instead of scanning every books row per request. No
+// backfill UPDATE needed here: initSchema() always runs a full, unscoped
+// reconcileBookIdentities(db) right after migrations (schema.ts:30), and that
+// touches every book row via insertBook/updateBook, populating these columns
+// on the same startup this migration applies on.
+const migration4: Migration = {
+  version: 4,
+  description: "Duplicate-detection key columns on books",
+  up(db: Database.Database): void {
+    db.exec(`
+      ALTER TABLE books ADD COLUMN duplicate_title_key TEXT;
+      ALTER TABLE books ADD COLUMN duplicate_author_key TEXT;
+      CREATE INDEX IF NOT EXISTS idx_books_duplicate_key ON books(duplicate_title_key, duplicate_author_key);
+    `);
+  }
+};
+
+// book_identity_keys previously had UNIQUE(key_type, key_value) — a key value
+// legitimately shared by two canonicals that were intentionally kept apart
+// (e.g. same title/author but conflicting hardcover_book_id) could only ever
+// be recorded against whichever book's INSERT OR IGNORE landed first. Scoped
+// reconciliation's candidate expansion (bookIdentity.ts's expandScopeToRows)
+// looks up candidates by key value, so the second canonical was silently
+// undiscoverable by any scoped call — only a full reconcile would find it.
+// Re-keyed to UNIQUE(book_id, key_type, key_value) so every book that legitimately
+// carries a key gets its own row. No backfill needed: this table is a fully
+// derived cache, rebuilt by the unscoped reconcile initSchema() always runs
+// immediately after migrations (schema.ts) — dropping and recreating it here
+// is simpler and just as correct as trying to migrate its (already partially
+// wrong, pre-this-fix) existing contents.
+const migration5: Migration = {
+  version: 5,
+  description: "Allow multiple canonicals to share an identity key in book_identity_keys",
+  up(db: Database.Database): void {
+    db.exec(`
+      DROP TABLE book_identity_keys;
+      CREATE TABLE book_identity_keys (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        book_id   INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+        key_type  TEXT NOT NULL,
+        key_value TEXT NOT NULL,
+        UNIQUE(book_id, key_type, key_value)
+      );
+      CREATE INDEX idx_book_identity_keys_book ON book_identity_keys(book_id);
+      CREATE INDEX idx_book_identity_keys_value ON book_identity_keys(key_value);
+    `);
+  }
+};
+
+export const migrations: Migration[] = [migration1, migration2, migration3, migration4, migration5];
 
 // Guards against a typo'd version number: a duplicate would let two migrations
 // silently race to apply at the same version, and a gap (e.g. 1, 3 — skipping

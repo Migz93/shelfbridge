@@ -4,18 +4,31 @@
 
 ## Current Housekeeping Responsibilities
 
-ShelfBridge runs two scheduled housekeeping jobs, both registered in
+ShelfBridge runs three scheduled housekeeping jobs, all registered in
 `src/server/scheduler.ts`:
 
 | Job | Schedule | What it does |
 |---|---|---|
 | `maintenance` | Daily at 03:00 | Prunes `sync_runs` rows older than the retention window |
 | `image-cache-refresh` | Daily at 02:00 | Re-fetches stale cover images, including authenticated Grimmory covers that need a live token |
+| `full-reconcile` | Daily at 04:00 | Runs a full, unscoped `reconcileBookIdentities()` pass over the whole catalog, with progress logged at each phase. Serialized against every profile sync via `runExclusiveOfSyncs` in `engine.ts` — it never runs while a sync is mid-flight, since a sync yields to the event loop between remote I/O calls and an unserialized reconcile could merge/reassign a book_id it's mid-write against |
 
-A third cleanup is not scheduled but runs inline: `cleanupOrphanedImageCache()`
-in `src/server/db/imageCacheMaintenance.ts` is called from
-`reconcileBookIdentities` in `bookIdentity.ts`, so orphaned cache rows are
-removed whenever book identity is reconciled rather than on a timer.
+Book identity reconciliation itself is not primarily a scheduled task: every
+sync phase and book-mutating route reconciles just the records it touched, so
+identities stay correct on the fly without scanning the whole catalog on
+every write. The `full-reconcile` job exists as a periodic correction pass
+for the narrow cases on-the-fly reconciliation can miss.
+
+A related cleanup is not scheduled but runs inline, via two paths:
+
+- A full-table scan whenever a full reconciliation runs (startup, and the
+  `full-reconcile` job). It isn't run after every write-triggered scoped
+  reconcile, since scanning the whole `image_cache` table would defeat the
+  point of scoping.
+- A targeted lookup by the specific `book_sources` ids just removed —
+  cheap enough to run inline on every book deletion or source pruning pass
+  (Chaptarr, Hardcover, Grimmory), without waiting for the next full
+  reconciliation.
 
 ## Data Retention
 
