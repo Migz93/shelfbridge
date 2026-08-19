@@ -284,6 +284,35 @@ test("cleanupLegacyHardcoverSources leaves the legacy row alone when only some p
   }
 });
 
+test("cleanupLegacyHardcoverSources leaves the legacy row alone when its orphan book also holds a non-Hardcover state", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    // This function only knows how to migrate Hardcover state onto a live
+    // Hardcover counterpart — it has no live counterpart to migrate a Grimmory
+    // or Goodreads state onto, so it must never delete the legacy row's only
+    // source while such a state is still sitting on that orphan book.
+    const orphanBookId = insertBook(db, "Orphan");
+    const canonicalBookId = insertBook(db, "Canonical");
+    const profileId = seedProfile(db, "Profile");
+    const legacyId = insertHardcoverSource(db, orphanBookId, null, "hc-11");
+    insertHardcoverSource(db, canonicalBookId, profileId, "hc-11");
+    db.prepare(`
+      INSERT INTO user_book_states (book_id, profile_id, source_type, status, rating)
+      VALUES (?, ?, 'grimmory', 'READ', 5)
+    `).run(orphanBookId, profileId);
+
+    const result = cleanupLegacyHardcoverSources(db);
+
+    assert.equal(result.deleted, 0, "the legacy row must not be deleted while a non-Hardcover state has nowhere to go");
+    const remaining = db.prepare("SELECT id FROM book_sources WHERE id = ?").get(legacyId);
+    assert.notEqual(remaining, undefined);
+    const grimmoryState = db.prepare("SELECT book_id FROM user_book_states WHERE source_type = 'grimmory'").get() as { book_id: number };
+    assert.equal(grimmoryState.book_id, orphanBookId, "the Grimmory state must never be stranded by a Hardcover-only migration");
+  } finally {
+    cleanup();
+  }
+});
+
 test("cleanupLegacyHardcoverSources leaves the legacy row alone when the matched live counterpart has no book_id yet", () => {
   const { db, cleanup } = createTestDatabase();
   try {

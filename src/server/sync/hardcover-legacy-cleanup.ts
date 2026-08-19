@@ -25,8 +25,10 @@ type Db = ReturnType<typeof getDb>;
  * profile, since a legacy row predates per-profile scoping entirely. Each
  * deletion below migrates any such state onto the matching live row's book, but
  * only once every profile with state on that orphan book has a live counterpart
- * to migrate onto; otherwise the whole row is left alone for a later pass
- * rather than stranding whichever profile has nowhere to go. Left in place, a
+ * to migrate onto — and only when every state on that book is Hardcover state
+ * in the first place, since this function only knows how to migrate that one
+ * source type. Otherwise the whole row is left alone for a later pass rather
+ * than stranding whichever state has nowhere to go. Left in place, a
  * now-sourceless book with leftover state is never removed — neither this
  * sync's own reconcile nor the daily full reconcile touches a book that still
  * has user state.
@@ -46,6 +48,9 @@ export function cleanupLegacyHardcoverSources(db: Db): { deleted: number; affect
   const stateProfilesOnBook = db.prepare(`
     SELECT DISTINCT profile_id FROM user_book_states WHERE book_id = ? AND source_type = 'hardcover'
   `);
+  const nonHardcoverStateOnBook = db.prepare(`
+    SELECT 1 FROM user_book_states WHERE book_id = ? AND source_type != 'hardcover' LIMIT 1
+  `);
   const selectState = db.prepare(`
     SELECT * FROM user_book_states WHERE book_id = ? AND profile_id = ? AND source_type = 'hardcover'
   `);
@@ -64,6 +69,20 @@ export function cleanupLegacyHardcoverSources(db: Db): { deleted: number; affect
       if (liveRows.length === 0) continue;
 
       if (row.book_id !== null) {
+        // This function only knows how to migrate Hardcover state (onto a live
+        // Hardcover counterpart's book) — a Grimmory or Goodreads state can also
+        // be sitting on this orphan book_id (e.g. left behind by an unrelated
+        // reconciliation split), and there is no live counterpart of that source
+        // type available here to migrate it onto safely. Defer the whole row
+        // rather than deleting its only source and leaving that other state
+        // permanently stranded on a now-sourceless book.
+        if (nonHardcoverStateOnBook.get(row.book_id)) {
+          logger.warn("Deferred legacy Hardcover source cleanup: a non-Hardcover state exists on its orphan book", {
+            legacySourceId: row.id, bookId: row.book_id
+          });
+          continue;
+        }
+
         // Every profile with state stranded on this orphan book must have a live
         // row with a resolved book_id to migrate onto before the legacy row can
         // go — a legacy row can predate per-profile scoping and so have
