@@ -104,7 +104,11 @@ function CatalogPage({ mediaType, title }: { mediaType: "book" | "audiobook"; ti
   const action: ActionFilter = rawAction === "probable-duplicates"
     ? "possible-duplicates"
     : ACTION_OPTIONS.some((o) => o.value === rawAction) ? rawAction as ActionFilter : null;
-  const hiddenOnly = searchParams.get("hidden") === "1";
+  // Needs Fix (unresolved media type) is a Books-only filter — its result set
+  // ignores mediaType entirely, so honoring "hidden" on Audiobooks would route
+  // unresolved books (which could be actual books) to /audiobooks/:id purely
+  // because of which page's URL happened to carry the param.
+  const hiddenOnly = mediaType === "book" && searchParams.get("hidden") === "1";
 
   // Multi-select filter state stored as comma-separated URL params.
   const VALID_SOURCES = new Set<SourceFilter>(["hardcover", "goodreads", "on-disk"]);
