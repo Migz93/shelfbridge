@@ -187,18 +187,6 @@ function coerceMediaType(value: string | null | undefined): Exclude<MediaType, "
   return null;
 }
 
-function aggregateMediaType(values: Array<string | null | undefined>): MediaType {
-  const set = new Set(
-    values
-      .map(coerceMediaType)
-      .filter((value): value is Exclude<MediaType, "mixed" | "unknown"> => value !== null)
-      .map((value) => value === "physical" || value === "ebook" ? "book" : value)
-  );
-  if (set.size === 0) return "unknown";
-  if (set.size === 1) return Array.from(set)[0]!;
-  return "mixed";
-}
-
 function dbToSummary(rows: DbBook[]): BookSummary {
   const row = rows[0]!;
   const profileIds = Array.from(new Set(rows.filter((r) => r.has_any_ubs).map((candidate) => candidate.profile_id))).sort((a, b) => a - b);
@@ -207,11 +195,7 @@ function dbToSummary(rows: DbBook[]): BookSummary {
     title: row.book_title,
     author: row.book_author,
     coverUrl: row.book_cover_cache_path,
-    mediaType: aggregateMediaType(rows.flatMap((candidate) => [
-      candidate.hardcover_media_type,
-      candidate.grimmory_media_type,
-      candidate.chaptarr_media_type
-    ])),
+    mediaType: coerceMediaType(row.book_media_type) ?? "unknown",
     userCount: profileIds.length,
     profileIds,
     grimmoryBookId: first(rows, (candidate) => candidate.grimmory_book_id),

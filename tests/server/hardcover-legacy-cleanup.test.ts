@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { cleanupLegacyHardcoverSources } from "../../src/server/sync/hardcover-legacy-cleanup.js";
 import { reconcileBookIdentities } from "../../src/server/db/bookIdentity.js";
+import { cleanupAfterSourceRemoval } from "../../src/server/sync/pruning.js";
 import { seedProfile } from "./test-helpers.js";
 import { createTestDatabase } from "./test-db.js";
 
@@ -335,6 +336,36 @@ test("cleaning up legacy rows before reconciling merges cleanly (verifies the fi
     const state = db.prepare("SELECT book_id, rating FROM user_book_states").get() as { book_id: number; rating: number };
     assert.equal(state.book_id, survivorId, "the reading state must follow the merge to the surviving book");
     assert.equal(state.rating, 5);
+  } finally {
+    cleanup();
+  }
+});
+
+test("cleanupAfterSourceRemoval removes a book left with no sources and no state right after cleanup, without waiting for a reconcile pass", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    // A legacy row's own book can end up with zero remaining sources and zero
+    // state once every profile's state has been migrated onto the live row's
+    // book — engine.ts wires cleanupLegacyHardcoverSources's result into
+    // cleanupAfterSourceRemoval specifically so this ghost is removed in the
+    // same sync pass, rather than lingering until the next daily full
+    // reconcile (the scoped reconcile that follows only knows about this
+    // sync's own touched sources, not a book whose last source was just
+    // deleted by this cleanup).
+    const orphanBookId = insertBook(db, "Orphan");
+    const canonicalBookId = insertBook(db, "Canonical");
+    seedProfile(db, "Profile");
+    insertHardcoverSource(db, orphanBookId, null, "hc-10");
+    insertHardcoverSource(db, canonicalBookId, 1, "hc-10");
+
+    const result = cleanupLegacyHardcoverSources(db);
+    assert.equal(result.deleted, 1);
+    cleanupAfterSourceRemoval(db, result.affectedBookIds, result.deletedSourceIds);
+
+    const ghost = db.prepare("SELECT id FROM books WHERE id = ?").get(orphanBookId);
+    assert.equal(ghost, undefined, "the now-sourceless, now-stateless orphan book must be removed immediately");
+    const survivor = db.prepare("SELECT id FROM books WHERE id = ?").get(canonicalBookId);
+    assert.notEqual(survivor, undefined, "the live row's own book must be untouched");
   } finally {
     cleanup();
   }

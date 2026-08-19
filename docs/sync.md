@@ -482,8 +482,12 @@ decorated Goodreads or Hardcover IDs still match their plain numeric source IDs.
    
    Identity keys are prefixed with that bucket, so a print/ebook record and an
    audiobook record for the same work no longer collapse into the same canonical
-   `books.id`. The surviving canonical row writes `books.media_type`, which drives
-   the Books vs Audiobooks split in the UI and API.
+   `books.id` — except ISBN keys, which stay format-independent: an ISBN
+   identifies a specific edition regardless of bucket, and a row's bucket is
+   often unresolved for reasons unrelated to its actual format, so
+   bucket-prefixing there would silently block a valid exact-ISBN match. The
+   surviving canonical row writes `books.media_type`, which drives the Books
+   vs Audiobooks split in the UI and API.
 7. **Downloads covers** (fire-and-forget, after upsert): for each book with a
    Hardcover or Grimmory match, the appropriate cover source is selected and cached
    asynchronously — see [Cover Download](#cover-download) below

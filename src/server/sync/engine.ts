@@ -6,6 +6,7 @@ import { enqueueImageCacheTask } from "../image-cache.js";
 import { defaultAdapters, type SyncAdapters } from "./adapters.js";
 import { computeSyncDecision, type ConflictStrategy } from "./conflict-policy.js";
 import {
+  cleanupAfterSourceRemoval,
   pruneGoodreadsUserStatesMissingFromFetch,
   pruneGrimmorySourcesMissingFromFetch,
   pruneGrimmoryUserStatesMissingFromFetch,
@@ -156,7 +157,19 @@ export async function runSyncImpl(
     // the real merge instead of completing it. Running the cleanup right here,
     // before every sync's own reconcile, means that stale row is never present
     // to cause the conflict in the first place.
-    if (hasHardcover) cleanupLegacyHardcoverSources(db);
+    if (hasHardcover) {
+      const legacyCleanup = cleanupLegacyHardcoverSources(db);
+      if (legacyCleanup.deleted > 0) {
+        // A deleted legacy row's book can end up with zero remaining sources —
+        // the scoped reconcile below only knows about phaseDTouchedSourceIds, so
+        // without this it wouldn't notice that book exists until the next daily
+        // full reconcile. cleanupAfterSourceRemoval both deletes it if it's now
+        // truly orphaned (no sources, no user state) and reconciles it if it
+        // instead has surviving sibling sources (e.g. a Chaptarr row) that now
+        // need their identity recomputed.
+        cleanupAfterSourceRemoval(db, legacyCleanup.affectedBookIds, legacyCleanup.deletedSourceIds);
+      }
+    }
 
     // Now that both Grimmory and HC sources are written, reconcile so every
     // book_sources row gets a book_id. This is what links HC sources to

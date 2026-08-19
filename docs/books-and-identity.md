@@ -70,9 +70,15 @@ trusted over the free-text `edition_format` field and over
 `default_*_edition_id` pointers — `edition_format` is often blank or
 inconsistently labeled, and a book can expose the same edition ID as its
 physical, ebook, and audio default simultaneously. Format buckets prefix
-high-confidence identity keys (HC book ID, Grimmory ID, ISBNs) so that, for
-example, separate HC library entries for the physical and audio editions of the
-same work are not incorrectly merged. The **title+author key is format-agnostic**:
+high-confidence identity keys (HC book ID, Grimmory ID) so that, for example,
+separate HC library entries for the physical and audio editions of the same
+work are not incorrectly merged. ISBN keys are the exception and stay
+format-independent — `isbnIdentityKeys` emits unprefixed `isbn13:`/`isbn10:`
+keys, since an ISBN identifies a specific edition regardless of what bucket a
+row happens to resolve to, and a row's bucket is often "unknown" for reasons
+unrelated to the book's actual format (e.g. a Hardcover source with no
+edition data yet); prefixing would silently block a valid exact-ISBN match in
+that case. The **title+author key is format-agnostic**:
 physical, ebook, and audiobook editions of the same work that share no common
 high-confidence identifier are merged by normalised title+author rather than being
 kept in separate canonical records — preventing duplicate `books` rows when a

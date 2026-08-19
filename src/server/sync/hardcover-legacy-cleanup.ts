@@ -1,6 +1,5 @@
 import type { getDb } from "../db/index.js";
 import { shouldMoveState, type UserBookStateMoveRow } from "../db/bookIdentity.js";
-import { cleanupImageCacheForSourceIds } from "../db/imageCacheMaintenance.js";
 import { logger } from "../logger.js";
 
 type Db = ReturnType<typeof getDb>;
@@ -32,13 +31,13 @@ type Db = ReturnType<typeof getDb>;
  * sync's own reconcile nor the daily full reconcile touches a book that still
  * has user state.
  */
-export function cleanupLegacyHardcoverSources(db: Db): { deleted: number; affectedBookIds: number[] } {
+export function cleanupLegacyHardcoverSources(db: Db): { deleted: number; affectedBookIds: number[]; deletedSourceIds: number[] } {
   const legacyRows = db.prepare(`
     SELECT id, book_id, external_id FROM book_sources
     WHERE source_type = 'hardcover' AND source_instance_id IS NULL
   `).all() as { id: number; book_id: number | null; external_id: string }[];
 
-  if (legacyRows.length === 0) return { deleted: 0, affectedBookIds: [] };
+  if (legacyRows.length === 0) return { deleted: 0, affectedBookIds: [], deletedSourceIds: [] };
 
   const liveCounterparts = db.prepare(`
     SELECT source_instance_id AS profile_id, book_id FROM book_sources
@@ -121,12 +120,7 @@ export function cleanupLegacyHardcoverSources(db: Db): { deleted: number; affect
 
   if (deleted > 0) {
     logger.info("Cleaned up legacy instance-less Hardcover sources", { deleted, migratedStates, affectedBookCount: affectedBookIds.size });
-    try {
-      cleanupImageCacheForSourceIds(db, deletedSourceIds);
-    } catch (err) {
-      logger.warn("Orphaned image-cache cleanup failed after legacy Hardcover source removal; continuing", { deletedSourceIds, error: err });
-    }
   }
 
-  return { deleted, affectedBookIds: Array.from(affectedBookIds) };
+  return { deleted, affectedBookIds: Array.from(affectedBookIds), deletedSourceIds };
 }

@@ -202,6 +202,7 @@ so all tests start already authenticated.
 | Leaves the row alone when the matched counterpart has no book_id yet | A live counterpart that exists but hasn't been reconciled yet (book_id still NULL) doesn't count as a migration target — the legacy row is left alone rather than deleted with nowhere for its state to go |
 | Reconciling without cleanup first strands the merge | Documents the underlying bug: a legacy row left in place when a book's live row needs to merge into its Grimmory canonical leaves the merge stranded — book_sources reassigned, but the book row and its user_book_states left behind |
 | Cleaning up before reconciling merges cleanly | Verifies the fix: running the cleanup immediately before reconciling (what `engine.ts` now does on every Hardcover sync, not just the daily job) avoids the conflict entirely — sources and state both end up on the single surviving book |
+| Ghost book removed immediately via `cleanupAfterSourceRemoval` | A book left with no sources and no state right after the legacy cleanup is removed in the same pass (what `engine.ts` now wires up), rather than lingering until the next daily full reconcile |
 
 ### `tests/server/hardcover-media-type.test.ts` — Hardcover media-type classification
 
@@ -212,6 +213,7 @@ so all tests start already authenticated.
 | Format id mapping | `reading_format_id` 2 → audiobook, 4 → ebook |
 | Dual-format ("Both") fallback | A `reading_format_id` of 3 falls through to the `default_*_edition_id` pointers instead of guessing |
 | No edition data | Returns `null` when there's no edition and no matching default pointer |
+| Never falls back to `edition_format` | Even with `reading_format_id` simply absent (not just disagreeing), a populated `edition_format` is still never trusted |
 
 ### `tests/server/settings.test.ts` — App settings
 

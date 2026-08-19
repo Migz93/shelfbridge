@@ -82,3 +82,13 @@ test("inferHardcoverMediaType falls through to default-edition pointers for a du
 test("inferHardcoverMediaType returns null when there is no edition data and no matching default pointer", () => {
   assert.equal(inferHardcoverMediaType(userBook({ edition_id: null }), null), null);
 });
+
+test("inferHardcoverMediaType never falls back to edition_format, even when reading_format_id is simply absent", () => {
+  // Distinct from the "mislabeled" case above (reading_format_id present and
+  // disagreeing): here reading_format_id is null outright, so edition_format
+  // is the only signal available — it must still never be trusted.
+  assert.equal(
+    inferHardcoverMediaType(userBook(), edition({ edition_format: "Audiobook", reading_format_id: null })),
+    null
+  );
+});
