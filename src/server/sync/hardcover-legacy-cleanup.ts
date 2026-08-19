@@ -60,6 +60,7 @@ export function cleanupLegacyHardcoverSources(db: Db): { deleted: number; affect
 
   const affectedBookIds = new Set<number>();
   const deletedSourceIds: number[] = [];
+  const deferred: Array<{ legacySourceId: number; bookId: number; reason: string; unmatchedProfileIds?: number[] }> = [];
   let deleted = 0;
   let migratedStates = 0;
 
@@ -77,9 +78,7 @@ export function cleanupLegacyHardcoverSources(db: Db): { deleted: number; affect
         // rather than deleting its only source and leaving that other state
         // permanently stranded on a now-sourceless book.
         if (nonHardcoverStateOnBook.get(row.book_id)) {
-          logger.warn("Deferred legacy Hardcover source cleanup: a non-Hardcover state exists on its orphan book", {
-            legacySourceId: row.id, bookId: row.book_id
-          });
+          deferred.push({ legacySourceId: row.id, bookId: row.book_id, reason: "non-Hardcover state on orphan book" });
           continue;
         }
 
@@ -100,9 +99,7 @@ export function cleanupLegacyHardcoverSources(db: Db): { deleted: number; affect
         const stateProfileIds = (stateProfilesOnBook.all(row.book_id) as { profile_id: number }[]).map((r) => r.profile_id);
         const unmatchedProfileIds = stateProfileIds.filter((profileId) => !liveProfileIds.has(profileId));
         if (unmatchedProfileIds.length > 0) {
-          logger.warn("Deferred legacy Hardcover source cleanup: a profile's state on its orphan book has no live counterpart yet", {
-            legacySourceId: row.id, bookId: row.book_id, unmatchedProfileIds
-          });
+          deferred.push({ legacySourceId: row.id, bookId: row.book_id, reason: "unmatched profile has no live counterpart yet", unmatchedProfileIds });
           continue;
         }
 
@@ -139,6 +136,11 @@ export function cleanupLegacyHardcoverSources(db: Db): { deleted: number; affect
 
   if (deleted > 0) {
     logger.info("Cleaned up legacy instance-less Hardcover sources", { deleted, migratedStates, affectedBookCount: affectedBookIds.size });
+  }
+  if (deferred.length > 0) {
+    logger.warn("Deferred legacy Hardcover source cleanup for rows with nowhere safe to migrate state yet", {
+      count: deferred.length, rows: deferred.slice(0, 20)
+    });
   }
 
   return { deleted, affectedBookIds: Array.from(affectedBookIds), deletedSourceIds };

@@ -472,22 +472,14 @@ decorated Goodreads or Hardcover IDs still match their plain numeric source IDs.
    collapsing together. Books with no HC/GR counterpart become standalone
    "On Disk" clusters.
    
-   Canonical reconciliation is now format-aware. Each source row is first bucketed
-   into `book`, `audiobook`, or `unknown` using, in order:
-   - `source_media_type` — for Hardcover this is derived from the edition's
-     structured `reading_format_id`, trusted over free-text formatting
-   - the free-text `source_edition_format`, parsed as a fallback
-   - Grimmory / Chaptarr file paths
-   - narrator presence as an audiobook hint
-   
-   Identity keys are prefixed with that bucket, so a print/ebook record and an
-   audiobook record for the same work no longer collapse into the same canonical
-   `books.id` — except ISBN keys, which stay format-independent: an ISBN
-   identifies a specific edition regardless of bucket, and a row's bucket is
-   often unresolved for reasons unrelated to its actual format, so
-   bucket-prefixing there would silently block a valid exact-ISBN match. The
-   surviving canonical row writes `books.media_type`, which drives the Books
-   vs Audiobooks split in the UI and API.
+   Canonical reconciliation is now format-aware:
+
+   | Step | Detail |
+   |---|---|
+   | 1. Bucket each source row | Into `book`, `audiobook`, or `unknown`, checked in order: `source_media_type` (for Hardcover, derived from the edition's structured `reading_format_id`, trusted over free-text formatting) → free-text `source_edition_format` as a fallback → Grimmory/Chaptarr file paths → narrator presence as an audiobook hint |
+   | 2. Prefix identity keys with that bucket | So a print/ebook record and an audiobook record for the same work no longer collapse into the same canonical `books.id` |
+   | 3. Exception: ISBN keys | Stay format-independent (not bucket-prefixed) — an ISBN identifies a specific edition regardless of bucket, and a row's bucket is often unresolved for reasons unrelated to its actual format, so bucket-prefixing there would silently block a valid exact-ISBN match |
+   | 4. Surviving row writes `books.media_type` | Drives the Books vs Audiobooks split in the UI and API |
 7. **Downloads covers** (fire-and-forget, after upsert): for each book with a
    Hardcover or Grimmory match, the appropriate cover source is selected and cached
    asynchronously — see [Cover Download](#cover-download) below
