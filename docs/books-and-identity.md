@@ -63,11 +63,13 @@ Book identity reconciliation (`src/server/db/bookIdentity.ts`) clusters
   separate book entries
 
 Before those keys are generated, each source row is bucketed into `book`,
-`audiobook`, or `unknown` using source media type, Hardcover edition format,
-Grimmory/Chaptarr file paths, and narrator hints. For Hardcover rows, an
-explicit `edition_format` now takes precedence over conflicting
-`default_*_edition_id` pointers so a clearly-ebook edition is not misbucketed as
-an audiobook when Hardcover exposes inconsistent defaults. Format buckets prefix
+`audiobook`, or `unknown` using source media type, Hardcover reading format,
+Grimmory/Chaptarr file paths, and narrator hints. For Hardcover rows, the
+edition's structured `reading_format_id` (Physical/Audiobook/E-Book/Both) is
+trusted over the free-text `edition_format` field and over
+`default_*_edition_id` pointers — `edition_format` is often blank or
+inconsistently labeled, and a book can expose the same edition ID as its
+physical, ebook, and audio default simultaneously. Format buckets prefix
 high-confidence identity keys (HC book ID, Grimmory ID, ISBNs) so that, for
 example, separate HC library entries for the physical and audio editions of the
 same work are not incorrectly merged. The **title+author key is format-agnostic**:

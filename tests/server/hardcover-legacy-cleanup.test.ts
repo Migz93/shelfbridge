@@ -245,6 +245,39 @@ test("cleanupLegacyHardcoverSources leaves the legacy row alone when only some p
   }
 });
 
+test("cleanupLegacyHardcoverSources leaves the legacy row alone when the matched live counterpart has no book_id yet", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    // cleanupLegacyHardcoverSources runs (see engine.ts) right after this
+    // sync's own Hardcover sources are upserted but before Phase D's reconcile
+    // has run — so a profile's very first scoped source row can be live
+    // (source_instance_id set) yet still have book_id NULL. That must not count
+    // as "matched" coverage: there is no book to migrate the profile's stranded
+    // state onto yet.
+    const orphanBookId = insertBook(db, "Orphan");
+    const profileId = seedProfile(db, "Profile");
+    const legacyId = insertHardcoverSource(db, orphanBookId, null, "hc-8");
+    db.prepare(`
+      INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type)
+      VALUES (NULL, 'hardcover', ?, 'hc-8', 'Book', 'book')
+    `).run(profileId);
+    db.prepare(`
+      INSERT INTO user_book_states (book_id, profile_id, source_type, status, rating)
+      VALUES (?, ?, 'hardcover', 'READ', 4)
+    `).run(orphanBookId, profileId);
+
+    const result = cleanupLegacyHardcoverSources(db);
+
+    assert.equal(result.deleted, 0, "the legacy row must not be deleted while its only live counterpart has no book_id to migrate onto");
+    const remaining = db.prepare("SELECT id FROM book_sources WHERE id = ?").get(legacyId);
+    assert.notEqual(remaining, undefined);
+    const state = db.prepare("SELECT book_id FROM user_book_states WHERE profile_id = ?").get(profileId) as { book_id: number };
+    assert.equal(state.book_id, orphanBookId, "the profile's state must never be stranded on a now-sourceless book");
+  } finally {
+    cleanup();
+  }
+});
+
 test("cleaning up legacy rows before reconciling merges cleanly (verifies the fix)", () => {
   const { db, cleanup } = createTestDatabase();
   try {

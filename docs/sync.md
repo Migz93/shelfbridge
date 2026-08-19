@@ -473,9 +473,10 @@ decorated Goodreads or Hardcover IDs still match their plain numeric source IDs.
    "On Disk" clusters.
    
    Canonical reconciliation is now format-aware. Each source row is first bucketed
-   into `book`, `audiobook`, or `unknown` using:
-   - explicit `source_media_type`
-   - Hardcover `source_edition_format`
+   into `book`, `audiobook`, or `unknown` using, in order:
+   - `source_media_type` — for Hardcover this is derived from the edition's
+     structured `reading_format_id`, trusted over free-text formatting
+   - the free-text `source_edition_format`, parsed as a fallback
    - Grimmory / Chaptarr file paths
    - narrator presence as an audiobook hint
    

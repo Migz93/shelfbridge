@@ -527,7 +527,7 @@ catalog presence from shared sources like Grimmory and Chaptarr does not count
 toward a user's chip total.
 
 `hiddenCount` is always computed against the full unfiltered catalog (independent
-of the current `mediaType`) so the UI can show a "Hidden" filter chip on either
+of the current `mediaType`) so the UI can show a "Needs Fix" filter chip on either
 page whenever unclassified books exist. Passing `mediaType=hidden` switches the
 result set to just those books instead of applying the book/audiobook split.
 
@@ -570,7 +570,7 @@ Each `BookRelationship` includes:
 | `grimmoryPrimaryFilePath` | Grimmory `primaryFile.filePath`, used for file-path audiobook matching |
 | `grimmoryMediaType` | Grimmory format inferred from metadata and/or the primary file path |
 | `grimmoryBaseUrl` | Resolved Grimmory base URL (profile override → global setting) |
-| `hardcoverMediaType` | Hardcover format inferred from the user's selected `edition_id` and edition metadata; explicit `edition_format` wins when Hardcover's default edition pointers disagree |
+| `hardcoverMediaType` | Hardcover format inferred from the user's selected `edition_id` and edition metadata; the edition's structured `reading_format_id` is trusted over the free-text `edition_format` field and over Hardcover's default edition pointers |
 | `hardcoverEditionId` | Hardcover `user_books.edition_id` when available |
 | `hardcoverEditionFormat` | Hardcover edition-format text for the selected edition when available |
 | `chaptarrBookId` | Matched Chaptarr book ID for this canonical book |

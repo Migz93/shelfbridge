@@ -75,14 +75,19 @@ export function cleanupLegacyHardcoverSources(db: Db): { deleted: number; affect
 
       if (row.book_id !== null) {
         // Every profile with state stranded on this orphan book must have a live
-        // row to migrate onto before the legacy row can go — a legacy row can
-        // predate per-profile scoping and so have accumulated state from more
-        // profiles than currently happen to have a live counterpart for this
-        // external id. Deleting it anyway would strand whichever profile's state
-        // has nowhere to go, on a now-sourceless book that reconciliation will
+        // row with a resolved book_id to migrate onto before the legacy row can
+        // go — a legacy row can predate per-profile scoping and so have
+        // accumulated state from more profiles than currently happen to have a
+        // live counterpart for this external id. A live row can also exist yet
+        // still have book_id NULL: this cleanup runs (see engine.ts) after that
+        // profile's own source is upserted but before Phase D's reconcile has
+        // had a chance to assign it a book id, which is the normal state for a
+        // profile's first-ever scoped source row. Treat that the same as no live
+        // row at all — deleting anyway would strand that profile's state with no
+        // migration target, on a now-sourceless book that reconciliation will
         // never remove. Leave the whole row alone until every profile is
         // covered — it's retried on the next cleanup pass.
-        const liveProfileIds = new Set(liveRows.map((live) => live.profile_id));
+        const liveProfileIds = new Set(liveRows.filter((live) => live.book_id !== null).map((live) => live.profile_id));
         const stateProfileIds = (stateProfilesOnBook.all(row.book_id) as { profile_id: number }[]).map((r) => r.profile_id);
         const unmatchedProfileIds = stateProfileIds.filter((profileId) => !liveProfileIds.has(profileId));
         if (unmatchedProfileIds.length > 0) {

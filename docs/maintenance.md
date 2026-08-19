@@ -17,12 +17,18 @@ ShelfBridge runs three scheduled housekeeping jobs, all registered in
 IS NULL`) `hardcover` `book_sources` rows once a live, profile-scoped row
 exists for the same Hardcover book — a pre-per-profile-scoping artifact that
 no sync path writes anymore, but that a fresh install migrated forward as a
-duplicate of every currently-tracked Hardcover book. Safe unconditionally:
+duplicate of every currently-tracked Hardcover book. Going forward,
 `user_book_states` is keyed by `(book_id, profile_id, source_type)` with
-`profile_id NOT NULL`, so it can never reference an instance-less row.
-Deleting one can leave its book sourceless (if the pair had already drifted
-onto separate books), which the following full-reconcile pass cleans up in
-the same run.
+`profile_id NOT NULL`, so a fresh instance-less row can never reference it
+directly. But a database that predates this cleanup can already have
+`user_book_states` stranded on the legacy row's own orphan book_id — from one
+or more profiles, since a legacy row predates per-profile scoping entirely —
+so before deleting, the cleanup migrates each such profile's state onto its
+matching live row's book. It only deletes a legacy row once every profile
+with state on its orphan book has a live counterpart with a resolved book_id
+to migrate onto (a profile's live row can itself still have a NULL book_id if
+this runs before that profile's own reconcile pass); otherwise the whole row
+is left alone for a later pass, so no profile's state is ever stranded.
 
 It also runs at the start of every Hardcover sync's own Phase D, in
 `engine.ts`, before that sync's own scoped `reconcileBookIdentities()` call —
