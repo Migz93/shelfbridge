@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { getDb } from "../db/index.js";
-import type { DashboardResponse, BookSummary, SyncRun, ReadStatus, SyncHealth, MatchConfidence, MediaType } from "../../shared/types.js";
+import type { DashboardResponse, DashboardMediaStats, BookSummary, SyncRun, ReadStatus, SyncHealth, MatchConfidence, MediaType } from "../../shared/types.js";
 import { hasIdentityReviewConflict } from "../sync/identity-review.js";
 
 const router = Router();
@@ -28,6 +28,7 @@ router.get("/", (_req, res) => {
       b.cover_cache_path AS book_cover_cache_path,
       b.last_modified_at AS book_last_modified_at,
       b.last_sync_at     AS book_last_sync_at,
+      b.media_type       AS book_media_type,
       CAST(grim_src.external_id AS INTEGER) AS grimmory_book_id,
       grim_src.source_media_type AS grimmory_media_type,
       grim_src.grimmory_hardcover_book_id,
@@ -39,6 +40,8 @@ router.get("/", (_req, res) => {
       gr_src.goodreads_book_link,
       CAST(chap_src.external_id AS INTEGER) AS chaptarr_book_id,
       chap_src.source_media_type AS chaptarr_media_type,
+      chap_src.chaptarr_monitored,
+      chap_src.chaptarr_has_file,
       grim_ubs.status  AS grimmory_status,
       grim_ubs.rating  AS grimmory_rating,
       hc_ubs.hardcover_status_id,
@@ -62,10 +65,21 @@ router.get("/", (_req, res) => {
   `).all() as DbBook[];
 
   const grouped = groupByBook(allRows);
-  const totalBooks = grouped.length;
-  const missingInGrimmory = grouped.filter((rows) => rows.every((row) => row.grimmory_book_id === null)).length;
-  const needsReview = grouped.filter((rows) => hasBookNeedsIdReview(rows)).length;
-  const pendingDownload = grouped.filter((rows) => rows.some((row) => row.sync_health === "pending_download")).length;
+
+  const mediaStats = (mediaType: "book" | "audiobook"): DashboardMediaStats => {
+    const groups = grouped.filter((rows) => rows[0]!.book_media_type === mediaType);
+    return {
+      totalBooks: groups.length,
+      notInChaptarr: groups.filter((rows) =>
+        rows.some((row) => row.hardcover_book_id !== null || row.goodreads_book_link !== null)
+        && rows.every((row) => !row.chaptarr_monitored && !row.chaptarr_has_file)
+      ).length,
+      grabInChaptarr: groups.filter((rows) =>
+        rows.some((row) => row.chaptarr_monitored) && rows.every((row) => !row.chaptarr_has_file)
+      ).length,
+      needsReview: groups.filter((rows) => hasBookNeedsIdReview(rows)).length
+    };
+  };
 
   const recentlyAdded: BookSummary[] = grouped
     .map(dbToSummary)
@@ -82,7 +96,7 @@ router.get("/", (_req, res) => {
   const recentActivity: SyncRun[] = recentRuns.map(dbToSyncRun);
 
   const response: DashboardResponse = {
-    stats: { totalBooks, missingInGrimmory, needsReview, pendingDownload },
+    stats: { book: mediaStats("book"), audiobook: mediaStats("audiobook") },
     recentlyAdded,
     recentActivity
   };
@@ -98,6 +112,7 @@ interface DbBook {
   book_cover_cache_path: string | null;
   book_last_modified_at: string;
   book_last_sync_at: string | null;
+  book_media_type: string | null;
   grimmory_book_id: number | null;
   grimmory_media_type: string | null;
   grimmory_hardcover_book_id: string | null;
@@ -108,6 +123,8 @@ interface DbBook {
   goodreads_book_link: string | null;
   chaptarr_book_id: number | null;
   chaptarr_media_type: string | null;
+  chaptarr_monitored: number | null;
+  chaptarr_has_file: number | null;
   grimmory_status: string | null;
   grimmory_rating: number | null;
   hardcover_status_id: number | null;

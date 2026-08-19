@@ -653,16 +653,30 @@ Returns everything needed to render the dashboard in a single request.
 ```json
 {
   "stats": {
-    "linkedProfiles": 2,
-    "totalBooks": 150,
-    "missingInGrimmory": 5,
-    "needsReview": 3
+    "book": {
+      "totalBooks": 150,
+      "notInChaptarr": 5,
+      "grabInChaptarr": 2,
+      "needsReview": 3
+    },
+    "audiobook": {
+      "totalBooks": 12,
+      "notInChaptarr": 0,
+      "grabInChaptarr": 1,
+      "needsReview": 0
+    }
   },
   "recentlyAdded": [ /* BookSummary[] — up to 20 */ ],
-  "recentActivity": [ /* SyncRun[] — up to 10 */ ],
-  "profileSummaries": [ /* ProfileSummary[] */ ]
+  "recentActivity": [ /* SyncRun[] — up to 10 */ ]
 }
 ```
+
+Stats are split by `books.media_type` (`book` vs `audiobook`); books whose media
+type hasn't been resolved yet (`unknown`) aren't counted in either bucket.
+`notInChaptarr` mirrors the `add-to-chaptarr` action filter (tracked via
+Hardcover/Goodreads but absent from Chaptarr entirely); `grabInChaptarr` mirrors
+`grab-in-chaptarr` (monitored in Chaptarr but no file yet) — see the Books
+endpoint's `action` filter below for the exact semantics.
 
 ---
 

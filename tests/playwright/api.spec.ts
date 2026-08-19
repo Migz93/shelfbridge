@@ -36,9 +36,13 @@ test.describe("API smoke tests", () => {
     expect(body).toHaveProperty("recentActivity");
 
     const stats = body.stats as Record<string, unknown>;
-    expect(stats).toHaveProperty("totalBooks");
-    expect(stats).toHaveProperty("missingInGrimmory");
-    expect(stats).toHaveProperty("pendingDownload");
-    expect(stats).toHaveProperty("needsReview");
+    expect(stats).toHaveProperty("book");
+    expect(stats).toHaveProperty("audiobook");
+    for (const mediaStats of [stats.book, stats.audiobook]) {
+      expect(mediaStats).toHaveProperty("totalBooks");
+      expect(mediaStats).toHaveProperty("notInChaptarr");
+      expect(mediaStats).toHaveProperty("grabInChaptarr");
+      expect(mediaStats).toHaveProperty("needsReview");
+    }
   });
 });

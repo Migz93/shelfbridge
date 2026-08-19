@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { BookOpen, AlertTriangle, GitCompare, Download } from "lucide-react";
+import { BookOpen, Headphones, AlertTriangle, GitCompare, Download } from "lucide-react";
 import { apiGet } from "../lib/api";
 import { useLiveRefresh } from "../lib/useLiveRefresh";
 import { formatRelativeTime, formatDateShort } from "../lib/utils";
@@ -84,11 +84,19 @@ export default function Dashboard() {
         {data && (
           <div className="flex flex-col gap-3 sm:flex-row sm:items-stretch">
             {/* Stat chips */}
-            <div className="flex gap-2 flex-1 flex-wrap sm:flex-nowrap">
-              <StatChip icon={<BookOpen size={14} />} label="Books Tracked" value={data.stats.totalBooks} to="/books" />
-              <StatChip icon={<AlertTriangle size={14} />} label="Missing" value={data.stats.missingInGrimmory} to="/books?health=missing" accent="warning" />
-              <StatChip icon={<Download size={14} />} label="Pending Download" value={data.stats.pendingDownload} to="/books?health=pending_download" accent="warning" />
-              <StatChip icon={<GitCompare size={14} />} label="Needs Review" value={data.stats.needsReview} to="/books?health=id_review" accent="error" />
+            <div className="flex flex-col gap-1.5 flex-1">
+              <div className="flex gap-2 flex-wrap sm:flex-nowrap">
+                <StatChip icon={<BookOpen size={12} />} label="Books Tracked" value={data.stats.book.totalBooks} to="/books" compact />
+                <StatChip icon={<AlertTriangle size={12} />} label="Not in Chaptarr" value={data.stats.book.notInChaptarr} to="/books?action=add-to-chaptarr" accent="warning" compact />
+                <StatChip icon={<Download size={12} />} label="Grab in Chaptarr" value={data.stats.book.grabInChaptarr} to="/books?action=grab-in-chaptarr" accent="warning" compact />
+                <StatChip icon={<GitCompare size={12} />} label="Needs Review" value={data.stats.book.needsReview} to="/books?action=id-review" accent="error" compact />
+              </div>
+              <div className="flex gap-2 flex-wrap sm:flex-nowrap">
+                <StatChip icon={<Headphones size={12} />} label="Audiobooks Tracked" value={data.stats.audiobook.totalBooks} to="/audiobooks" compact />
+                <StatChip icon={<AlertTriangle size={12} />} label="Not in Chaptarr" value={data.stats.audiobook.notInChaptarr} to="/audiobooks?action=add-to-chaptarr" accent="warning" compact />
+                <StatChip icon={<Download size={12} />} label="Grab in Chaptarr" value={data.stats.audiobook.grabInChaptarr} to="/audiobooks?action=grab-in-chaptarr" accent="warning" compact />
+                <StatChip icon={<GitCompare size={12} />} label="Needs Review" value={data.stats.audiobook.needsReview} to="/audiobooks?action=id-review" accent="error" compact />
+              </div>
             </div>
 
             {/* Recent sync activity */}
@@ -139,13 +147,14 @@ export default function Dashboard() {
 }
 
 function StatChip({
-  icon, label, value, to, accent
+  icon, label, value, to, accent, compact
 }: {
   icon: React.ReactNode;
   label: string;
   value: number;
   to: string;
   accent?: "warning" | "error";
+  compact?: boolean;
 }) {
   const accentClass = accent === "warning"
     ? "text-warning"
@@ -156,11 +165,11 @@ function StatChip({
   return (
     <Link
       to={to}
-      className="flex-1 flex flex-col items-center justify-center gap-0.5 bg-background-container hover:bg-background-container-high rounded-xl px-3 py-2.5 border border-outline-variant/20 transition-colors text-center min-w-0"
+      className={`flex-1 flex flex-col items-center justify-center gap-0.5 bg-background-container hover:bg-background-container-high rounded-xl px-3 border border-outline-variant/20 transition-colors text-center min-w-0 ${compact ? "py-1" : "py-2.5"}`}
     >
       <div className={`flex items-center gap-1.5 ${accentClass}`}>
         {icon}
-        <span className="font-headline font-bold text-on-surface text-lg leading-none">{value}</span>
+        <span className={`font-headline font-bold text-on-surface leading-none ${compact ? "text-sm" : "text-lg"}`}>{value}</span>
       </div>
       <span className="text-on-surface-variant text-xs truncate">{label}</span>
     </Link>

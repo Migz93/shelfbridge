@@ -13,18 +13,23 @@ test.describe("Dashboard UI", () => {
   });
 
   test("Stat chips are visible after load", async ({ page }) => {
-    await expect(page.getByText("Books Tracked")).toBeVisible();
-    await expect(page.getByText("Missing", { exact: true })).toBeVisible();
-    await expect(page.getByText("Pending Download")).toBeVisible();
-    await expect(page.getByText("Needs Review")).toBeVisible();
+    await expect(page.getByText("Books Tracked", { exact: true })).toBeVisible();
+    await expect(page.getByText("Audiobooks Tracked")).toBeVisible();
+    await expect(page.getByText("Not in Chaptarr").first()).toBeVisible();
+    await expect(page.getByText("Grab in Chaptarr").first()).toBeVisible();
+    await expect(page.getByText("Needs Review").first()).toBeVisible();
   });
 
   test("Books Tracked stat chip links to the books page", async ({ page }) => {
     await expect(page.locator('a[href="/books"]').first()).toBeVisible();
   });
 
-  test("Missing stat chip links to the filtered books view", async ({ page }) => {
-    await expect(page.locator('a[href="/books?health=missing"]')).toBeVisible();
+  test("Audiobooks Tracked stat chip links to the audiobooks page", async ({ page }) => {
+    await expect(page.locator('a[href="/audiobooks"]').first()).toBeVisible();
+  });
+
+  test("Not in Chaptarr stat chip links to the filtered books view", async ({ page }) => {
+    await expect(page.locator('a[href="/books?action=add-to-chaptarr"]')).toBeVisible();
   });
 
   test("Recently Added section heading is visible", async ({ page }) => {
