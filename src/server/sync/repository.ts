@@ -34,7 +34,7 @@ export function getBookSource(db: Db, sourceType: string, instanceId: number, ex
   ).get(sourceType, instanceId, String(externalId), bucket) as BookSourceLookup | undefined;
 }
 
-/** Every bucket row for a (source_type, instance, external_id) key — at most two for Hardcover ('primary' + 'owned'), always exactly one (or zero) for every other source. */
+/** Every bucket row for a (source_type, instance, external_id) key — at most two for Hardcover ('primary' plus either 'owned' or 'shared'), always exactly one (or zero) for every other source. */
 export function getBookSources(db: Db, sourceType: string, instanceId: number, externalId: string | number): BookSourceLookup[] {
   return db.prepare(
     "SELECT id, book_id, source_media_type, source_edition_id, source_bucket FROM book_sources WHERE source_type = ? AND source_instance_id = ? AND external_id = ?"
