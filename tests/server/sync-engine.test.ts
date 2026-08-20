@@ -535,6 +535,46 @@ test("a non-owning sibling with its own real Grimmory status is not overwritten 
   assert.equal(audiobookGrState.status, "READ", "the sibling's own real Grimmory-sourced status must stand on its own, unaffected");
 });
 
+test("two finished siblings with no active owner never both attempt to write Hardcover", async () => {
+  // Both siblings are genuinely finished (READ), so neither is "actively
+  // reading" and there's no active write-back owner this run. Phase F's
+  // matcher still only matches one of them (via the primary edition's own
+  // resolved format) — the other must defer rather than reach Phase G's
+  // "Grimmory-only book, insert it into Hardcover" fallback, which would
+  // otherwise attempt a second, competing write into the same Hardcover
+  // book. insertHardcoverUserBook/updateHardcoverUserBook are deliberately
+  // NOT stubbed below — createFakeAdapters throws if either is called, so a
+  // passing sync already proves neither fired for the unmatched sibling.
+  const profileId = seedProfile(db);
+  seedHardcoverConnection(db, profileId);
+  seedGrimmoryConnection(db, profileId);
+  seedSyncSettings(db, profileId);
+
+  const adapters = createFakeAdapters({
+    fetchHardcoverUserId: async () => 42,
+    fetchHardcoverLibrary: async () => [hcBook({ status_id: 3, edition_id: 100 })], // READ
+    fetchHardcoverEditions: async () => new Map([[100, { id: 100, edition_format: "Hardcover", reading_format_id: 1, isbn_13: null, isbn_10: null, asin: null, pages: null, audio_seconds: null, image: null }]]),
+    fetchHardcoverLists: async () => [],
+    testGrimmoryLogin: async () => ({ ok: true, message: "ok", accessToken: "grim-token" }),
+    fetchGrimmoryBooks: async () => [
+      grBook({ id: 1, hardcoverBookId: "555", readStatus: "READ", mediaType: "physical", isbn13: "9780000000001" }),
+      grBook({ id: 2, hardcoverBookId: "555", readStatus: "READ", mediaType: "audiobook", isbn13: "9780000000002" })
+    ]
+  });
+
+  await runSyncImpl(profileId, insertSyncRun(db, profileId), false, adapters);
+
+  const shared = db.prepare(
+    "SELECT book_id FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ? AND source_bucket = 'shared'"
+  ).get(profileId) as { book_id: number } | undefined;
+  assert.ok(shared, "setup: the audiobook sibling must exist as its own 'shared' canonical");
+
+  const audiobookGrState = db.prepare(
+    "SELECT status FROM user_book_states WHERE book_id = ? AND profile_id = ? AND source_type = 'grimmory'"
+  ).get(shared!.book_id, profileId) as { status: string | null };
+  assert.equal(audiobookGrState.status, "READ", "the unmatched sibling's own Grimmory-sourced status is still recorded locally — it just never writes to Hardcover");
+});
+
 test("dry run resolves a Hardcover/Grimmory status conflict but never calls the Grimmory write adapter", async () => {
   const profileId = seedProfile(db);
   seedHardcoverConnection(db, profileId);

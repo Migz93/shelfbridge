@@ -1,5 +1,6 @@
 import type { GrimmoryBook } from "./grimmory.js";
 import { normalizeExternalId } from "../identifiers.js";
+import { hasGrimmoryUserActivity } from "./sync-utils.js";
 
 export function isActivelyReadingStatus(status: string | null | undefined): boolean {
   return status === "READING" || status === "RE_READING" || status === "PARTIALLY_READ";
@@ -144,6 +145,22 @@ export function sharedHardcoverRecordFor(
  * True when grBook must back off from writing its own status/progress to
  * a shared Hardcover record because another sibling — or ABS listening
  * activity on the audiobook sibling — already owns it.
+ *
+ * Callers only invoke this for a grBook Phase F did *not* match to its
+ * hcBook this run (see grimmory-state.ts's Phase G fallback, the only
+ * caller). When no active owner exists either (`owner.kind === "none"`,
+ * e.g. both siblings finished/inactive), a real Hardcover write is only
+ * suppressed if the *opposite*-format sibling also has genuine Grimmory
+ * activity of its own (not just existence) — Phase F's matcher already
+ * picked exactly one side to own the write-back slot this run, so the
+ * other side must defer rather than push a second, competing write into
+ * the same Hardcover record, mirroring the `'shared'` book_sources
+ * bucket's local-only, no-write-back guarantee (see hardcover-sources.ts /
+ * docs/sync.md's Hardcover Owned-List Import). An opposite sibling that
+ * merely *exists* on disk with zero activity of its own must not block
+ * this grBook — that's the original ABS-ownership-consolidation case this
+ * module was built to fix (a finished sibling must stay free to sync
+ * against an ABS-matched-but-never-opened audiobook).
  */
 export function isOwnedBySomeoneElse(ownership: SharedHardcoverOwnership, grBook: GrimmoryBook): boolean {
   const record = sharedHardcoverRecordFor(ownership, grBook.hardcoverBookId);
@@ -154,7 +171,8 @@ export function isOwnedBySomeoneElse(ownership: SharedHardcoverOwnership, grBook
   if (record.owner.kind === "abs") {
     return grBook.mediaType !== "audiobook";
   }
-  return false;
+  const oppositeSibling = grBook.mediaType === "audiobook" ? record.anyBook : record.anyAudiobook;
+  return !!oppositeSibling && hasGrimmoryUserActivity(oppositeSibling);
 }
 
 /**

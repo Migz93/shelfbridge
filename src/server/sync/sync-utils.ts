@@ -431,11 +431,15 @@ export function formatBucket(mediaType: "physical" | "ebook" | "audiobook" | nul
 }
 
 export function hasGrimmoryUserActivity(book: GrimmoryBook): boolean {
-  return book.readStatus !== null
+  // Loose comparisons: these fields are declared optional (`?:`) as well as
+  // nullable on GrimmoryBook, so `undefined` is a type-valid input here, not
+  // just `null` — treat them the same rather than letting an absent field
+  // silently read as "has activity".
+  return book.readStatus != null
     || grimmoryRating(book) !== null
-    || book.readProgress !== null
-    || book.lastReadTime !== null
-    || book.dateFinished !== null;
+    || book.readProgress != null
+    || book.lastReadTime != null
+    || book.dateFinished != null;
 }
 
 // ── DB helpers ────────────────────────────────────────────────────────────────

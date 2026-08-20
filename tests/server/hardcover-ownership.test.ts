@@ -48,6 +48,23 @@ test("real ABS listening activity blocks a finished ebook sibling from overwriti
   assert.equal(isOwnedBySomeoneElse(ownership, untouchedAudiobook as any), false);
 });
 
+test("two genuinely finished siblings with no active owner: the unmatched one defers rather than competing to write", () => {
+  // Unlike the "untouched audiobook" case above, BOTH siblings here have
+  // real Grimmory activity of their own (both finished) — Phase F's matcher
+  // already picked exactly one to own the write-back slot this run (via
+  // matchedGrimmoryIds, outside this module's scope); the other must not
+  // independently push a second, competing write into the same Hardcover
+  // record just because neither is "actively reading" right now.
+  const finishedBook = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READ" };
+  const finishedAudiobook = { id: 2, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "READ" };
+  const ownership = resolveSharedHardcoverOwnership([finishedBook, finishedAudiobook] as any, new Set());
+
+  const record = sharedHardcoverRecordFor(ownership, "42");
+  assert.equal(record?.owner.kind, "none", "neither finished sibling is actively reading, so there's no active owner");
+  assert.equal(isOwnedBySomeoneElse(ownership, finishedBook as any), true);
+  assert.equal(isOwnedBySomeoneElse(ownership, finishedAudiobook as any), true);
+});
+
 test("bookOwnsSharedHardcoverRecord requires a distinct audiobook sibling to exist", () => {
   const soloBook = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READING" };
   const audiobook = { id: 2, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "UNREAD" };

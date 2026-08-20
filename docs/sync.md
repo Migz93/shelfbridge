@@ -967,7 +967,13 @@ status/progress into it — this applies both to the main Hardcover↔Grimmory
 sync loop and to the fallback path that pushes unmatched Grimmory books into
 Hardcover (Phase G). Without this, the non-owning sibling would be treated as
 "a Grimmory book with no Hardcover match yet" and insert/overwrite the shared
-`user_books` row on every run.
+`user_books` row on every run. This includes the case where *neither* sibling
+is actively reading (both finished, say) — with no active owner, the
+non-matched sibling still defers if the matched one also has real activity of
+its own, so two finished siblings never both attempt to write the same
+Hardcover book. A sibling that merely exists on disk with zero activity of
+its own is the one exception: it must never block a genuinely finished
+sibling from syncing (the original bug this arbitration was built to fix).
 
 **Read record selection.** When ShelfBridge writes audiobook progress to
 Hardcover, it targets a specific `user_book_reads` row. Two related pitfalls:
