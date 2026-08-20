@@ -224,15 +224,26 @@ if (hasHardcover) {
       // row here unconditionally would strip a still-valid 'shared' row (and
       // its canonical's local presence) on every transient Grimmory outage.
       // Left alone, it's correctly re-evaluated the next time Grimmory data
-      // is actually available. The Owned-list handling below is independent
-      // of Grimmory entirely and always runs regardless.
+      // is actually available.
+      const existingShared = getBookSource(db, "hardcover", profileId, hcBook.book.id, "shared");
       if (grimmoryAvailable) {
-        const existingShared = getBookSource(db, "hardcover", profileId, hcBook.book.id, "shared");
         if (existingShared) {
           deleteBookSource.run(existingShared.id);
           deletedSecondarySourceIds.push(existingShared.id);
           if (existingShared.book_id !== null) affectedBookIds.add(existingShared.book_id);
         }
+      } else if (existingShared) {
+        // Grimmory is unavailable this run AND a 'shared' row is being
+        // preserved above rather than evaluated — secondarySibling being
+        // null can't be trusted as "no real sibling" here, so proceeding
+        // with the Owned-list logic below could create a competing 'owned'
+        // row right alongside the preserved 'shared' one (primary + shared +
+        // owned all at once). Defer Owned-list handling too, until Grimmory
+        // data is trustworthy again. This only applies when a 'shared' row
+        // is actually in play — a profile with no Grimmory connection at all
+        // (also grimmoryAvailable === false, but never has a 'shared' row to
+        // begin with) is unaffected and keeps working exactly as before.
+        continue;
       }
 
       const ownedEntry = ownedList?.entries.find((entry) => entry.book.id === hcBook.book.id);

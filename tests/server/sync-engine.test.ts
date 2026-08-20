@@ -691,6 +691,69 @@ test("a 'shared' row survives a sync where Grimmory is temporarily unavailable",
   assert.equal(sharedAfter!.id, sharedBefore!.id, "must be the same row, untouched — not deleted and recreated");
 });
 
+test("a Grimmory outage does not let a justified Owned-list entry create a competing 'owned' row next to a preserved 'shared' row", async () => {
+  // secondarySibling is forced to null for the whole run whenever Grimmory
+  // is unreachable (sharedHardcoverOwnership has nothing in it), which on
+  // its own looks identical to "no real sibling exists" — the case the
+  // Owned-list fallback exists to cover. Without deferring Owned-list
+  // handling too, a justified Owned-list entry would create an 'owned' row
+  // right alongside the preserved 'shared' row for the very same Hardcover
+  // book, leaving primary + shared + owned all at once.
+  const profileId = seedProfile(db);
+  seedHardcoverConnection(db, profileId, "hc-test-token", true);
+  seedGrimmoryConnection(db, profileId);
+  seedSyncSettings(db, profileId);
+
+  // Unique id/title/slug/ASIN/ISBNs: sync-engine.test.ts shares one `db`
+  // across every test in the file, and ASIN/title/slug are high-confidence,
+  // unprefixed identity keys (bookIdentity.ts) — reusing another test's
+  // literals (e.g. the default hcBook() id 555 or "AUDIO-ASIN") can silently
+  // merge unrelated tests' canonicals when run together.
+  const editionsMap = async () => new Map([[100, { id: 100, edition_format: "Hardcover", reading_format_id: 1, isbn_13: null, isbn_10: null, asin: null, pages: null, audio_seconds: null, image: null }]]);
+  const bookOverrides = { id: 990200, title: "Outage Owned Race Test Book", slug: "outage-owned-race-test-book" };
+  const book = hcBook({ status_id: 2, edition_id: 100, book: { ...hcBook().book, ...bookOverrides } }).book;
+
+  await runSyncImpl(profileId, insertSyncRun(db, profileId), false, createFakeAdapters({
+    fetchHardcoverUserId: async () => 42,
+    fetchHardcoverLibrary: async () => [hcBook({ status_id: 2, edition_id: 100, book: { ...hcBook().book, ...bookOverrides } })], // READING
+    fetchHardcoverEditions: editionsMap,
+    fetchHardcoverLists: async () => [],
+    testGrimmoryLogin: async () => ({ ok: true, message: "ok", accessToken: "grim-token" }),
+    fetchGrimmoryBooks: async () => [
+      grBook({ id: 990201, hardcoverBookId: "990200", readStatus: "READING", mediaType: "physical", isbn13: "9780000099021" }),
+      grBook({ id: 990202, hardcoverBookId: "990200", readStatus: null, mediaType: "audiobook", isbn13: "9780000099022" })
+    ]
+  }));
+
+  const beforeBuckets = db.prepare(
+    "SELECT source_bucket FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ? ORDER BY source_bucket"
+  ).all(profileId) as { source_bucket: string }[];
+  assert.deepEqual(beforeBuckets.map((b) => b.source_bucket), ["primary", "shared"], "setup: a real audiobook sibling must produce a 'shared' row, not an 'owned' one");
+
+  // Re-sync with Grimmory unreachable — Hardcover now also reports a
+  // Owned-list entry whose format disagrees with the primary edition, which
+  // would ordinarily justify an 'owned' row.
+  await runSyncImpl(profileId, insertSyncRun(db, profileId), false, createFakeAdapters({
+    fetchHardcoverUserId: async () => 42,
+    fetchHardcoverLibrary: async () => [hcBook({ status_id: 2, edition_id: 100, book: { ...hcBook().book, ...bookOverrides } })],
+    fetchHardcoverEditions: editionsMap,
+    fetchHardcoverLists: async () => [{
+      id: 1, name: "Owned", slug: "owned", bookIds: [book.id], books: [book],
+      entries: [{
+        book,
+        editionId: 200,
+        edition: { id: 200, edition_format: "Audible", reading_format_id: 2, isbn_13: null, isbn_10: null, asin: "OUTAGE-OWNED-RACE-ASIN", pages: null, audio_seconds: 36000, image: null }
+      }]
+    }],
+    testGrimmoryLogin: async () => ({ ok: false, message: "simulated Grimmory outage" })
+  }));
+
+  const afterBuckets = db.prepare(
+    "SELECT source_bucket FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ? ORDER BY source_bucket"
+  ).all(profileId) as { source_bucket: string }[];
+  assert.deepEqual(afterBuckets.map((b) => b.source_bucket), ["primary", "shared"], "the outage must not add a competing 'owned' row next to the preserved 'shared' row");
+});
+
 test("a non-owning sibling with its own real Grimmory status is not overwritten by the owning sibling's status", async () => {
   // Mirrors "Carl's Doomsday Scenario"/"The Dungeon Anarchist's Cookbook":
   // both siblings have real, independently-tracked Grimmory progress that
