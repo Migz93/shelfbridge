@@ -39,8 +39,8 @@ export interface HardcoverSourcesContext {
 }
 
 export interface PersistHardcoverSourcesResult {
-  /** book_sources ids deleted because their 'owned' row was no longer justified this run — feed into cleanupAfterSourceRemoval, same as legacy-cleanup's deletions. */
-  deletedOwnedSourceIds: number[];
+  /** book_sources ids deleted because their 'owned' or 'shared' secondary row was no longer justified this run — feed into cleanupAfterSourceRemoval, same as legacy-cleanup's deletions. */
+  deletedSecondarySourceIds: number[];
   affectedBookIds: number[];
 }
 
@@ -49,7 +49,7 @@ export async function persistHardcoverSources(context: HardcoverSourcesContext):
     hasHardcover, sharedHardcoverOwnership,
     inferHardcoverMediaType, firstHardcoverSeries, normalizeEditionFormat, enqueueImageCacheTask,
     pruneHardcoverUserStatesMissingFromFetch, pruneHardcoverSourcesMissingFromFetch, hardcoverSnapshotStatus } = context;
-  const deletedOwnedSourceIds: number[] = [];
+  const deletedSecondarySourceIds: number[] = [];
   const affectedBookIds = new Set<number>();
   const ownedList = hcLists.find((list) => list.slug === "owned");
   const deleteBookSource = db.prepare("DELETE FROM book_sources WHERE id = ?");
@@ -163,6 +163,14 @@ if (hasHardcover) {
     //  2. Otherwise, a Hardcover Owned-list entry whose format disagrees with
     //     the primary edition (bucket 'owned', unchanged from before).
     const primaryBucket = formatBucket(mediaType);
+    // An unresolved primary format (mediaType null — the "Needs Fix"/hidden
+    // case) has no known bucket to compare against, so "disagreement" is
+    // meaningless here: skip secondary-row reconciliation entirely this run
+    // rather than silently treating the unknown primary as "book" (which the
+    // ternaries below would otherwise do), which could wrongly create a
+    // secondary row or wrongly delete an existing valid one. Any existing
+    // secondary row is left untouched until the primary format resolves.
+    if (primaryBucket === null) continue;
     const sharedRecord = sharedHardcoverRecordFor(sharedHardcoverOwnership, hcBook.book.id);
     const secondarySibling = primaryBucket === "audiobook" ? sharedRecord?.anyBook ?? null : sharedRecord?.anyAudiobook ?? null;
 
@@ -203,14 +211,14 @@ if (hasHardcover) {
       const staleOwned = getBookSource(db, "hardcover", profileId, hcBook.book.id, "owned");
       if (staleOwned) {
         deleteBookSource.run(staleOwned.id);
-        deletedOwnedSourceIds.push(staleOwned.id);
+        deletedSecondarySourceIds.push(staleOwned.id);
         if (staleOwned.book_id !== null) affectedBookIds.add(staleOwned.book_id);
       }
     } else {
       const existingShared = getBookSource(db, "hardcover", profileId, hcBook.book.id, "shared");
       if (existingShared) {
         deleteBookSource.run(existingShared.id);
-        deletedOwnedSourceIds.push(existingShared.id);
+        deletedSecondarySourceIds.push(existingShared.id);
         if (existingShared.book_id !== null) affectedBookIds.add(existingShared.book_id);
       }
 
@@ -267,7 +275,7 @@ if (hasHardcover) {
         const existingOwned = getBookSource(db, "hardcover", profileId, hcBook.book.id, "owned");
         if (existingOwned) {
           deleteBookSource.run(existingOwned.id);
-          deletedOwnedSourceIds.push(existingOwned.id);
+          deletedSecondarySourceIds.push(existingOwned.id);
           if (existingOwned.book_id !== null) affectedBookIds.add(existingOwned.book_id);
         }
       }
@@ -278,10 +286,10 @@ if (hasHardcover) {
   pruneHardcoverUserStatesMissingFromFetch(db, profileId, new Set(hcBooks.map((b) => b.book.id)), hardcoverSnapshotStatus);
   pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set(hcBooks.map((b) => b.book.id)), hardcoverSnapshotStatus);
   logger.info("Hardcover book_sources written", { profileId, count: hcBooks.length });
-  if (deletedOwnedSourceIds.length > 0) {
-    logger.info("Removed no-longer-justified Hardcover Owned-list rows", { profileId, count: deletedOwnedSourceIds.length });
+  if (deletedSecondarySourceIds.length > 0) {
+    logger.info("Removed no-longer-justified Hardcover secondary (owned/shared) rows", { profileId, count: deletedSecondarySourceIds.length });
   }
 }
 
-return { deletedOwnedSourceIds, affectedBookIds: Array.from(affectedBookIds) };
+return { deletedSecondarySourceIds, affectedBookIds: Array.from(affectedBookIds) };
 }

@@ -211,6 +211,41 @@ test("Owned-list import is off by default: a disagreeing Owned-list edition is i
   assert.equal(sources[0]!.source_bucket, "primary");
 });
 
+test("Owned-list import is skipped when the primary edition's own format is unresolved", async () => {
+  // A book with no current edition and no resolvable default edition
+  // pointers has an unknown primary format bucket. "Disagrees with the
+  // primary format" is meaningless without a known primary bucket to
+  // compare against — this must not fall through to treating unknown as
+  // "book" and creating a bogus 'owned' row from an otherwise-valid
+  // Owned-list audiobook entry.
+  const profileId = seedProfile(db);
+  seedHardcoverConnection(db, profileId, "hc-test-token", true);
+  seedSyncSettings(db, profileId);
+  const book = hcBook({ edition_id: null }).book;
+  const adapters = createFakeAdapters({
+    fetchHardcoverUserId: async () => 42,
+    fetchHardcoverLibrary: async () => [hcBook({ edition_id: null })],
+    fetchHardcoverEditions: async () => new Map(),
+    fetchHardcoverLists: async () => [{
+      id: 1, name: "Owned", slug: "owned", bookIds: [book.id], books: [book],
+      entries: [{
+        book,
+        editionId: 200,
+        edition: { id: 200, edition_format: "Audible", reading_format_id: 2, isbn_13: null, isbn_10: null, asin: "AUDIO-ASIN", pages: null, audio_seconds: 36000, image: null }
+      }]
+    }]
+  });
+
+  await runSyncImpl(profileId, insertSyncRun(db, profileId), false, adapters);
+
+  const sources = db.prepare(
+    "SELECT source_bucket, source_media_type FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ?"
+  ).all(profileId) as { source_bucket: string; source_media_type: string | null }[];
+  assert.equal(sources.length, 1, "an unresolved primary format must not produce a secondary 'owned' row, even with a valid Owned-list entry present");
+  assert.equal(sources[0]!.source_bucket, "primary");
+  assert.equal(sources[0]!.source_media_type, null, "setup: the primary edition's format must genuinely be unresolved for this test to be meaningful");
+});
+
 test("Owned-list import creates a second row when the owned edition's format disagrees with the current edition", async () => {
   const profileId = seedProfile(db);
   seedHardcoverConnection(db, profileId, "hc-test-token", true);
@@ -265,14 +300,16 @@ test("Owned-list import creates a second row when the owned edition's format dis
   // The owned/audiobook canonical must still get a Hardcover-sourced state —
   // otherwise it has no user relationship at all and looks like an unclaimed
   // catalog entry instead of something this profile owns — but that state is
-  // local-only ('owned_list_local_only'), mirroring the shared work's
-  // status/rating rather than being independently matched or written back.
+  // local-only ('owned_list_local_only'): never matched against Grimmory and
+  // never written back. It never borrows the shared work's status/rating —
+  // with no Grimmory activity of its own it defaults to a neutral UNREAD.
   const audiobookCanonical = books.find((b) => b.media_type === "audiobook")!;
   const audiobookState = db.prepare(
     "SELECT status, last_sync_decision, hardcover_read_id, progress FROM user_book_states WHERE book_id = ? AND profile_id = ? AND source_type = 'hardcover'"
   ).get(audiobookCanonical.id, profileId) as { status: string | null; last_sync_decision: string; hardcover_read_id: number | null; progress: number | null } | undefined;
   assert.ok(audiobookState, "the owned/audiobook canonical must get a local Hardcover-sourced state so it shows as belonging to the profile");
   assert.equal(audiobookState!.last_sync_decision, "owned_list_local_only");
+  assert.equal(audiobookState!.status, "UNREAD", "with no Grimmory activity of its own the owned canonical defaults to UNREAD, never the primary edition's status");
   assert.equal(audiobookState!.hardcover_read_id, null, "the owned state must never carry a live Hardcover read id (it never writes back)");
 
   const bookCanonical = books.find((b) => b.media_type === "book")!;

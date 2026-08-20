@@ -1007,146 +1007,88 @@ the same time — Hardcover only exposes one `user_books` row for the whole
 book, so without extra handling ShelfBridge only ever sees the current-read
 format and never surfaces the owned audiobook.
 
-**Setting.** Per-profile, opt-in, off by default: `owned_import_enabled` on
-`hardcover_connections` (`ownedImportEnabled` in the API/UI, a `ToggleField`
-labeled "Owned Import" next to the other Hardcover connection settings).
-`fetchHardcoverLists` already fetches every list including "Owned" for the
-existing shelf-sync feature, so no extra API call is needed — this setting
-just adds a new consumer of that same data.
+**Setting.** Per-profile, opt-in, off by default: "Owned Import" toggle on
+the Hardcover connection (`owned_import_enabled` / `ownedImportEnabled`).
+Reuses the list data ShelfBridge already fetches for shelf sync — no extra
+API call.
 
-**Detection.** For each Hardcover book, `persistHardcoverSources` finds the
-list with `slug === "owned"` and looks for an entry matching that book. If
-found, it resolves that entry's format the same way as the current edition
-(`inferHardcoverMediaType`, reused directly). If the owned entry's format
-bucket ("book" vs. "audiobook") differs from the current edition's bucket,
-the owned edition is written as a **second** `book_sources` row for the same
-Hardcover book, distinguished by `source_bucket = 'owned'` (the primary row
-is always `source_bucket = 'primary'`; every non-Hardcover source and every
-Hardcover row when this setting is off or the formats agree also stays
-`'primary'`). `book_sources` is keyed on
-`(source_type, source_instance_id, external_id, source_bucket)`, so the two
-rows coexist without conflict.
-
-Because `bookIdentity.ts`'s reconciliation keys are already format-bucket
-prefixed (see "Book Sources And User States" in
-[docs/books-and-identity.md](books-and-identity.md)), the primary and owned
-rows reconcile into **two separate canonical books** — one under Books, one
-under Audiobooks — each free to match its own Grimmory/Chaptarr/
-Audiobookshelf file independently, the same way a genuinely separate print +
-audio Grimmory pair already does today.
-
-If the owned entry disappears or its format stops disagreeing with the
-current edition on a later sync, the stale `'owned'` row is deleted and its
-canonical book is cleaned up via `cleanupAfterSourceRemoval`.
-
-**No write-back.** Hardcover has only one `status_id`/`rating`/progress slot
-per book, not one per format, so only the `'primary'` row participates in
-Hardcover write-back — exactly as it does today, including the shared-book
-arbitration described above. The `'owned'` row never writes back to
-Hardcover; this falls out naturally from `getBookSource`/`upsertBookSource`
-defaulting to `bucket = "primary"` everywhere else in the sync engine, so
-Phase F's write-back lookup never sees the owned row at all — no explicit
-suppression logic was needed.
-
-**Status never crosses formats.** Book and audiobook editions are tracked
-completely independently in Grimmory, each with its own real status/progress
-— so the `'owned'`/`'shared'` row's local-only state
-(`upsertLocalOnlyHardcoverState` in `hardcover-phase.ts`) never borrows the
-shared work's actual Hardcover status/rating (that value reflects whichever
-format currently owns the write-back slot, which says nothing about *this*
-format's own progress). It checks whether the target canonical has real
-Grimmory activity of its own — against this run's freshly-fetched Grimmory
-data (`localGrimmoryBookForBookId` + `hasGrimmoryUserActivity`), not a
-`user_book_states` read, since Phase G (which would write that row for this
-run) hasn't executed yet at this point in Phase F:
-
-- **Has its own Grimmory activity** (a real status/progress already exists
-  for this exact format): `status`/`rating`/`hardcover_status_id` are left
-  `null` on the local-only row. Its own Grimmory-sourced state is already
-  correct and complete; leaving the Hardcover-sourced row empty avoids the
-  read-status filters' `OR` across sources (`grimmory_status ||
-  hardcover_status_id || ...`) pulling in a stale or wrong value and making
-  the book appear to be in two states at once.
-- **No Grimmory activity of its own** — whether because it's a real, on-disk
-  file nobody's opened yet, or because it only exists via the Owned list
-  with no on-disk file at all: `status` defaults to a neutral `"UNREAD"`
-  (`hardcover_status_id: 1`), never to whatever state the *other* format
-  happens to be in. A book finished in print but never started as an
-  audiobook shows the audiobook as not-yet-started, not "finished."
-
-`progress` is always left `null` on these rows in both cases — only
-`status`/`rating`/`hardcover_status_id` are ever set.
+**Detection.** For each Hardcover book on the Owned list, ShelfBridge
+resolves that entry's format the same way it resolves the current edition's.
+If the two formats disagree (e.g. current edition is print, Owned entry is
+audio), the Owned entry is written as a **second** `book_sources` row for
+the same Hardcover book (`source_bucket = 'owned'`; the current-edition row
+stays `'primary'`). The two rows reconcile into **two separate canonical
+books** — one under Books, one under Audiobooks — each free to match its own
+Grimmory/Chaptarr/Audiobookshelf file independently, the same way a
+genuinely separate print + audio Grimmory pair already does (see
+[docs/books-and-identity.md](books-and-identity.md)). If the Owned entry
+later disappears or stops disagreeing with the current edition, the stale
+`'owned'` row and its canonical are cleaned up.
 
 **Existence vs. write arbitration for genuinely shared books.** A Hardcover
 book that already has both a real Grimmory print/ebook sibling *and* a real
 Grimmory audiobook sibling (see "Shared Hardcover Books" above) is a
-different case from the Owned-list one above, but the same underlying
-principle applies: which sibling *exists* for a profile shouldn't depend on
-which sibling currently wins the write-back slot. Phase C checks for a real
-opposite-format sibling — via `SharedHardcoverRecord.anyBook`/`anyAudiobook`,
-which track any sibling of each format, active or not, unlike `activeBook`/
-`activeAudiobook` which only track the currently-arbitrating one — completely
-independent of `bookOwnsSharedHardcoverRecord`/`absOwnsSharedHardcoverRecord`
-(those still, unchanged, decide only which format the *primary* row and
-write-back target). When a real sibling exists, Phase C writes a second
-`book_sources` row for it too, bucket `'shared'`, sourced from `hcBook`
-(title/author/series) with the sibling's own format — deliberately **not**
-its ISBN, edition id, audio-seconds, or cover: Hardcover doesn't expose
-edition-level data for a format it isn't currently tracking as the user's
-current edition, and copying the sibling's own ISBN specifically risks
-reintroducing the cross-format merge this mechanism exists to avoid (a
-real, observed case: an audiobook edition reporting the exact same ISBN as
-its print counterpart — see the "ISBN merges still respect a known bucket
-mismatch" row in [docs/books-and-identity.md](books-and-identity.md)). The
-`source_hardcover_book_id` bucket-prefixed key alone is enough to reconcile
-this row onto the sibling's own canonical. This is checked *before* the
-Owned-list case above: a real sibling's own data is more complete than a
-guessed Owned-list edition, so it
-takes priority, and a stale `'owned'` row is removed if a real sibling shows
-up to replace it (and vice versa, if the sibling disappears but an Owned-list
-entry still justifies a row). Phase F then treats the `'shared'` bucket
-exactly like the `'owned'` bucket — the same local-only mirrored state
-(`last_sync_decision = 'shared_sibling_local_only'`), via the same helper,
-never write back, never matched against Grimmory. Because it's a real
-`book_sources` row, the "linked to Hardcover" source badge/filter on the
-Books/Audiobooks pages recognizes it too, exactly as it already does for the
-Owned-list case's `'owned'` row.
-
-On an ownership flip (e.g. the non-owning sibling starts being actively
-read), Phase C's write-back arbitration naturally moves the primary row to
-the new canonical as it already does today; the `'shared'` row's own bucket
-is untouched by that flip since it's keyed off sibling *existence*, not
+different case, but the same principle applies: which sibling *exists* for a
+profile shouldn't depend on which sibling currently wins Hardcover's
+write-back slot (unchanged, still a contest resolved the same way as
+today). ShelfBridge checks for a real opposite-format sibling first —
+ahead of the Owned-list case, since a real sibling's own data is more
+complete than a guessed Owned-list edition — and if one exists, writes it a
+second `book_sources` row too, bucket `'shared'`, using the shared work's
+title/author/series but deliberately not the sibling's own ISBN, edition id,
+audio-seconds, or cover: an audiobook edition can genuinely report the same
+ISBN as its print counterpart, and copying it here would risk re-merging the
+two canonicals via ISBN identity matching (see the "known bucket mismatch"
+row in [docs/books-and-identity.md](books-and-identity.md)). A stale
+`'owned'` row is removed if a real sibling shows up to replace it, and vice
+versa. On an ownership flip in the write-back arbitration, the `'shared'`
+bucket itself is untouched — it's keyed off sibling *existence*, not
 activity — so both siblings of a genuinely shared book always show as
 belonging to the profile, regardless of which one currently owns the
 write-back slot.
 
+**No write-back.** Hardcover has only one `status_id`/`rating`/progress slot
+per book, not one per format, so only the `'primary'` row ever writes back
+to Hardcover — exactly as it does today, including the shared-book
+arbitration described above. Neither the `'owned'` nor the `'shared'` row is
+ever matched against Grimmory or written back; because both are real
+`book_sources` rows, though, the "linked to Hardcover" source badge/filter
+on the Books/Audiobooks pages still recognizes them.
+
+**Status never crosses formats.** Book and audiobook editions are tracked
+completely independently in Grimmory, each with its own real status/progress
+— so the `'owned'`/`'shared'` row's local state never borrows the shared
+work's actual Hardcover status/rating (that value reflects whichever format
+currently owns the write-back slot, which says nothing about *this*
+format's own progress):
+
+- If the canonical already has its own real Grimmory-sourced status,
+  `status`/`rating` are left blank on the Hardcover-sourced row — the
+  Grimmory-sourced one is already correct and complete, and leaving the
+  other blank avoids the read-status filters pulling in a stale or wrong
+  value and making the book appear to be in two states at once.
+- Otherwise — whether it's a real, on-disk file nobody's opened yet, or it
+  only exists via the Owned list with no on-disk file at all — `status`
+  defaults to a neutral "want to read"/"want to listen" (`UNREAD`), never to
+  whatever state the *other* format happens to be in. A book finished in
+  print but never started as an audiobook shows the audiobook as
+  not-yet-started, not "finished."
+
+Progress itself is always left blank on these rows either way — only status
+and rating are ever set.
+
 **Owned-list-only books (no real Hardcover library entry).** A Hardcover
 book can be on the Owned list without the user ever having marked it "want
-to read"/"reading"/etc. — Hardcover then has no `user_books` row for it at
-all. `source-snapshots.ts` already has a pre-existing mechanism for
-list-only books (any list, not just Owned) that stubs one in with
-`status_id: null`, so it still gets a `book_sources` row and can be tracked.
-With `owned_import_enabled` on, an Owned-list-only book is checked for this
-*before* the generic any-list fallback, and gets Hardcover's real "want to
-read" `status_id` (`1`) instead of `null` — since being on the Owned list
-without a status is normally the closest a user can express "want to
-read"/"want to listen" for an audiobook-only book without Chaptarr grabbing
-the wrong (print/ebook) format for a genuine want-to-read status. Any other
-list a book is only found on (or a book synced via `hardcoverSyncListId`)
-still falls back to the unchanged `status_id: null` behavior.
-
-That real `status_id` needs one more piece to actually display: the `status`
-column mirrored onto `user_book_states` normally prefers the *matched
-Grimmory record's* own status over Hardcover's, falling back to `null` when
-neither has one. For an Owned-list-only book whose on-disk Grimmory file has
-never been opened (no status there either), that fallback chain now adds one
-more link — `HARDCOVER_TO_GRIMMORY[hcStatusId]` (see `matcher.ts`) — so a
-real Hardcover status still surfaces instead of `null`. This only affects the
-displayed status; it never overrides an actual Grimmory-reported status, and
-it doesn't change the separate write-back decision logic. That write-back
-logic *is* affected by the now-non-null `status_id`, though: a matched
-Grimmory record with no status of its own and a Hardcover status now present
-gets written to (`"hardcover_only_status"` in `conflict-policy.ts`) — the
-Owned-list-only book's status is pushed to Grimmory the same way it would be
-for any other Hardcover-only book, marking the on-disk file as officially
-tracked instead of leaving it in an unset state.
+to read"/"reading"/etc., so Hardcover has no real per-book record for it at
+all. ShelfBridge already has a general mechanism for list-only books (any
+list, not just Owned) that stubs one in with no status, so it still gets
+tracked. With Owned Import on, an Owned-list-only book is checked for this
+ahead of that general any-list fallback, and gets a real "want to read"
+status instead of none — being on the Owned list with no status set is
+normally the closest a user can express "want to read"/"want to listen" for
+an audiobook-only book, since marking it "want to read" directly would make
+Chaptarr grab the wrong (print/ebook) format. Any other list a book is only
+found on still falls back to the unchanged no-status behavior. That real
+status also gets written to the matching Grimmory record the same way it
+would for any other Hardcover-only book, marking the on-disk file as
+officially tracked instead of leaving it unset.

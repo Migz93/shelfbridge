@@ -22,9 +22,11 @@ export interface BookSourceLookup {
 /**
  * `bucket` defaults to `"primary"` — every source except Hardcover only ever
  * writes that bucket, so every existing caller is unaffected. Hardcover can
- * also have an `"owned"` row for the same (profile, external id) when the
- * user's Owned-list edition disagrees with their current edition's format
- * (see hardcover-sources.ts) — pass `"owned"` explicitly to look that up.
+ * also have a second row for the same (profile, external id): `"owned"` when
+ * the user's Owned-list edition disagrees with their current edition's
+ * format, or `"shared"` when a real Grimmory sibling of the opposite format
+ * already exists (see hardcover-sources.ts) — pass the bucket explicitly to
+ * look one of those up.
  */
 export function getBookSource(db: Db, sourceType: string, instanceId: number, externalId: string | number, bucket = "primary"): BookSourceLookup | undefined {
   return db.prepare(

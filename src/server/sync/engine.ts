@@ -166,8 +166,8 @@ export async function runSyncImpl(
       // a removed 'owned' row and no other surviving source needs the same
       // immediate reconcile-or-remove treatment, not just whatever the next
       // daily full reconcile happens to notice.
-      if (hardcoverSourcesResult.deletedOwnedSourceIds.length > 0) {
-        cleanupAfterSourceRemoval(db, hardcoverSourcesResult.affectedBookIds, hardcoverSourcesResult.deletedOwnedSourceIds);
+      if (hardcoverSourcesResult.deletedSecondarySourceIds.length > 0) {
+        cleanupAfterSourceRemoval(db, hardcoverSourcesResult.affectedBookIds, hardcoverSourcesResult.deletedSecondarySourceIds);
       }
 
       const legacyCleanup = cleanupLegacyHardcoverSources(db);
