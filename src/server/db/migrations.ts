@@ -444,9 +444,16 @@ const migration5: Migration = {
 // unchanged. SQLite can't ALTER an existing UNIQUE constraint, so this is a table
 // rebuild preserving every row and column exactly, plus the new column and
 // the indexes migration1/migration3 created (dropping the table drops them).
+// Also adds hardcover_connections.owned_import_enabled, the per-profile
+// opt-in for reading a Hardcover user's "Owned" list (a reserved system
+// list, slug "owned") as a second, independent format-ownership signal
+// alongside the current reading-status edition — see hardcover-sources.ts.
+// Off by default: nothing changes for a profile until the user turns it on.
+// Bundled into this same migration rather than a separate one since neither
+// has shipped yet — both are new to this branch's still-open PR.
 const migration6: Migration = {
   version: 6,
-  description: "Add source_bucket to book_sources for dual Hardcover book/audiobook rows",
+  description: "Add source_bucket to book_sources and owned_import_enabled to hardcover_connections",
   up(db: Database.Database): void {
     // Column list read live rather than hardcoded (same reasoning as
     // repository.ts's bookSourceColumns()): a database that reached this point
@@ -541,25 +548,18 @@ const migration6: Migration = {
       CREATE INDEX idx_book_sources_hardcover_book_id ON book_sources(source_hardcover_book_id);
       CREATE INDEX idx_book_sources_goodreads_book_id ON book_sources(source_goodreads_book_id);
       CREATE INDEX idx_book_sources_asin ON book_sources(source_asin);
-    `);
-  }
-};
 
-// Per-profile opt-in for reading a Hardcover user's "Owned" list (a reserved
-// system list, slug "owned") as a second, independent format-ownership signal
-// alongside the current reading-status edition — see hardcover-sources.ts.
-// Off by default: nothing changes for a profile until the user turns it on.
-const migration7: Migration = {
-  version: 7,
-  description: "Add owned_import_enabled to hardcover_connections",
-  up(db: Database.Database): void {
-    db.exec(`
+      -- Per-profile opt-in for reading a Hardcover user's "Owned" list (a
+      -- reserved system list, slug "owned") as a second, independent
+      -- format-ownership signal alongside the current reading-status
+      -- edition — see hardcover-sources.ts. Off by default: nothing changes
+      -- for a profile until the user turns it on.
       ALTER TABLE hardcover_connections ADD COLUMN owned_import_enabled INTEGER NOT NULL DEFAULT 0;
     `);
   }
 };
 
-export const migrations: Migration[] = [migration1, migration2, migration3, migration4, migration5, migration6, migration7];
+export const migrations: Migration[] = [migration1, migration2, migration3, migration4, migration5, migration6];
 
 // Guards against a typo'd version number: a duplicate would let two migrations
 // silently race to apply at the same version, and a gap (e.g. 1, 3 — skipping
