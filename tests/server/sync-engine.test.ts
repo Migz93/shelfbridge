@@ -459,6 +459,74 @@ test("a legacy instance-less Hardcover row's stranded state survives a sync that
   assert.equal(survivingState.count, 1, "the legacy row's stranded rating must survive — never silently deleted by the ghost-canonical cleanup's prune");
 });
 
+test("the ghost-canonical prune is a no-op when a legacy row shares the same canonical as the just-deleted owned row", async () => {
+  // A tighter version of the case above: here the legacy row lands on the
+  // EXACT SAME canonical as the owned row that's being removed this run —
+  // e.g. an old instance-less row and the new owned row share the same
+  // Hardcover id/format bucket and already reconciled together. That book
+  // still has a real book_sources row (the legacy one) even after the owned
+  // row is deleted, so it was never actually orphaned — deleteOrphanedBooks
+  // wouldn't touch it either way. Pruning this profile's own local-only
+  // state here would only destroy it for no benefit.
+  const profileId = seedProfile(db);
+  seedHardcoverConnection(db, profileId, "hc-test-token", true);
+  seedSyncSettings(db, profileId);
+
+  const uniqueOwnedHcBook = (overrides: Partial<HardcoverUserBook> = {}) =>
+    hcBook({ ...overrides, book: { ...hcBook().book, id: 990400, title: "Overlapping Legacy Test Book", slug: "overlapping-legacy-test-book" } });
+  const ownedBook = uniqueOwnedHcBook({ edition_id: 100 }).book;
+  const editionsMap = async () => new Map([[100, { id: 100, edition_format: "Hardcover", reading_format_id: 1, isbn_13: null, isbn_10: null, asin: null, pages: null, audio_seconds: null, image: null }]]);
+
+  await runSyncImpl(profileId, insertSyncRun(db, profileId), false, createFakeAdapters({
+    fetchHardcoverUserId: async () => 42,
+    fetchHardcoverLibrary: async () => [uniqueOwnedHcBook({ edition_id: 100 })],
+    fetchHardcoverEditions: editionsMap,
+    fetchHardcoverLists: async () => [{
+      id: 1, name: "Owned", slug: "owned", bookIds: [ownedBook.id], books: [ownedBook],
+      entries: [{
+        book: ownedBook,
+        editionId: 200,
+        edition: { id: 200, edition_format: "Audible", reading_format_id: 2, isbn_13: null, isbn_10: null, asin: "OVERLAPPING-LEGACY-TEST-ASIN", pages: null, audio_seconds: 36000, image: null }
+      }]
+    }]
+  }));
+
+  const ownedBookId = (db.prepare(
+    "SELECT book_id FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ? AND source_bucket = 'owned'"
+  ).get(profileId) as { book_id: number }).book_id;
+
+  // Directly attach a legacy (source_instance_id NULL) Hardcover row onto
+  // that exact same canonical — standing in for the "already reconciled
+  // together" case without depending on identity-key matching to produce it.
+  db.prepare(`
+    INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type)
+    VALUES (?, 'hardcover', NULL, 'overlap-legacy-external-id', 'Overlapping Legacy Test Book', 'audiobook')
+  `).run(ownedBookId);
+
+  // Re-sync with the Owned entry gone — this run deletes the owned row,
+  // putting ownedBookId in affectedBookIds, but the book is NOT actually
+  // orphaned: the legacy row inserted above is still a real book_sources row.
+  await runSyncImpl(profileId, insertSyncRun(db, profileId), false, createFakeAdapters({
+    fetchHardcoverUserId: async () => 42,
+    fetchHardcoverLibrary: async () => [uniqueOwnedHcBook({ edition_id: 100 })],
+    fetchHardcoverEditions: editionsMap,
+    fetchHardcoverLists: async () => []
+  }));
+
+  const stillHasLegacySource = db.prepare(
+    "SELECT COUNT(*) AS count FROM book_sources WHERE book_id = ? AND source_instance_id IS NULL"
+  ).get(ownedBookId) as { count: number };
+  assert.equal(stillHasLegacySource.count, 1, "setup: the legacy row must still be present — this book was never actually orphaned");
+
+  const ownedRowGone = db.prepare(
+    "SELECT COUNT(*) AS count FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ? AND source_bucket = 'owned'"
+  ).get(profileId) as { count: number };
+  assert.equal(ownedRowGone.count, 0, "setup: the owned row itself was correctly removed");
+
+  const ghostBook = db.prepare("SELECT COUNT(*) AS count FROM books WHERE id = ?").get(ownedBookId) as { count: number };
+  assert.equal(ghostBook.count, 1, "the book must not be deleted — a real book_sources row (the legacy one) is still attached to it");
+});
+
 test("a book that exists only via the Owned list (no real Hardcover library entry) still gets a real status", async () => {
   // Mirrors "World War Z": the book has no real Hardcover user_books row at
   // all (fetchHardcoverLibrary never returns it) — it only shows up because

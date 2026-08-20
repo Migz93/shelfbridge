@@ -68,17 +68,24 @@ export function pruneOrphanedHardcoverUserStates(db: Db, profileId: number): voi
 }
 
 /**
- * Same as pruneOrphanedHardcoverUserStates, but scoped to specific book ids —
- * for a caller that needs the prune to happen *before* the usual post-reconcile
- * point (see engine.ts's cleanupAfterSourceRemoval call for a removed 'owned'/
- * 'shared' secondary row: deleteOrphanedBooks needs the stale state gone this
- * same run to recognize the book as truly orphaned). Deliberately NOT a
- * blanket profile-wide sweep: a global prune this early would also delete
- * state still stranded on a legacy (source_instance_id IS NULL) Hardcover
- * row, before cleanupLegacyHardcoverSources gets its own, later chance to
- * migrate that state onto a live counterpart instead of losing it — this
- * scoped variant only ever touches the specific books the caller already
- * knows just lost a source this run.
+ * Same as pruneOrphanedHardcoverUserStates, but scoped to specific book ids
+ * AND only when the book has zero book_sources rows of *any* kind left — for
+ * a caller that needs the prune to happen *before* the usual post-reconcile
+ * point (see engine.ts's cleanupAfterSourceRemoval call for a removed
+ * 'owned'/'shared' secondary row: deleteOrphanedBooks needs the stale state
+ * gone this same run to recognize the book as truly orphaned, and that's the
+ * only case deleteOrphanedBooks can act on anyway — it independently
+ * requires zero book_sources rows itself). Deliberately not just "no
+ * profile-scoped Hardcover source": a legacy (source_instance_id IS NULL)
+ * Hardcover row can share the very book this run's deleted secondary row
+ * reconciled onto (matching bucket-prefixed hardcover_book_id, independent
+ * of instance), in which case the book still has a real book_sources row and
+ * isn't actually orphaned — pruning its state here would only destroy it for
+ * no benefit, since cleanupLegacyHardcoverSources (which runs right after,
+ * and could migrate that state onto a live counterpart) would still see the
+ * legacy row present regardless. Requiring zero book_sources rows of any
+ * kind makes this a no-op for that case, leaving it entirely to
+ * cleanupLegacyHardcoverSources and the later, unscoped prune.
  */
 export function pruneOrphanedHardcoverUserStatesForBooks(db: Db, profileId: number, bookIds: number[]): void {
   if (bookIds.length === 0) return;
@@ -93,8 +100,6 @@ export function pruneOrphanedHardcoverUserStatesForBooks(db: Db, profileId: numb
         AND NOT EXISTS (
           SELECT 1 FROM book_sources
           WHERE book_sources.book_id = user_book_states.book_id
-            AND book_sources.source_type = 'hardcover'
-            AND book_sources.source_instance_id = user_book_states.profile_id
         )
     `).run(profileId, ...batch);
     totalChanges += result.changes;
