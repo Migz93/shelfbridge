@@ -343,7 +343,7 @@ for (const hcBook of hcBooks) {
   // recognizes it (both are real book_sources rows, unlike an ad-hoc
   // local-only lookup would be).
   const ownedSource = getBookSource(db, "hardcover", profileId, hcBook.book.id, "owned");
-  if (ownedSource?.book_id) {
+  if (ownedSource?.book_id && ownedSource.book_id !== bookId) {
     upsertLocalOnlyHardcoverState(ownedSource.book_id, hcBook, "owned_list_local_only");
   }
   const sharedSource = getBookSource(db, "hardcover", profileId, hcBook.book.id, "shared");

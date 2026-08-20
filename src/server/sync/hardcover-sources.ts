@@ -53,6 +53,7 @@ export async function persistHardcoverSources(context: HardcoverSourcesContext):
   const deletedSecondarySourceIds: number[] = [];
   const affectedBookIds = new Set<number>();
   const ownedList = hcLists.find((list) => list.slug === "owned");
+  const ownedEntriesByBookId = new Map(ownedList?.entries.map((entry) => [entry.book.id, entry]) ?? []);
   const deleteBookSource = db.prepare("DELETE FROM book_sources WHERE id = ?");
 // ── Phase C: Write HC book_sources ─────────────────────────────────────
 if (hasHardcover) {
@@ -246,7 +247,7 @@ if (hasHardcover) {
         continue;
       }
 
-      const ownedEntry = ownedList?.entries.find((entry) => entry.book.id === hcBook.book.id);
+      const ownedEntry = ownedEntriesByBookId.get(hcBook.book.id);
       const ownedMediaType = ownedImportEnabled && ownedEntry
         ? inferHardcoverMediaType(hcBook, ownedEntry.edition, ownedEntry.editionId)
         : null;

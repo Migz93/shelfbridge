@@ -592,14 +592,20 @@ test("a genuinely shared Hardcover book gives its non-owning Grimmory sibling lo
   seedGrimmoryConnection(db, profileId);
   seedSyncSettings(db, profileId);
 
+  // Unique hardcover book id/ISBNs: sync-engine.test.ts shares one `db`
+  // across every test in the file, and hardcover_book_id/ISBN are
+  // unscoped, global identity keys (bookIdentity.ts) — reusing another
+  // test's literal (e.g. the default hcBook() id 555) risks silently
+  // merging unrelated tests' canonicals when run together.
+  const sharedBook = { ...hcBook().book, id: 700100 };
   const adapters = createFakeAdapters({
     fetchHardcoverUserId: async () => 42,
-    fetchHardcoverLibrary: async () => [hcBook({ status_id: 2 })], // READING
+    fetchHardcoverLibrary: async () => [hcBook({ status_id: 2, book: sharedBook })], // READING
     fetchHardcoverLists: async () => [],
     testGrimmoryLogin: async () => ({ ok: true, message: "ok", accessToken: "grim-token" }),
     fetchGrimmoryBooks: async () => [
-      grBook({ id: 1, hardcoverBookId: "555", readStatus: "READING", mediaType: "physical", isbn13: "9780000000001" }),
-      grBook({ id: 2, hardcoverBookId: "555", readStatus: null, mediaType: "audiobook", isbn13: "9780000000002" })
+      grBook({ id: 700101, hardcoverBookId: "700100", readStatus: "READING", mediaType: "physical", isbn13: "9780000700101" }),
+      grBook({ id: 700102, hardcoverBookId: "700100", readStatus: null, mediaType: "audiobook", isbn13: "9780000700102" })
     ]
   });
 
@@ -769,17 +775,20 @@ test("a non-owning sibling with its own real Grimmory status is not overwritten 
   seedGrimmoryConnection(db, profileId);
   seedSyncSettings(db, profileId);
 
+  // Unique hardcover book id/ISBNs — see the identical comment on the
+  // "genuinely shared Hardcover book" test above for why this matters.
+  const sharedBook = { ...hcBook().book, id: 700200 };
   const adapters = createFakeAdapters({
     fetchHardcoverUserId: async () => 42,
-    fetchHardcoverLibrary: async () => [hcBook({ status_id: 2 })], // READING
+    fetchHardcoverLibrary: async () => [hcBook({ status_id: 2, book: sharedBook })], // READING
     fetchHardcoverLists: async () => [],
     testGrimmoryLogin: async () => ({ ok: true, message: "ok", accessToken: "grim-token" }),
     fetchGrimmoryBooks: async () => [
-      grBook({ id: 1, hardcoverBookId: "555", readStatus: "READING", mediaType: "physical", isbn13: "9780000000001" }),
+      grBook({ id: 700201, hardcoverBookId: "700200", readStatus: "READING", mediaType: "physical", isbn13: "9780000700201" }),
       // The audiobook sibling has already been finished — a real, different
       // status than the actively-reading print sibling that currently owns
       // Hardcover's write-back slot.
-      grBook({ id: 2, hardcoverBookId: "555", readStatus: "READ", mediaType: "audiobook", isbn13: "9780000000002" })
+      grBook({ id: 700202, hardcoverBookId: "700200", readStatus: "READ", mediaType: "audiobook", isbn13: "9780000700202" })
     ]
   });
 
@@ -816,15 +825,18 @@ test("two finished siblings with no active owner never both attempt to write Har
   seedGrimmoryConnection(db, profileId);
   seedSyncSettings(db, profileId);
 
+  // Unique hardcover book id/ISBNs — see the identical comment on the
+  // "genuinely shared Hardcover book" test above for why this matters.
+  const sharedBook = { ...hcBook().book, id: 700300 };
   const adapters = createFakeAdapters({
     fetchHardcoverUserId: async () => 42,
-    fetchHardcoverLibrary: async () => [hcBook({ status_id: 3, edition_id: 100 })], // READ
+    fetchHardcoverLibrary: async () => [hcBook({ status_id: 3, edition_id: 100, book: sharedBook })], // READ
     fetchHardcoverEditions: async () => new Map([[100, { id: 100, edition_format: "Hardcover", reading_format_id: 1, isbn_13: null, isbn_10: null, asin: null, pages: null, audio_seconds: null, image: null }]]),
     fetchHardcoverLists: async () => [],
     testGrimmoryLogin: async () => ({ ok: true, message: "ok", accessToken: "grim-token" }),
     fetchGrimmoryBooks: async () => [
-      grBook({ id: 1, hardcoverBookId: "555", readStatus: "READ", mediaType: "physical", isbn13: "9780000000001" }),
-      grBook({ id: 2, hardcoverBookId: "555", readStatus: "READ", mediaType: "audiobook", isbn13: "9780000000002" })
+      grBook({ id: 700301, hardcoverBookId: "700300", readStatus: "READ", mediaType: "physical", isbn13: "9780000700301" }),
+      grBook({ id: 700302, hardcoverBookId: "700300", readStatus: "READ", mediaType: "audiobook", isbn13: "9780000700302" })
     ]
   });
 
