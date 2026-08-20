@@ -149,7 +149,7 @@ export async function runSyncImpl(
     await persistGrimmorySources({ db, profileId, grimmoryAvailable, grimmoryBooks, upsertBookSource: trackingUpsertBookSource, enqueueImageCacheTask, cacheSourceCover, sqliteNow, grimmoryToken, cacheGrimmoryCover, baseUrl });
 
     const hardcoverSourcesResult = await persistHardcoverSources({ db, profileId, hcBooks, hcEditions, hcLists, ownedImportEnabled, upsertBookSource: trackingUpsertBookSource, cacheSourceCover, sqliteNow,
-      hasHardcover, sharedHardcoverOwnership,
+      hasHardcover, grimmoryAvailable, sharedHardcoverOwnership,
       inferHardcoverMediaType, firstHardcoverSeries, normalizeEditionFormat, enqueueImageCacheTask,
       pruneHardcoverUserStatesMissingFromFetch, pruneHardcoverSourcesMissingFromFetch, hardcoverSnapshotStatus });
 

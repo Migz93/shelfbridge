@@ -1056,10 +1056,15 @@ write-back slot.
 **No write-back.** Hardcover has only one `status_id`/`rating`/progress slot
 per book, not one per format, so only the `'primary'` row ever writes back
 to Hardcover — exactly as it does today, including the shared-book
-arbitration described above. Neither the `'owned'` nor the `'shared'` row is
-ever matched against Grimmory or written back; because both are real
-`book_sources` rows, though, the "linked to Hardcover" source badge/filter
-on the Books/Audiobooks pages still recognizes them.
+arbitration described above. Neither the `'owned'` nor the `'shared'` row
+itself ever writes back to Hardcover or is matched against Grimmory by the
+Hardcover↔Grimmory sync loop directly — but the canonical it lives on can
+still be (and, for a `'shared'` row, normally is) matched with a real
+Grimmory record through the same identity reconciliation every other source
+goes through; that's what puts a `'shared'` row on the same canonical as its
+real Grimmory sibling in the first place. Because both bucket types are real
+`book_sources` rows, the "linked to Hardcover" source badge/filter on the
+Books/Audiobooks pages still recognizes them.
 
 **Status never crosses formats.** Book and audiobook editions are tracked
 completely independently in Grimmory, each with its own real status/progress

@@ -75,8 +75,8 @@ function hcBook(overrides: Partial<HardcoverUserBook> = {}): HardcoverUserBook {
 
 function grBook(overrides: Partial<GrimmoryBook> = {}): GrimmoryBook {
   // Matches production shape (grimmory.ts always normalizes these with `?? null`,
-  // never leaves them undefined) — hasGrimmoryUserActivity checks `!== null`, so an
-  // undefined field here would read as "has activity" and silently mask bugs.
+  // never leaves them undefined), so activity-dependent assertions here exercise
+  // the same field shapes hasGrimmoryUserActivity sees in production.
   return {
     id: 1,
     title: "Integration Test Book",
@@ -639,6 +639,56 @@ test("a genuinely shared Hardcover book gives its non-owning Grimmory sibling lo
   // createFakeAdapters throws on any adapter call not stubbed above — a
   // passing sync already proves no Hardcover write-back adapter (update/
   // insertHardcoverUserBook*) was ever called for either sibling.
+});
+
+test("a 'shared' row survives a sync where Grimmory is temporarily unavailable", async () => {
+  // grimmoryBooks (and so sharedHardcoverOwnership) is empty for the whole
+  // run whenever Grimmory can't be reached, regardless of whether the real
+  // audiobook sibling this 'shared' row is based on still exists — the
+  // cleanup path must not treat that as "the sibling is gone" and delete a
+  // still-valid row on every transient outage.
+  const profileId = seedProfile(db);
+  seedHardcoverConnection(db, profileId);
+  seedGrimmoryConnection(db, profileId);
+  seedSyncSettings(db, profileId);
+
+  // The primary edition resolves to "physical" from Hardcover's own edition
+  // data (not from Grimmory-derived shared-ownership forcing), so its bucket
+  // stays resolvable even on the second sync below where Grimmory data is
+  // unavailable and sharedHardcoverOwnership has nothing in it.
+  const editionsMap = async () => new Map([[100, { id: 100, edition_format: "Hardcover", reading_format_id: 1, isbn_13: null, isbn_10: null, asin: null, pages: null, audio_seconds: null, image: null }]]);
+
+  await runSyncImpl(profileId, insertSyncRun(db, profileId), false, createFakeAdapters({
+    fetchHardcoverUserId: async () => 42,
+    fetchHardcoverLibrary: async () => [hcBook({ status_id: 2, edition_id: 100 })], // READING
+    fetchHardcoverEditions: editionsMap,
+    fetchHardcoverLists: async () => [],
+    testGrimmoryLogin: async () => ({ ok: true, message: "ok", accessToken: "grim-token" }),
+    fetchGrimmoryBooks: async () => [
+      grBook({ id: 1, hardcoverBookId: "555", readStatus: "READING", mediaType: "physical", isbn13: "9780000000003" }),
+      grBook({ id: 2, hardcoverBookId: "555", readStatus: null, mediaType: "audiobook", isbn13: "9780000000004" })
+    ]
+  }));
+
+  const sharedBefore = db.prepare(
+    "SELECT id FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ? AND source_bucket = 'shared'"
+  ).get(profileId) as { id: number } | undefined;
+  assert.ok(sharedBefore, "setup: the 'shared' row must exist before testing outage survival");
+
+  // Re-sync with Grimmory unreachable — Hardcover data is unchanged.
+  await runSyncImpl(profileId, insertSyncRun(db, profileId), false, createFakeAdapters({
+    fetchHardcoverUserId: async () => 42,
+    fetchHardcoverLibrary: async () => [hcBook({ status_id: 2, edition_id: 100 })],
+    fetchHardcoverEditions: editionsMap,
+    fetchHardcoverLists: async () => [],
+    testGrimmoryLogin: async () => ({ ok: false, message: "simulated Grimmory outage" })
+  }));
+
+  const sharedAfter = db.prepare(
+    "SELECT id FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ? AND source_bucket = 'shared'"
+  ).get(profileId) as { id: number } | undefined;
+  assert.ok(sharedAfter, "the 'shared' row must survive a Grimmory outage, not be deleted just because this run's Grimmory data is empty");
+  assert.equal(sharedAfter!.id, sharedBefore!.id, "must be the same row, untouched — not deleted and recreated");
 });
 
 test("a non-owning sibling with its own real Grimmory status is not overwritten by the owning sibling's status", async () => {
