@@ -67,6 +67,41 @@ export function pruneOrphanedHardcoverUserStates(db: Db, profileId: number): voi
   if (result.changes > 0) logger.info("Pruned orphaned Hardcover user states after reconciliation", { profileId, deleted: result.changes });
 }
 
+/**
+ * Same as pruneOrphanedHardcoverUserStates, but scoped to specific book ids —
+ * for a caller that needs the prune to happen *before* the usual post-reconcile
+ * point (see engine.ts's cleanupAfterSourceRemoval call for a removed 'owned'/
+ * 'shared' secondary row: deleteOrphanedBooks needs the stale state gone this
+ * same run to recognize the book as truly orphaned). Deliberately NOT a
+ * blanket profile-wide sweep: a global prune this early would also delete
+ * state still stranded on a legacy (source_instance_id IS NULL) Hardcover
+ * row, before cleanupLegacyHardcoverSources gets its own, later chance to
+ * migrate that state onto a live counterpart instead of losing it — this
+ * scoped variant only ever touches the specific books the caller already
+ * knows just lost a source this run.
+ */
+export function pruneOrphanedHardcoverUserStatesForBooks(db: Db, profileId: number, bookIds: number[]): void {
+  if (bookIds.length === 0) return;
+  let totalChanges = 0;
+  for (const batch of chunk(bookIds, BATCH_SIZE)) {
+    const placeholders = batch.map(() => "?").join(",");
+    const result = db.prepare(`
+      DELETE FROM user_book_states
+      WHERE profile_id = ?
+        AND source_type = 'hardcover'
+        AND book_id IN (${placeholders})
+        AND NOT EXISTS (
+          SELECT 1 FROM book_sources
+          WHERE book_sources.book_id = user_book_states.book_id
+            AND book_sources.source_type = 'hardcover'
+            AND book_sources.source_instance_id = user_book_states.profile_id
+        )
+    `).run(profileId, ...batch);
+    totalChanges += result.changes;
+  }
+  if (totalChanges > 0) logger.info("Pruned orphaned Hardcover user states for books affected by a removed secondary row", { profileId, deleted: totalChanges });
+}
+
 export function pruneHardcoverSourcesMissingFromFetch(db: Db, profileId: number, fetchedIds: Set<number>, snapshotStatus: SourceSnapshotStatus): void {
   pruneSources(db, profileId, "hardcover", fetchedIds, snapshotStatus, "HC");
 }

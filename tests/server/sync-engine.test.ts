@@ -394,6 +394,71 @@ test("Owned-list import removes a previously-written 'owned' row once it's no lo
   assert.equal(ghostBook.count, 0, "the now-sourceless owned canonical must be deleted, not left behind as a ghost book");
 });
 
+test("a legacy instance-less Hardcover row's stranded state survives a sync that also removes an unrelated owned row", async () => {
+  // Regression for the ghost-canonical fix above: the scoped prune it adds
+  // must never touch state stranded on an unrelated legacy (source_instance_id
+  // IS NULL) Hardcover row — only cleanupLegacyHardcoverSources knows how to
+  // migrate that state safely, and it runs later in the same block. A
+  // profile-wide prune at that point (rather than one scoped to just the
+  // books affected by this run's owned/shared row removals) would delete it
+  // first, since a legacy row's source_instance_id can never equal a real
+  // profile id.
+  const profileId = seedProfile(db);
+  seedHardcoverConnection(db, profileId, "hc-test-token", true);
+  seedSyncSettings(db, profileId);
+
+  const legacyBookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Legacy Stranded Book')").run().lastInsertRowid);
+  db.prepare(`
+    INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, source_media_type)
+    VALUES (?, 'hardcover', NULL, '777777', 'Legacy Stranded Book', 'physical')
+  `).run(legacyBookId);
+  db.prepare(`
+    INSERT INTO user_book_states (book_id, profile_id, source_type, status, rating, sync_health, last_sync_at)
+    VALUES (?, ?, 'hardcover', 'READ', 5, 'synced', datetime('now'))
+  `).run(legacyBookId, profileId);
+
+  // Sync 1: creates the owned row for an unrelated second book (990300),
+  // matching the setup half of the ghost-canonical test above.
+  const uniqueOwnedHcBook = (overrides: Partial<HardcoverUserBook> = {}) =>
+    hcBook({ ...overrides, book: { ...hcBook().book, id: 990300, title: "Legacy Coexistence Test Book", slug: "legacy-coexistence-test-book" } });
+  const ownedBook = uniqueOwnedHcBook({ edition_id: 100 }).book;
+  const editionsMap = async () => new Map([[100, { id: 100, edition_format: "Hardcover", reading_format_id: 1, isbn_13: null, isbn_10: null, asin: null, pages: null, audio_seconds: null, image: null }]]);
+
+  await runSyncImpl(profileId, insertSyncRun(db, profileId), false, createFakeAdapters({
+    fetchHardcoverUserId: async () => 42,
+    fetchHardcoverLibrary: async () => [uniqueOwnedHcBook({ edition_id: 100 })],
+    fetchHardcoverEditions: editionsMap,
+    fetchHardcoverLists: async () => [{
+      id: 1, name: "Owned", slug: "owned", bookIds: [ownedBook.id], books: [ownedBook],
+      entries: [{
+        book: ownedBook,
+        editionId: 200,
+        edition: { id: 200, edition_format: "Audible", reading_format_id: 2, isbn_13: null, isbn_10: null, asin: "LEGACY-COEXISTENCE-TEST-ASIN", pages: null, audio_seconds: 36000, image: null }
+      }]
+    }]
+  }));
+
+  // Sync 2: the owned entry disappears (triggers the scoped ghost cleanup for
+  // book 990300's owned row) AND the legacy row's live counterpart (777777)
+  // shows up in the library for the first time in the same run (the exact
+  // condition under which cleanupLegacyHardcoverSources needs its own chance
+  // to run before any state on the legacy row's book is lost).
+  await runSyncImpl(profileId, insertSyncRun(db, profileId), false, createFakeAdapters({
+    fetchHardcoverUserId: async () => 42,
+    fetchHardcoverLibrary: async () => [
+      uniqueOwnedHcBook({ edition_id: 100 }),
+      hcBook({ id: 20, edition_id: null, status_id: 3, rating: 5, book: { ...hcBook().book, id: 777777, title: "Legacy Stranded Book", slug: "legacy-stranded-book" } })
+    ],
+    fetchHardcoverEditions: editionsMap,
+    fetchHardcoverLists: async () => []
+  }));
+
+  const survivingState = db.prepare(
+    "SELECT COUNT(*) AS count FROM user_book_states WHERE profile_id = ? AND source_type = 'hardcover' AND rating = 5"
+  ).get(profileId) as { count: number };
+  assert.equal(survivingState.count, 1, "the legacy row's stranded rating must survive — never silently deleted by the ghost-canonical cleanup's prune");
+});
+
 test("a book that exists only via the Owned list (no real Hardcover library entry) still gets a real status", async () => {
   // Mirrors "World War Z": the book has no real Hardcover user_books row at
   // all (fetchHardcoverLibrary never returns it) — it only shows up because
