@@ -60,7 +60,7 @@ export function cleanupLegacyHardcoverSources(db: Db): { deleted: number; affect
 
   const affectedBookIds = new Set<number>();
   const deletedSourceIds: number[] = [];
-  const deferred: Array<{ legacySourceId: number; bookId: number; reason: string; unmatchedProfileIds?: number[] }> = [];
+  const deferred: Array<{ legacySourceId: number; bookId: number; reason: string; unmatchedProfileIds?: number[]; unmatchedProfileCount?: number }> = [];
   let deleted = 0;
   let migratedStates = 0;
 
@@ -99,7 +99,10 @@ export function cleanupLegacyHardcoverSources(db: Db): { deleted: number; affect
         const stateProfileIds = (stateProfilesOnBook.all(row.book_id) as { profile_id: number }[]).map((r) => r.profile_id);
         const unmatchedProfileIds = stateProfileIds.filter((profileId) => !liveProfileIds.has(profileId));
         if (unmatchedProfileIds.length > 0) {
-          deferred.push({ legacySourceId: row.id, bookId: row.book_id, reason: "unmatched profile has no live counterpart yet", unmatchedProfileIds });
+          deferred.push({
+            legacySourceId: row.id, bookId: row.book_id, reason: "unmatched profile has no live counterpart yet",
+            unmatchedProfileIds: unmatchedProfileIds.slice(0, 20), unmatchedProfileCount: unmatchedProfileIds.length
+          });
           continue;
         }
 
