@@ -429,14 +429,18 @@ const migration5: Migration = {
 
 // Widens book_sources's uniqueness so a single Hardcover book can contribute
 // up to two local rows for the same profile — one for the user's current
-// reading-status edition ('primary', today's only case) and one for a format
-// the user separately owns per their Hardcover "Owned" list, when it disagrees
-// with the current edition's format (e.g. reading a physical copy but owning
-// the audiobook too). Every existing row keeps 'primary', so behavior for
-// every source is unchanged unless the new per-profile "Owned Import" setting
-// is turned on. SQLite can't ALTER an existing UNIQUE constraint, so this is a
-// table rebuild preserving every row and column exactly, plus the new column
-// and the indexes migration1/migration3 created (dropping the table drops them).
+// reading-status edition ('primary', today's only case) and a second,
+// secondary row for a format the user owns in a different way. That second
+// row is bucket 'owned' when it comes from the user's Hardcover "Owned" list
+// disagreeing with the current edition's format (e.g. reading a physical
+// copy but owning the audiobook too), or bucket 'shared' when a real
+// Grimmory sibling of the opposite format already exists for the same
+// Hardcover book (see docs/sync.md's Hardcover Owned-List Import section).
+// Every existing row keeps 'primary', so behavior for every source is
+// unchanged unless the new per-profile "Owned Import" setting is turned on.
+// SQLite can't ALTER an existing UNIQUE constraint, so this is a table
+// rebuild preserving every row and column exactly, plus the new column and
+// the indexes migration1/migration3 created (dropping the table drops them).
 const migration6: Migration = {
   version: 6,
   description: "Add source_bucket to book_sources for dual Hardcover book/audiobook rows",
@@ -513,7 +517,8 @@ const migration6: Migration = {
         last_modified_at TEXT NOT NULL DEFAULT (datetime('now')),
         created_at       TEXT NOT NULL DEFAULT (datetime('now')),
         -- 'primary' for every existing row and every non-Hardcover source;
-        -- only ever 'owned' for the new Hardcover Owned-list-derived row.
+        -- 'owned' or 'shared' only for a second Hardcover row (see the
+        -- migration comment above).
         source_bucket    TEXT NOT NULL DEFAULT 'primary',
         UNIQUE(source_type, source_instance_id, external_id, source_bucket)
       );
