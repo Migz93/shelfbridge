@@ -108,6 +108,38 @@ test("reconcileBookIdentities keeps sources with conflicting hardcover_book_id a
   }
 });
 
+test("reconcileBookIdentities keeps a book and its audiobook sibling separate even when they share an ISBN", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    // A real, observed Grimmory/Hardcover data quirk: an audiobook edition can
+    // report the exact same ISBN as its print/ebook counterpart. That must not
+    // be treated as evidence they're the same canonical — book vs. audiobook
+    // are deliberately kept apart everywhere else in this codebase (bucket-
+    // prefixed hardcover_book_id keys, the Owned-list/shared-sibling dual-row
+    // mechanism), so a same-ISBN, opposite-bucket pair must stay split.
+    const sharedIsbn = "9780000000099";
+    db.prepare(`
+      INSERT INTO book_sources (source_type, external_id, title, author, isbn13, source_media_type, source_hardcover_book_id)
+      VALUES ('grimmory', 'gr-book', 'Same ISBN Both Formats', 'Author', ?, 'ebook', '777')
+    `).run(sharedIsbn);
+    db.prepare(`
+      INSERT INTO book_sources (source_type, external_id, title, author, isbn13, source_media_type, source_hardcover_book_id)
+      VALUES ('grimmory', 'gr-audio', 'Same ISBN Both Formats', 'Author', ?, 'audiobook', '777')
+    `).run(sharedIsbn);
+
+    reconcileBookIdentities(db);
+
+    const sources = db.prepare("SELECT source_type, external_id, book_id FROM book_sources ORDER BY external_id").all() as
+      { source_type: string; external_id: string; book_id: number }[];
+    const ebook = sources.find((s) => s.external_id === "gr-book")!;
+    const audiobook = sources.find((s) => s.external_id === "gr-audio")!;
+    assert.notEqual(ebook.book_id, audiobook.book_id, "a shared ISBN must not re-merge a book and its audiobook sibling");
+    assert.equal(booksByTitle(db).length, 2);
+  } finally {
+    cleanup();
+  }
+});
+
 test("reconcileBookIdentities is idempotent: running it twice does not duplicate books", () => {
   const { db, cleanup } = createTestDatabase();
   try {

@@ -36,6 +36,12 @@ export interface SharedHardcoverRecord {
   hardcoverBookId: string;
   activeBook: GrimmoryBook | null;
   activeAudiobook: GrimmoryBook | null;
+  /** Any book/ebook Grimmory sibling sharing this Hardcover book, active or
+   * not — unlike activeBook, existence (not reading activity) is what a
+   * local-presence signal like the Owned-list fallback needs. */
+  anyBook: GrimmoryBook | null;
+  /** Any audiobook Grimmory sibling sharing this Hardcover book, active or not. */
+  anyAudiobook: GrimmoryBook | null;
   /** Whether *any* Grimmory audiobook entry (active or not) shares this Hardcover
    * book — a work only counts as "shared" for bucketing purposes once both an
    * audio and a non-audio edition are actually present. */
@@ -78,6 +84,8 @@ export function resolveSharedHardcoverOwnership(
         hardcoverBookId,
         activeBook: null,
         activeAudiobook: null,
+        anyBook: null,
+        anyAudiobook: null,
         hasAudiobookSibling: false,
         absOwned: absOwnedHardcoverBookIds.has(hardcoverBookId),
         owner: { kind: "none", reason: "no_active_owner" }
@@ -93,11 +101,15 @@ export function resolveSharedHardcoverOwnership(
     const record = recordFor(hardcoverBookId);
     if (book.mediaType === "audiobook") {
       record.hasAudiobookSibling = true;
+      record.anyAudiobook = record.anyAudiobook ? preferMoreRecentlyActive(record.anyAudiobook, book) : book;
       if (isActivelyReadingStatus(book.readStatus)) {
         record.activeAudiobook = record.activeAudiobook ? preferMoreRecentlyActive(record.activeAudiobook, book) : book;
       }
-    } else if (isActivelyReadingStatus(book.readStatus)) {
-      record.activeBook = record.activeBook ? preferMoreRecentlyActive(record.activeBook, book) : book;
+    } else {
+      record.anyBook = record.anyBook ? preferMoreRecentlyActive(record.anyBook, book) : book;
+      if (isActivelyReadingStatus(book.readStatus)) {
+        record.activeBook = record.activeBook ? preferMoreRecentlyActive(record.activeBook, book) : book;
+      }
     }
   }
 

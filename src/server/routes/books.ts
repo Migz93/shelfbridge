@@ -185,12 +185,16 @@ function hasNeedsIdReview(row: Pick<DbBookRow,
     || (sourceHardcoverId !== null && !identifiersEqual(grimmoryHardcoverId, sourceHardcoverId));
 }
 
-type DuplicateMatchRow = Pick<DbBookRow, "book_id" | "book_title" | "book_author" | "book_series_name" | "book_series_number">;
+type DuplicateMatchRow = Pick<DbBookRow, "book_id" | "book_title" | "book_author" | "book_series_name" | "book_series_number" | "book_media_type">;
 
 // Duplicate matching only compares book-level title/author/series fields, so this
 // looks up candidates via the indexed duplicate_title_key/duplicate_author_key
 // columns (populated on every books write, see bookIdentity.ts's insertBook/
-// updateBook) instead of scanning every row in the `books` table.
+// updateBook) instead of scanning every row in the `books` table. Candidates are
+// also scoped to the target's own media_type ('book' or 'audiobook') — a book and
+// its independently-tracked audiobook counterpart (see the Hardcover Owned-list
+// import in docs/sync.md) legitimately share a title/author and must not be
+// flagged as duplicates of each other.
 function fetchDuplicateMatchRows(targetBookId: number): DuplicateMatchRow[] {
   const db = getDb();
   const baseSelect = `
@@ -199,18 +203,19 @@ function fetchDuplicateMatchRows(targetBookId: number): DuplicateMatchRow[] {
       title AS book_title,
       author AS book_author,
       series_name AS book_series_name,
-      series_number AS book_series_number
+      series_number AS book_series_number,
+      media_type AS book_media_type
     FROM books
   `;
-  const target = db.prepare(`SELECT duplicate_title_key, duplicate_author_key FROM books WHERE id = ?`)
-    .get(targetBookId) as { duplicate_title_key: string | null; duplicate_author_key: string | null } | undefined;
+  const target = db.prepare(`SELECT duplicate_title_key, duplicate_author_key, media_type FROM books WHERE id = ?`)
+    .get(targetBookId) as { duplicate_title_key: string | null; duplicate_author_key: string | null; media_type: string } | undefined;
   if (!target || target.duplicate_title_key === null || target.duplicate_author_key === null) {
     // No key means the title/author couldn't normalize to anything comparable
     // (e.g. blank) — no book can share a duplicate group with it.
     return db.prepare(`${baseSelect} WHERE id = ?`).all(targetBookId) as DuplicateMatchRow[];
   }
-  return db.prepare(`${baseSelect} WHERE id = ? OR (duplicate_title_key = ? AND duplicate_author_key = ?)`)
-    .all(targetBookId, target.duplicate_title_key, target.duplicate_author_key) as DuplicateMatchRow[];
+  return db.prepare(`${baseSelect} WHERE id = ? OR (duplicate_title_key = ? AND duplicate_author_key = ? AND media_type = ?)`)
+    .all(targetBookId, target.duplicate_title_key, target.duplicate_author_key, target.media_type) as DuplicateMatchRow[];
 }
 
 function hasDistinctSeriesPosition(a: DuplicateMatchRow, b: DuplicateMatchRow): boolean {
@@ -256,7 +261,7 @@ function probableDuplicateBookIds(rows: DuplicateMatchRow[], dismissedPairs = di
     const title = probableDuplicateTitleKey(row.book_title);
     const author = normalizeReviewText(row.book_author);
     if (!title || !author) continue;
-    const key = `${title}||${author}`;
+    const key = `${title}||${author}||${row.book_media_type}`;
     const candidates = byKey.get(key) ?? [];
     candidates.push(row);
     byKey.set(key, candidates);
@@ -282,6 +287,7 @@ function probableDuplicateCandidateIds(rows: DuplicateMatchRow[], bookId: number
   for (const group of groupByBook(rows)) {
     const row = group[0]!;
     if (row.book_id === bookId) continue;
+    if (row.book_media_type !== current.book_media_type) continue;
     if (probableDuplicateTitleKey(row.book_title) !== title) continue;
     if (normalizeReviewText(row.book_author) !== author) continue;
     if (hasDistinctSeriesPosition(current, row)) continue;

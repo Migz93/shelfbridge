@@ -39,7 +39,9 @@ additional tables:
 that do not vary per user: external IDs, ISBNs, slugs, cross-system reference
 IDs, Chaptarr monitored/has_file flags, series data, and the `cover_cache_path`
 used by all profiles for that book. There is exactly one `book_sources` row per
-source type per canonical book.
+source type per canonical book, with one exception: a Hardcover book can
+contribute a second row, distinguished by `source_bucket` (`'primary'` vs
+`'owned'`) — see "Hardcover Owned-List Import" below.
 
 **`user_book_states`** — one row per (book, profile, source_type); contains
 everything that varies per user: sync health, match confidence, `has_superseded`
@@ -71,6 +73,7 @@ Before those keys are generated, each source row is bucketed into `book`,
 | Hardcover precedence | Structured `reading_format_id` (Physical/Audiobook/E-Book/Both) wins over the free-text `edition_format` field and over `default_*_edition_id` pointers — `edition_format` is often blank or inconsistently labeled, and a book can expose the same edition ID as its physical, ebook, and audio default simultaneously |
 | Bucket-prefixed keys | HC book ID, Grimmory ID, and the title+author key (`titleAuthorKey` emits `${bucket}.title_author:…`) — e.g. separate HC library entries for the physical and audio editions of the same work are not incorrectly merged, and a book row and an audiobook row with identical title/author stay in separate canonical records rather than collapsing together |
 | ISBN exception | `isbnIdentityKeys` emits unprefixed `isbn13:`/`isbn10:` keys — an ISBN identifies a specific edition regardless of bucket, and a row's bucket is often "unknown" for reasons unrelated to actual format (e.g. no Hardcover edition data yet); prefixing would block a valid exact-ISBN match |
+| ISBN merges still respect a *known* bucket mismatch | An audiobook edition can genuinely report the same ISBN as its print/ebook counterpart (an observed Grimmory/Hardcover metadata quirk) — that isn't evidence they're the same canonical. The ISBN-merge step in `reconcileBookIdentities` tracks each union-find root's known format buckets (`RootIndexEntry.formatBuckets`) and skips a merge outright when both sides have a known bucket and they disagree, independent of the unprefixed-key exception above. An unknown bucket on either side still doesn't block the merge — it carries no contradicting signal |
 
 Key `user_book_states` fields:
 

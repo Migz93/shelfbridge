@@ -388,10 +388,14 @@ export function normalizeEditionFormat(value: string | null | undefined): string
 
 export function inferHardcoverMediaType(
   hcBook: HardcoverUserBook,
-  edition: HardcoverEdition | null | undefined
+  edition: HardcoverEdition | null | undefined,
+  // Defaults to the user's current reading-status edition. Pass a different
+  // edition id to classify some OTHER edition of this book against the same
+  // book's default_*_edition_id pointers — e.g. an edition attached to a
+  // Hardcover list entry rather than hcBook's own current edition (see
+  // hardcover-sources.ts's Owned-list handling).
+  editionId: number | null = hcBook.edition_id
 ): "physical" | "ebook" | "audiobook" | null {
-  const editionId = hcBook.edition_id;
-
   // reading_format_id is Hardcover's structured "Type" classification
   // (Physical Book/Audiobook/E-Book/Both) and is normally populated on every
   // edition — unlike the free-text edition_format field, which is often blank
@@ -413,6 +417,16 @@ export function inferHardcoverMediaType(
   if (editionId && editionId === hcBook.book.default_audio_edition_id) return "audiobook";
   if (editionId && editionId === hcBook.book.default_ebook_edition_id) return "ebook";
   if (editionId && editionId === hcBook.book.default_physical_edition_id) return "physical";
+  return null;
+}
+
+// Collapses a resolved Hardcover/Grimmory format into the two buckets that
+// matter for comparing whether two editions/siblings are "the same format" or
+// genuinely different: physical and ebook are both "book" (see
+// bookIdentity.ts's rowFormatBucket, which folds them the same way).
+export function formatBucket(mediaType: "physical" | "ebook" | "audiobook" | null): "book" | "audiobook" | null {
+  if (mediaType === "physical" || mediaType === "ebook") return "book";
+  if (mediaType === "audiobook") return "audiobook";
   return null;
 }
 

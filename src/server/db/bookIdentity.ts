@@ -352,6 +352,11 @@ interface RootIndexEntry {
   titleAuthorKeys: Set<IdentityKey>;
   seriesNames: Set<string>;
   seriesNumbers: Set<string>;
+  /** Known ("book"/"audiobook", never "unknown") format buckets seen among this
+   * root's rows — used to block an ISBN match from merging two clusters that
+   * are on opposite sides of the book/audiobook split (see the ISBN-merge loop
+   * below). */
+  formatBuckets: Set<"book" | "audiobook">;
 }
 
 // Absorbs the smaller set into the larger one and returns it (mutating), so a long
@@ -371,7 +376,8 @@ function mergeRootEntries(a: RootIndexEntry | undefined, b: RootIndexEntry | und
     highKeys: mergeSets(a?.highKeys, b?.highKeys),
     titleAuthorKeys: mergeSets(a?.titleAuthorKeys, b?.titleAuthorKeys),
     seriesNames: mergeSets(a?.seriesNames, b?.seriesNames),
-    seriesNumbers: mergeSets(a?.seriesNumbers, b?.seriesNumbers)
+    seriesNumbers: mergeSets(a?.seriesNumbers, b?.seriesNumbers),
+    formatBuckets: mergeSets(a?.formatBuckets, b?.formatBuckets)
   };
 }
 
@@ -674,11 +680,13 @@ export function reconcileBookIdentities(db: Database.Database, scope?: Reconcile
     const titleKey = titleAuthorKey(row);
     const seriesName = normalizeTitle(row.series_name);
     const seriesNumber = normalizeSeriesNumber(row.series_number);
+    const rowBucket = rowFormatBucket(row);
     rootIndex.set(row.id, {
       highKeys: new Set(highKeys),
       titleAuthorKeys: new Set(titleKey ? [titleKey] : []),
       seriesNames: new Set(seriesName ? [seriesName] : []),
-      seriesNumbers: new Set(seriesNumber ? [seriesNumber] : [])
+      seriesNumbers: new Set(seriesNumber ? [seriesNumber] : []),
+      formatBuckets: new Set(rowBucket === "unknown" ? [] : [rowBucket])
     });
 
     for (const key of highKeys) {
@@ -721,6 +729,22 @@ export function reconcileBookIdentities(db: Database.Database, scope?: Reconcile
       const rootA = uf.find(ids[0]!);
       const rootB = uf.find(id);
       if (rootA === rootB) continue;
+      // An audiobook edition can genuinely report the same ISBN as its print/
+      // ebook counterpart (a real Grimmory/Hardcover metadata quirk) — that's
+      // not evidence they're the same canonical book. Book vs. audiobook are
+      // deliberately different canonicals everywhere else in this codebase
+      // (rowFormatBucket, the bucket-prefixed high keys above, the Hardcover
+      // Owned-list/shared-sibling dual-row mechanism), so a cross-bucket ISBN
+      // match must never be allowed to silently re-merge them. Skip only when
+      // both sides have a *known* bucket and they disagree — an unknown
+      // bucket carries no contradicting signal and must not block a
+      // legitimate same-format merge just because format wasn't classified.
+      const bucketsA = rootIndex.get(rootA)?.formatBuckets ?? new Set();
+      const bucketsB = rootIndex.get(rootB)?.formatBuckets ?? new Set();
+      if (bucketsA.size > 0 && bucketsB.size > 0 && ![...bucketsA].some((b) => bucketsB.has(b))) {
+        logger.debug("Skipped ISBN-based book merge: opposite format buckets", { rootA, rootB });
+        continue;
+      }
       const keysA = rootIndex.get(rootA)?.highKeys ?? new Set<IdentityKey>();
       const keysB = rootIndex.get(rootB)?.highKeys ?? new Set<IdentityKey>();
       // A shared ISBN is strong corroborating evidence, but a conflicting authoritative

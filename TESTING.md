@@ -168,6 +168,7 @@ so all tests start already authenticated.
 |---|---|
 | ISBN13 match | Two sources sharing an ISBN13 merge into one canonical book |
 | ISBN match despite an unresolved format bucket | A Hardcover row with no resolvable edition_format/media_type still merges with a canonical book via a shared ISBN |
+| ISBN match blocked across a known format-bucket mismatch | A book/ebook row and an audiobook row that happen to share the exact same ISBN (a real Grimmory/Hardcover data quirk) stay separate canonicals — a shared ISBN never overrides a known book-vs-audiobook bucket disagreement |
 | Conflicting Hardcover book id | Two sources with the same title but different authoritative Hardcover ids stay separate books |
 | Idempotency | Running `reconcileBookIdentities` twice doesn't duplicate books |
 | Orphan cleanup | A book left with zero `book_sources` rows is deleted on the next reconcile pass |
@@ -315,6 +316,13 @@ Runs `runSyncImpl` end-to-end against a real (isolated) SQLite database with fak
 | Two profiles | Each profile's `book_sources` stay scoped to its own `source_instance_id` — no cross-profile leakage |
 | Negative edition cache | An unchanged Hardcover page count with no matching edition only fetches editions once across syncs. |
 | Queue ordering | `runExclusiveOfSyncs` (used by the daily full-reconcile job and cover-cache reconciliation) never runs concurrently with a queued sync — it deterministically waits for the sync ahead of it in the shared queue to settle first, proven by promise-chaining order rather than real timing. |
+| Owned-list import off by default | With `owned_import_enabled = 0`, a disagreeing Owned-list edition is ignored — only the primary `book_sources` row is written. |
+| Owned-list import creates a second row | With the setting on, an Owned-list edition whose format disagrees with the current edition writes a second `book_sources` row (`source_bucket = 'owned'`) that reconciles into its own canonical book (opposite `media_type` from the primary), and only the primary canonical gets a Hardcover-sourced `user_book_states` row — the owned one gets none. |
+| Owned-list import removes a stale row | Once a previously-written `'owned'` row is no longer justified (entry removed or formats now agree), it's deleted and the primary row is unaffected. |
+| Genuinely shared book gives the non-owning sibling local presence | A Hardcover book with real Grimmory book and audiobook siblings (no Owned-list involvement) — the actively-reading sibling keeps the normal primary write-back row; the non-owning sibling gets its own `'shared'`-bucket `book_sources` row (reconciled onto its own canonical) and a local-only state (`shared_sibling_local_only`) with no live Hardcover read id. |
+| Owned-list-only book with no real Hardcover library entry still gets a real status | A book present only via the Owned list (no `fetchHardcoverLibrary` entry) enters as a normal primary `book_sources` row (not a synthetic secondary bucket), gets Hardcover's "want to read" `status_id` instead of the generic list-only stub's `null`, and — since nothing on the Grimmory side has a status either — that status_id flows into the displayed status and gets written back to the matching Grimmory record. |
+| A non-owning sibling with its own real Grimmory status is not overwritten | When the non-owning sibling of a genuinely shared book has its own real, differing Grimmory status (e.g. finished the audiobook while still partway through the print book), its local-only Hardcover state leaves `status`/`rating` `null` rather than mirroring the owning sibling's status — its own Grimmory-sourced state stands alone, unaffected. |
+| A non-owning sibling with no activity of its own defaults to UNREAD, never the owning sibling's status | A real Grimmory sibling nobody's opened/listened to yet (e.g. a book finished in print, audiobook never started) shows as `UNREAD` on its own local-only Hardcover state — never mirrors the actively-reading/finished status of the *other* format. |
 
 Adapters not relevant to a given test are left unimplemented via `createFakeAdapters` (`test-helpers.ts`), which makes any unexpected call throw immediately instead of failing confusingly deep inside `runSyncImpl`.
 

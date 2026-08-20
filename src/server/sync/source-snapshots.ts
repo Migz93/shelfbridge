@@ -84,13 +84,37 @@ if (hasHardcover) {
     listsForListOnlyBooks = [selectedList];
   }
 
+  const ownedImportEnabled = !!(profile["hardcover_owned_import_enabled"] as number | null);
   const libraryBookIds = new Set(hcBooks.map((b) => b.book.id));
-  const listOnlyBooksById = new Map<number, { book: HardcoverUserBook["book"]; editionId: number | null; edition: HardcoverEdition | null }>();
+  const listOnlyBooksById = new Map<number, { book: HardcoverUserBook["book"]; editionId: number | null; edition: HardcoverEdition | null; statusId: number | null }>();
+
+  // Owned-list-only books get checked first, ahead of the generic "any list"
+  // fallback below: a book that only exists via the Owned list is one the
+  // profile specifically flagged as owned in some format — normally the
+  // equivalent of marking it "want to read", except the user can't actually
+  // do that through Hardcover's own status for an audiobook-only case without
+  // Chaptarr grabbing the wrong (book) format. So it gets Hardcover's real
+  // "want to read" status_id (1 — see matcher.ts's HARDCOVER_TO_GRIMMORY)
+  // here, rather than the generic fallback's null, letting it surface with a
+  // real status like any other tracked book.
+  if (ownedImportEnabled) {
+    const ownedList = hcLists.find((list) => list.slug === "owned");
+    for (const entry of ownedList?.entries ?? []) {
+      const book = entry.book;
+      if (!libraryBookIds.has(book.id) && !listOnlyBooksById.has(book.id)) {
+        listOnlyBooksById.set(book.id, { ...entry, statusId: 1 });
+      }
+    }
+  }
+
+  // Fallback: any other list (or a specifically-selected sync list) not
+  // already covered by the Owned-list check above keeps today's behavior —
+  // list membership alone isn't a strong enough signal to claim a status.
   for (const list of listsForListOnlyBooks) {
     for (const entry of list.entries) {
       const book = entry.book;
       if (!libraryBookIds.has(book.id) && !listOnlyBooksById.has(book.id)) {
-        listOnlyBooksById.set(book.id, entry);
+        listOnlyBooksById.set(book.id, { ...entry, statusId: null });
       }
     }
   }
@@ -99,7 +123,7 @@ if (hasHardcover) {
     const stubs: HardcoverUserBook[] = Array.from(listOnlyBooksById.values()).map((entry) => ({
       id: 0,
       edition_id: entry.editionId,
-      status_id: null,
+      status_id: entry.statusId,
       rating: null,
       updated_at: null,
       first_started_reading_date: null,

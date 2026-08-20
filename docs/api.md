@@ -280,9 +280,11 @@ Includes nested `grimmory`, `hardcover`, `goodreads`, and `syncSettings` objects
 Each connection object includes `status`, `lastTestedAt`, `lastSuccessAt`.
 Hardcover connections also include `hardcoverUsername` when it has been resolved
 by a successful token test, plus optional `syncListId` and `syncListName` fields
-when the profile is scoped to a single Hardcover list. Goodreads connections
-include `goodreadsUserId`, `goodreadsUsername`, and optional `syncShelfName`; the
-username is parsed from the public RSS channel when available.
+when the profile is scoped to a single Hardcover list, and `ownedImportEnabled`
+(default `false`) — see [docs/sync.md](sync.md)'s "Hardcover Owned-List Import"
+section. Goodreads connections include `goodreadsUserId`, `goodreadsUsername`,
+and optional `syncShelfName`; the username is parsed from the public RSS
+channel when available.
 
 `syncSettings.syncWriteTagEnabled` controls the Grimmory-tab `Write Tag` setting.
 When true, matched books from the profile's scoped Hardcover and/or Goodreads
@@ -301,7 +303,7 @@ Hardcover fetches and writes during sync.
   "displayName": "string",
   "enabled": true,
   "grimmory": { "username": "string", "password": "string", "baseUrl": "string (optional)" },
-  "hardcover": { "apiToken": "string", "syncListId": 123, "syncListName": "Want to Read" },
+  "hardcover": { "apiToken": "string", "syncListId": 123, "syncListName": "Want to Read", "ownedImportEnabled": false },
   "goodreads": { "goodreadsUserId": "string", "enabled": true, "syncShelfName": "want-on-kindle" },
   "syncSettings": {
     "syncStatusEnabled": true,

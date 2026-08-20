@@ -532,7 +532,10 @@ export function UserDetailPage() {
       } else if (absApiKey.trim()) {
         patch["audiobookshelf"] = { apiKey: absApiKey };
       }
-      if (Object.keys(syncSettings).length) patch["syncSettings"] = syncSettings;
+      if (Object.keys(syncSettings).length) {
+        const { id: _id, ...syncSettingsPatch } = syncSettings;
+        if (Object.keys(syncSettingsPatch).length) patch["syncSettings"] = syncSettingsPatch;
+      }
       await apiPatch(`/api/profiles/${profileId}`, patch);
       if (hardcoverMappingsLoaded) {
         const mappings = Object.entries(hardcoverListMappings)
