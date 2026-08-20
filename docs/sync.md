@@ -1089,12 +1089,19 @@ which track any sibling of each format, active or not, unlike `activeBook`/
 independent of `bookOwnsSharedHardcoverRecord`/`absOwnsSharedHardcoverRecord`
 (those still, unchanged, decide only which format the *primary* row and
 write-back target). When a real sibling exists, Phase C writes a second
-`book_sources` row for it too, bucket `'shared'`, sourced from the sibling's
-own Grimmory data (title/author/series from `hcBook`, ISBN from the sibling
-itself — no edition id/audio-seconds/cover, since Hardcover doesn't expose
+`book_sources` row for it too, bucket `'shared'`, sourced from `hcBook`
+(title/author/series) with the sibling's own format — deliberately **not**
+its ISBN, edition id, audio-seconds, or cover: Hardcover doesn't expose
 edition-level data for a format it isn't currently tracking as the user's
-current edition). This is checked *before* the Owned-list case above: a real
-sibling's own data is more complete than a guessed Owned-list edition, so it
+current edition, and copying the sibling's own ISBN specifically risks
+reintroducing the cross-format merge this mechanism exists to avoid (a
+real, observed case: an audiobook edition reporting the exact same ISBN as
+its print counterpart — see the "ISBN merges still respect a known bucket
+mismatch" row in [docs/books-and-identity.md](books-and-identity.md)). The
+`source_hardcover_book_id` bucket-prefixed key alone is enough to reconcile
+this row onto the sibling's own canonical. This is checked *before* the
+Owned-list case above: a real sibling's own data is more complete than a
+guessed Owned-list edition, so it
 takes priority, and a stale `'owned'` row is removed if a real sibling shows
 up to replace it (and vice versa, if the sibling disappears but an Owned-list
 entry still justifies a row). Phase F then treats the `'shared'` bucket

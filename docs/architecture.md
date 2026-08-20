@@ -164,7 +164,7 @@ migration:
 | `sync_settings` | Per-profile sync toggles, source-tag setting, and schedule configuration |
 | `shelf_mappings` | Maps Hardcover lists or Goodreads custom shelves to Grimmory shelves; `source` field distinguishes `'hardcover'` from `'goodreads'`; includes `source_list_id`, `source_list_name`, and cached `grimmory_shelf_id` |
 | `books` | One row per canonical book variant; includes `media_type`, title, author, cover cache path, and last modified/sync timestamps |
-| `book_sources` | One row per (book, source_type, source_instance_id, source_bucket) — `source_bucket` is `'primary'` for every row except a Hardcover book's optional second `'owned'` row (see [docs/sync.md](sync.md)'s Hardcover Owned-list section) — stores external IDs, ISBNs, slugs, cross-system reference IDs, and Chaptarr monitored/has_file flags |
+| `book_sources` | One row per (book, source_type, source_instance_id, source_bucket) — `source_bucket` is `'primary'` for every row except a Hardcover book's optional second `'owned'` (Owned-list-derived) or `'shared'` (real dual-Grimmory-sibling-derived) row (see [docs/sync.md](sync.md)'s Hardcover Owned-List Import section) — stores external IDs, ISBNs, slugs, cross-system reference IDs, and Chaptarr monitored/has_file flags |
 | `user_book_states` | One row per (book, profile, source_type); stores sync health, match confidence, `has_superseded` flag, reading status, rating, progress, shelves, and timestamps per user per source |
 | `sync_runs` | One row per sync execution; counts written/skipped/superseded |
 | `sync_events` | Per-book event rows recording what happened during a sync run |

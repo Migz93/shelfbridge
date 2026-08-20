@@ -41,7 +41,9 @@ IDs, Chaptarr monitored/has_file flags, series data, and the `cover_cache_path`
 used by all profiles for that book. There is exactly one `book_sources` row per
 source type per canonical book, with one exception: a Hardcover book can
 contribute a second row, distinguished by `source_bucket` (`'primary'` vs
-`'owned'`) — see "Hardcover Owned-List Import" below.
+`'owned'` for an Owned-list-derived row, or `'shared'` for a row derived
+from a real dual-Grimmory-sibling book) — see "Hardcover Owned-List Import"
+below.
 
 **`user_book_states`** — one row per (book, profile, source_type); contains
 everything that varies per user: sync health, match confidence, `has_superseded`
