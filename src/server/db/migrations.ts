@@ -436,9 +436,12 @@ const migration5: Migration = {
 // copy but owning the audiobook too), or bucket 'shared' when a real
 // Grimmory sibling of the opposite format already exists for the same
 // Hardcover book (see docs/sync.md's Hardcover Owned-List Import section).
-// Every existing row keeps 'primary', so behavior for every source is
-// unchanged unless the new per-profile "Owned Import" setting is turned on.
-// SQLite can't ALTER an existing UNIQUE constraint, so this is a table
+// Every existing row keeps 'primary'. The 'owned' path only ever applies
+// once a profile turns on the new "Owned Import" setting; the 'shared' path
+// is not gated by that setting at all — it applies whenever a real opposite-
+// format Grimmory sibling already exists, regardless of the toggle. Either
+// way, behavior for a profile with no such sibling and the setting off is
+// unchanged. SQLite can't ALTER an existing UNIQUE constraint, so this is a table
 // rebuild preserving every row and column exactly, plus the new column and
 // the indexes migration1/migration3 created (dropping the table drops them).
 const migration6: Migration = {
