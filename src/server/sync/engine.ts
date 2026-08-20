@@ -162,6 +162,18 @@ export async function runSyncImpl(
     // before every sync's own reconcile, means that stale row is never present
     // to cause the conflict in the first place.
     if (hasHardcover) {
+      // Must run before the cleanupAfterSourceRemoval calls below, not just
+      // after reconcile as it also does further down: a book whose only
+      // book_sources row was just deleted this run (an 'owned'/'shared' row
+      // no longer justified, or a legacy row) can still be carrying a stale
+      // local-only Hardcover state from a previous run. deleteOrphanedBooks
+      // (inside cleanupAfterSourceRemoval) only removes a book once it has
+      // BOTH zero sources and zero user states — without pruning that state
+      // first, the now-sourceless book survives as a permanent ghost
+      // canonical, since nothing re-checks it once the later prune (after
+      // reconcile) finally clears the stale state.
+      pruneOrphanedHardcoverUserStates(db, profileId);
+
       // Same reasoning as the legacy-row cleanup right below: a book left with
       // a removed 'owned' row and no other surviving source needs the same
       // immediate reconcile-or-remove treatment, not just whatever the next

@@ -328,20 +328,30 @@ test("Owned-list import removes a previously-written 'owned' row once it's no lo
   const profileId = seedProfile(db);
   seedHardcoverConnection(db, profileId, "hc-test-token", true);
   seedSyncSettings(db, profileId);
-  const book = hcBook({ edition_id: 100 }).book;
+  // An id, title, slug, and ASIN distinct from the file's shared defaults
+  // (id 555, title "Integration Test Book", and the "AUDIO-ASIN" literal
+  // several other Owned-list tests also use) — ASIN is a high-confidence,
+  // unprefixed identity key (bookIdentity.ts), so reusing the same literal
+  // ASIN as another test's owned edition would merge this test's canonical
+  // with that unrelated test's still-alive one, making the "fully deleted"
+  // assertion below order-dependent on whichever other profile's data
+  // happens to still be attached.
+  const uniqueHcBook = (overrides: Partial<HardcoverUserBook> = {}) =>
+    hcBook({ ...overrides, book: { ...hcBook().book, id: 990100, title: "Owned Row Removal Test Book", slug: "owned-row-removal-test-book" } });
+  const book = uniqueHcBook({ edition_id: 100 }).book;
   const editionsMap = async () => new Map([[100, { id: 100, edition_format: "Hardcover", reading_format_id: 1, isbn_13: null, isbn_10: null, asin: null, pages: null, audio_seconds: null, image: null }]]);
   const ownedList = () => [{
     id: 1, name: "Owned", slug: "owned", bookIds: [book.id], books: [book],
     entries: [{
       book,
       editionId: 200,
-      edition: { id: 200, edition_format: "Audible", reading_format_id: 2, isbn_13: null, isbn_10: null, asin: "AUDIO-ASIN", pages: null, audio_seconds: 36000, image: null }
+      edition: { id: 200, edition_format: "Audible", reading_format_id: 2, isbn_13: null, isbn_10: null, asin: "OWNED-ROW-REMOVAL-TEST-ASIN", pages: null, audio_seconds: 36000, image: null }
     }]
   }];
 
   await runSyncImpl(profileId, insertSyncRun(db, profileId), false, createFakeAdapters({
     fetchHardcoverUserId: async () => 42,
-    fetchHardcoverLibrary: async () => [hcBook({ edition_id: 100 })],
+    fetchHardcoverLibrary: async () => [uniqueHcBook({ edition_id: 100 })],
     fetchHardcoverEditions: editionsMap,
     fetchHardcoverLists: async () => ownedList()
   }));
@@ -349,11 +359,14 @@ test("Owned-list import removes a previously-written 'owned' row once it's no lo
     "SELECT COUNT(*) AS count FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ? AND source_bucket = 'owned'"
   ).get(profileId) as { count: number };
   assert.equal(afterFirst.count, 1, "setup: the owned row must exist before testing its removal");
+  const ownedBookId = (db.prepare(
+    "SELECT book_id FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ? AND source_bucket = 'owned'"
+  ).get(profileId) as { book_id: number }).book_id;
 
   // Re-sync with the book no longer on the Owned list at all.
   await runSyncImpl(profileId, insertSyncRun(db, profileId), false, createFakeAdapters({
     fetchHardcoverUserId: async () => 42,
-    fetchHardcoverLibrary: async () => [hcBook({ edition_id: 100 })],
+    fetchHardcoverLibrary: async () => [uniqueHcBook({ edition_id: 100 })],
     fetchHardcoverEditions: editionsMap,
     fetchHardcoverLists: async () => []
   }));
@@ -372,6 +385,13 @@ test("Owned-list import removes a previously-written 'owned' row once it's no lo
     "SELECT COUNT(*) AS count FROM user_book_states WHERE profile_id = ? AND source_type = 'hardcover' AND last_sync_decision = 'owned_list_local_only'"
   ).get(profileId) as { count: number };
   assert.equal(staleOwnedState.count, 0, "the owned canonical's local-only state must not survive once the owned row is gone");
+
+  // The owned canonical had no other source (no Grimmory connection in this
+  // test), so once its only book_sources row and its local-only state are
+  // both gone, the canonical itself must be deleted too — not survive as a
+  // ghost book with zero sources and zero states.
+  const ghostBook = db.prepare("SELECT COUNT(*) AS count FROM books WHERE id = ?").get(ownedBookId) as { count: number };
+  assert.equal(ghostBook.count, 0, "the now-sourceless owned canonical must be deleted, not left behind as a ghost book");
 });
 
 test("a book that exists only via the Owned list (no real Hardcover library entry) still gets a real status", async () => {
