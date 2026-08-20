@@ -393,13 +393,15 @@ export function inferHardcoverMediaType(
   const editionId = hcBook.edition_id;
 
   // reading_format_id is Hardcover's structured "Type" classification
-  // (Physical Book/Audiobook/E-Book/Both) and is required on every edition —
-  // unlike the free-text edition_format field, which is often blank or
-  // inconsistently labeled (e.g. an edition can be tagged edition_format:
+  // (Physical Book/Audiobook/E-Book/Both) and is normally populated on every
+  // edition — unlike the free-text edition_format field, which is often blank
+  // or inconsistently labeled (e.g. an edition can be tagged edition_format:
   // "Audiobook" while its own reading_format says otherwise). Trust it over
   // Hardcover's default_*_edition_id pointers for the same reason the old
   // edition_format check did: some books expose the same edition ID as
-  // physical, ebook, and audio defaults simultaneously.
+  // physical, ebook, and audio defaults simultaneously. When it's missing, the
+  // switch below falls through to the default-pointer checks rather than
+  // trusting edition_format.
   switch (edition?.reading_format_id) {
     case 1: return "physical";
     case 2: return "audiobook";
