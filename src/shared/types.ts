@@ -273,6 +273,7 @@ export interface BookFacets {
   idReviewCount: number;
   probableDuplicateCount: number;
   absRuntimeMismatchCount: number;
+  hiddenCount: number;
 }
 
 // ─── Sync ──────────────────────────────────────────────────────────────────────
@@ -323,12 +324,17 @@ export interface SyncHistoryPageResponse {
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
+export interface DashboardMediaStats {
+  totalBooks: number;
+  notInChaptarr: number;
+  grabInChaptarr: number;
+  needsReview: number;
+}
+
 export interface DashboardResponse {
   stats: {
-    totalBooks: number;
-    missingInGrimmory: number;
-    needsReview: number;
-    pendingDownload: number;
+    book: DashboardMediaStats;
+    audiobook: DashboardMediaStats;
   };
   recentlyAdded: BookSummary[];
   recentActivity: SyncRun[];

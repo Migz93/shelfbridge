@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -104,6 +104,11 @@ function CatalogPage({ mediaType, title }: { mediaType: "book" | "audiobook"; ti
   const action: ActionFilter = rawAction === "probable-duplicates"
     ? "possible-duplicates"
     : ACTION_OPTIONS.some((o) => o.value === rawAction) ? rawAction as ActionFilter : null;
+  // Needs Fix (unresolved media type) is a Books-only filter — its result set
+  // ignores mediaType entirely, so honoring "hidden" on Audiobooks would route
+  // unresolved books (which could be actual books) to /audiobooks/:id purely
+  // because of which page's URL happened to carry the param.
+  const hiddenOnly = mediaType === "book" && searchParams.get("hidden") === "1";
 
   // Multi-select filter state stored as comma-separated URL params.
   const VALID_SOURCES = new Set<SourceFilter>(["hardcover", "goodreads", "on-disk"]);
@@ -142,6 +147,13 @@ function CatalogPage({ mediaType, title }: { mediaType: "book" | "audiobook"; ti
     if (rawAction === "probable-duplicates") setParam({ action: "possible-duplicates" });
   }, [rawAction]);
 
+  // "hidden" is a Books-only param (see hiddenOnly above) — strip it from the
+  // URL on Audiobooks so it doesn't linger there and reappear if the user
+  // navigates back to Books via history.
+  useEffect(() => {
+    if (mediaType === "audiobook" && searchParams.has("hidden")) setParam({ hidden: null });
+  }, [mediaType, searchParams]);
+
   const [searchInput, setSearchInput] = useState(q);
 
   // Debounce: commit searchInput to URL after 300ms of no typing
@@ -158,10 +170,12 @@ function CatalogPage({ mediaType, title }: { mediaType: "book" | "audiobook"; ti
   const [data, setData] = useState<BooksPageResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const requestIdRef = useRef(0);
 
   async function load(background = false) {
+    const requestId = ++requestIdRef.current;
     setLoading((c) => c || !background);
-    const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE), sortBy, mediaType });
+    const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE), sortBy, mediaType: hiddenOnly ? "hidden" : mediaType });
     if (includedProfileIds.size > 0) params.set("profileId", [...includedProfileIds].join(","));
     if (excludedProfileIds.size > 0) params.set("excludeProfileId", [...excludedProfileIds].join(","));
     if (status !== "all") params.set("status", status);
@@ -172,18 +186,20 @@ function CatalogPage({ mediaType, title }: { mediaType: "book" | "audiobook"; ti
     if (q) params.set("q", q);
     try {
       const result = await apiGet<BooksPageResponse>(`/api/books?${params}`);
+      if (requestId !== requestIdRef.current) return;
       setData(result);
       setError(null);
     } catch (e) {
+      if (requestId !== requestIdRef.current) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) setLoading(false);
     }
   }
 
   const getIntervalMs = useCallback(() => BOOKS_REFRESH_MS, []);
   const { refreshNow } = useLiveRefresh(async () => { await load(true); }, { getIntervalMs });
-  useEffect(() => { void load(); }, [status, rawSource, rawExcludeSource, chaptarr, action, rawProfileId, rawExcludeProfileId, page, q]);
+  useEffect(() => { void load(); }, [status, rawSource, rawExcludeSource, chaptarr, action, rawProfileId, rawExcludeProfileId, page, q, hiddenOnly]);
 
   const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 0;
   const facets: BookFacets | undefined = data?.facets;
@@ -224,6 +240,10 @@ function CatalogPage({ mediaType, title }: { mediaType: "book" | "audiobook"; ti
 
   function toggleAction(next: NonNullable<ActionFilter>) {
     setParam({ action: action === next ? null : next }, true);
+  }
+
+  function toggleHidden() {
+    setParam({ hidden: hiddenOnly ? null : "1" }, true);
   }
 
   return (
@@ -391,6 +411,15 @@ function CatalogPage({ mediaType, title }: { mediaType: "book" | "audiobook"; ti
                 count={facets?.probableDuplicateCount}
                 onClick={() => toggleAction("possible-duplicates")}
               />
+              {mediaType === "book" && facets && (facets.hiddenCount > 0 || hiddenOnly) && (
+                <FilterChip
+                  label="Needs Fix"
+                  active={hiddenOnly}
+                  count={facets.hiddenCount}
+                  onClick={toggleHidden}
+                  title="Books with an unresolved media type — not shown on Books or Audiobooks until fixed"
+                />
+              )}
             </div>
             <span className="text-[11px] font-medium text-on-surface-variant/50 uppercase tracking-wide sm:w-16 sm:shrink-0">Review</span>
           </div>
@@ -431,7 +460,7 @@ function CatalogPage({ mediaType, title }: { mediaType: "book" | "audiobook"; ti
         <div className="bg-background-container rounded-2xl border border-outline-variant/20 flex flex-col items-center justify-center py-16 text-center gap-3">
           <BookOpen size={24} className="text-on-surface-variant" />
           <p className="text-on-surface-variant text-sm max-w-xs">
-            {data?.total === 0 && status === "all" && !action && !chaptarr
+            {data?.total === 0 && status === "all" && !action && !chaptarr && !hiddenOnly
               ? "No books yet. Add users and run a sync to populate your library."
               : "No books match the current filters."}
           </p>
@@ -1460,13 +1489,15 @@ function FilterChip({
   active,
   subtracting = false,
   count,
-  onClick
+  onClick,
+  title
 }: {
   label: string;
   active: boolean;
   subtracting?: boolean;
   count?: number;
   onClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  title?: string;
 }) {
   return (
     <button
@@ -1478,7 +1509,7 @@ function FilterChip({
           ? "bg-primary-dim text-on-surface border-primary-dim"
           : "bg-background-container border-outline-variant/20 text-on-surface-variant hover:text-on-surface hover:border-outline-variant/40"
       }`}
-      title={subtracting ? `${label} is being subtracted` : undefined}
+      title={subtracting ? `${label} is being subtracted` : title}
     >
       {subtracting && <Minus size={14} strokeWidth={3} />}
       {label}

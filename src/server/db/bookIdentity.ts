@@ -42,7 +42,7 @@ interface BookSourceRow {
   created_at: string | null;
 }
 
-interface UserBookStateMoveRow {
+export interface UserBookStateMoveRow {
   id: number;
   book_id: number;
   profile_id: number;
@@ -174,8 +174,13 @@ function rowFormatBucket(row: Pick<BookSourceRow,
   "source_type" | "source_media_type" | "source_edition_format" | "source_narrator" | "grimmory_primary_file_path" | "chaptarr_primary_file_path"
 >): FormatBucket {
   const editionBucket = inferEditionFormatBucket(row.source_edition_format);
-  if (row.source_type === "hardcover" && editionBucket !== "unknown") return editionBucket;
 
+  // source_media_type is now trusted first for every source type, including
+  // Hardcover: it's derived from Hardcover's structured reading_format_id
+  // (see inferHardcoverMediaType in sync-utils.ts), which is far more
+  // reliable than the free-text edition_format this function otherwise
+  // parses — that field is user-submitted and can be blank, absent, or
+  // mislabeled relative to the edition's actual reading_format.
   if (row.source_media_type === "audiobook") return "audiobook";
   if (row.source_media_type === "ebook" || row.source_media_type === "physical" || row.source_media_type === "book") return "book";
 
@@ -252,8 +257,15 @@ function highIdentityKeys(row: BookSourceRow): IdentityKey[] {
   ));
 }
 
+// Deliberately NOT bucket-prefixed like highIdentityKeys/filePathIdentityKeys: an
+// ISBN identifies a specific edition regardless of the format bucket a row happens
+// to resolve to, and a row's bucket is often unresolved ("unknown") for reasons
+// that have nothing to do with the book's actual format (e.g. a Hardcover source
+// with no edition data yet — see rowFormatBucket). Prefixing here would silently
+// block an exact-ISBN match between such a row and its already-canonicalized
+// counterpart. The merge loop below still guards this with highKeyConflict(), so
+// a shared ISBN alone can never override a genuinely conflicting authoritative ID.
 function isbnIdentityKeys(row: BookSourceRow): IdentityKey[] {
-  const bucket = rowFormatBucket(row);
   const pairs: Array<[string, string | null]> = [
     ["isbn13", normalizeIsbn(row.isbn13)],
     ["isbn10", normalizeIsbn(row.isbn10)],
@@ -262,7 +274,7 @@ function isbnIdentityKeys(row: BookSourceRow): IdentityKey[] {
   return Array.from(new Set(
     pairs
       .filter((pair): pair is [string, string] => pair[1] !== null)
-      .map(([type, value]) => `${bucket}.${type}:${value}` as IdentityKey)
+      .map(([type, value]) => `${type}:${value}` as IdentityKey)
   ));
 }
 
@@ -441,7 +453,12 @@ function stateHasProgress(row: Pick<UserBookStateMoveRow, "progress" | "progress
     || (row.progress !== null && Math.abs(row.progress) > 0.001);
 }
 
-function shouldMoveState(source: UserBookStateMoveRow, existing: UserBookStateMoveRow): boolean {
+// Also used by hardcover-legacy-cleanup.ts, so a stranded state being migrated
+// off a legacy row resolves a conflict with the live row's own state the same
+// way a book merge would — preferring meaningful progress, then the newer
+// timestamp — rather than a cleanup-specific rule that could discard the more
+// current side.
+export function shouldMoveState(source: UserBookStateMoveRow, existing: UserBookStateMoveRow): boolean {
   const sourceHasProgress = stateHasProgress(source);
   const existingHasProgress = stateHasProgress(existing);
   if (sourceHasProgress !== existingHasProgress) return sourceHasProgress;

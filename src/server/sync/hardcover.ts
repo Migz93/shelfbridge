@@ -45,6 +45,14 @@ export interface HardcoverUserBook {
 export interface HardcoverEdition {
   id: number;
   edition_format: string | null;
+  // Hardcover's structured "Type" classification (Physical Book/Audiobook/
+  // E-Book/Both) — normally populated, unlike the free-text edition_format
+  // field, but can still be missing (treated as unknown by
+  // inferHardcoverMediaType, which falls through to other signals rather
+  // than trusting edition_format). See inferHardcoverMediaType in
+  // sync-utils.ts, which uses this as the primary format signal.
+  // 1 = Read (physical), 2 = Listened (audio), 3 = Both, 4 = Ebook.
+  reading_format_id: number | null;
   isbn_13: string | null;
   isbn_10: string | null;
   asin: string | null;
@@ -144,6 +152,7 @@ const EDITIONS_QUERY = `
     editions(where: { id: { _in: $editionIds } }) {
       id
       edition_format
+      reading_format_id
       isbn_13
       isbn_10
       asin
@@ -303,6 +312,7 @@ const USER_LISTS_QUERY = `
           edition {
             id
             edition_format
+            reading_format_id
             isbn_13
             isbn_10
             asin
@@ -316,6 +326,9 @@ const USER_LISTS_QUERY = `
             pages
             image { url }
             contributions { author { name } }
+            default_physical_edition_id
+            default_ebook_edition_id
+            default_audio_edition_id
             default_physical_edition { isbn_13 isbn_10 pages }
             default_ebook_edition { asin isbn_13 isbn_10 }
             default_audio_edition { asin isbn_13 isbn_10 }

@@ -483,7 +483,7 @@ matching the selected criteria.
 | `excludeSource` | comma-separated strings | — | Exclude sources: `hardcover`, `goodreads`, `on-disk` |
 | `chaptarr` | string | — | Chaptarr presence filter: `in` or `out` |
 | `action` | string | — | Shortcut filter: `add-to-chaptarr`, `grab-in-chaptarr`, `review-in-grimmory`, `fix-chaptarr-id`, `id-review`, `possible-duplicates`, `abs-runtime-mismatch` |
-| `mediaType` | string | `book` | Canonical media bucket: `book`, `audiobook`, or `all` |
+| `mediaType` | string | `book` | Canonical media bucket: `book`, `audiobook`, `all`, or `hidden` (books whose media type could not be classified — see `hiddenCount` below) |
 | `q` | string | — | Free-text search: case-insensitive substring match against `title` and `author` |
 | `sortBy` | string | `updated-desc` | Sort order: `updated-desc`, `updated-asc`, `title-asc`, `title-desc` |
 
@@ -509,7 +509,8 @@ matching the selected criteria.
     "fixChaptarrIdCount": 0,
     "idReviewCount": 3,
     "probableDuplicateCount": 1,
-    "absRuntimeMismatchCount": 0
+    "absRuntimeMismatchCount": 0,
+    "hiddenCount": 2
   }
 }
 ```
@@ -524,6 +525,11 @@ audiobooks from its totals and the Audiobooks page excludes non-audiobook books.
 Profile facet counts also use actual per-user relationships only; passive
 catalog presence from shared sources like Grimmory and Chaptarr does not count
 toward a user's chip total.
+
+`hiddenCount` is always computed against the full unfiltered catalog (independent
+of the current `mediaType`) so the UI can show a "Needs Fix" filter chip on either
+page whenever unclassified books exist. Passing `mediaType=hidden` switches the
+result set to just those books instead of applying the book/audiobook split.
 
 ### `GET /api/books/:id`
 
@@ -564,7 +570,7 @@ Each `BookRelationship` includes:
 | `grimmoryPrimaryFilePath` | Grimmory `primaryFile.filePath`, used for file-path audiobook matching |
 | `grimmoryMediaType` | Grimmory format inferred from metadata and/or the primary file path |
 | `grimmoryBaseUrl` | Resolved Grimmory base URL (profile override → global setting) |
-| `hardcoverMediaType` | Hardcover format inferred from the user's selected `edition_id` and edition metadata; explicit `edition_format` wins when Hardcover's default edition pointers disagree |
+| `hardcoverMediaType` | Hardcover format inferred from the user's selected `edition_id` and edition metadata; the edition's structured `reading_format_id` is trusted over the free-text `edition_format` field and over Hardcover's default edition pointers |
 | `hardcoverEditionId` | Hardcover `user_books.edition_id` when available |
 | `hardcoverEditionFormat` | Hardcover edition-format text for the selected edition when available |
 | `chaptarrBookId` | Matched Chaptarr book ID for this canonical book |
@@ -653,16 +659,30 @@ Returns everything needed to render the dashboard in a single request.
 ```json
 {
   "stats": {
-    "linkedProfiles": 2,
-    "totalBooks": 150,
-    "missingInGrimmory": 5,
-    "needsReview": 3
+    "book": {
+      "totalBooks": 150,
+      "notInChaptarr": 5,
+      "grabInChaptarr": 2,
+      "needsReview": 3
+    },
+    "audiobook": {
+      "totalBooks": 12,
+      "notInChaptarr": 0,
+      "grabInChaptarr": 1,
+      "needsReview": 0
+    }
   },
   "recentlyAdded": [ /* BookSummary[] — up to 20 */ ],
-  "recentActivity": [ /* SyncRun[] — up to 10 */ ],
-  "profileSummaries": [ /* ProfileSummary[] */ ]
+  "recentActivity": [ /* SyncRun[] — up to 5 */ ]
 }
 ```
+
+Stats are split by `books.media_type` (`book` vs `audiobook`); books whose media
+type hasn't been resolved yet (`unknown`) aren't counted in either bucket.
+`notInChaptarr` mirrors the `add-to-chaptarr` action filter (tracked via
+Hardcover/Goodreads but absent from Chaptarr entirely); `grabInChaptarr` mirrors
+`grab-in-chaptarr` (monitored in Chaptarr but no file yet) — see the Books
+endpoint's `action` filter below for the exact semantics.
 
 ---
 

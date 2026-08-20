@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { BookOpen, AlertTriangle, GitCompare, Download } from "lucide-react";
+import { BookOpen, Headphones, AlertTriangle, GitCompare, Download } from "lucide-react";
 import { apiGet } from "../lib/api";
 import { useLiveRefresh } from "../lib/useLiveRefresh";
 import { formatRelativeTime, formatDateShort } from "../lib/utils";
@@ -84,11 +84,19 @@ export default function Dashboard() {
         {data && (
           <div className="flex flex-col gap-3 sm:flex-row sm:items-stretch">
             {/* Stat chips */}
-            <div className="flex gap-2 flex-1 flex-wrap sm:flex-nowrap">
-              <StatChip icon={<BookOpen size={14} />} label="Books Tracked" value={data.stats.totalBooks} to="/books" />
-              <StatChip icon={<AlertTriangle size={14} />} label="Missing" value={data.stats.missingInGrimmory} to="/books?health=missing" accent="warning" />
-              <StatChip icon={<Download size={14} />} label="Pending Download" value={data.stats.pendingDownload} to="/books?health=pending_download" accent="warning" />
-              <StatChip icon={<GitCompare size={14} />} label="Needs Review" value={data.stats.needsReview} to="/books?health=id_review" accent="error" />
+            <div className="flex flex-col gap-1.5 flex-1 justify-between">
+              <div className="flex gap-2 flex-wrap sm:flex-nowrap flex-1">
+                <StatChip icon={<BookOpen size={12} />} label="Books Tracked" value={data.stats.book.totalBooks} to="/books" compact />
+                <StatChip icon={<AlertTriangle size={12} />} label="Not in Chaptarr" value={data.stats.book.notInChaptarr} to="/books?action=add-to-chaptarr" accent="warning" compact />
+                <StatChip icon={<Download size={12} />} label="Grab in Chaptarr" value={data.stats.book.grabInChaptarr} to="/books?action=grab-in-chaptarr" accent="warning" compact />
+                <StatChip icon={<GitCompare size={12} />} label="Needs Review" value={data.stats.book.needsReview} to="/books?action=id-review" accent="error" compact />
+              </div>
+              <div className="flex gap-2 flex-wrap sm:flex-nowrap flex-1">
+                <StatChip icon={<Headphones size={12} />} label="Audiobooks Tracked" value={data.stats.audiobook.totalBooks} to="/audiobooks" compact />
+                <StatChip icon={<AlertTriangle size={12} />} label="Not in Chaptarr" value={data.stats.audiobook.notInChaptarr} to="/audiobooks?action=add-to-chaptarr" accent="warning" compact />
+                <StatChip icon={<Download size={12} />} label="Grab in Chaptarr" value={data.stats.audiobook.grabInChaptarr} to="/audiobooks?action=grab-in-chaptarr" accent="warning" compact />
+                <StatChip icon={<GitCompare size={12} />} label="Needs Review" value={data.stats.audiobook.needsReview} to="/audiobooks?action=id-review" accent="error" compact />
+              </div>
             </div>
 
             {/* Recent sync activity */}
@@ -117,7 +125,10 @@ export default function Dashboard() {
         <div>
           <div className="flex items-center justify-between mb-3">
             <h2 className="font-headline font-semibold text-base text-on-surface">Recently Added</h2>
-            <Link to="/books" className="text-sm text-primary hover:text-primary-dim">View All</Link>
+            <div className="flex items-center gap-3 text-sm">
+              <Link to="/books" className="text-primary hover:text-primary-dim">Books</Link>
+              <Link to="/audiobooks" className="text-primary hover:text-primary-dim">Audiobooks</Link>
+            </div>
           </div>
           {data && data.recentlyAdded.length > 0 ? (
             <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-2">
@@ -139,13 +150,14 @@ export default function Dashboard() {
 }
 
 function StatChip({
-  icon, label, value, to, accent
+  icon, label, value, to, accent, compact
 }: {
   icon: React.ReactNode;
   label: string;
   value: number;
   to: string;
   accent?: "warning" | "error";
+  compact?: boolean;
 }) {
   const accentClass = accent === "warning"
     ? "text-warning"
@@ -156,11 +168,11 @@ function StatChip({
   return (
     <Link
       to={to}
-      className="flex-1 flex flex-col items-center justify-center gap-0.5 bg-background-container hover:bg-background-container-high rounded-xl px-3 py-2.5 border border-outline-variant/20 transition-colors text-center min-w-0"
+      className={`flex-1 flex flex-col items-center justify-center gap-0.5 bg-background-container hover:bg-background-container-high rounded-xl px-3 border border-outline-variant/20 transition-colors text-center min-w-0 ${compact ? "h-full py-1" : "py-2.5"}`}
     >
       <div className={`flex items-center gap-1.5 ${accentClass}`}>
         {icon}
-        <span className="font-headline font-bold text-on-surface text-lg leading-none">{value}</span>
+        <span className={`font-headline font-bold text-on-surface leading-none ${compact ? "text-sm" : "text-lg"}`}>{value}</span>
       </div>
       <span className="text-on-surface-variant text-xs truncate">{label}</span>
     </Link>
@@ -206,8 +218,10 @@ function BookCoverCard({ book }: { book: BookSummary }) {
   };
   const healthDot = healthDots[book.syncHealth] ?? "bg-on-surface-variant/50";
 
+  const detailPath = book.mediaType === "audiobook" ? `/audiobooks/${book.id}` : `/books/${book.id}`;
+
   return (
-    <Link to={`/books/${book.id}`} className="group block">
+    <Link to={detailPath} className="group block">
       <div className="relative aspect-[2/3] rounded-lg overflow-hidden bg-background-container-high transition-transform duration-300 group-hover:scale-105">
         {book.coverUrl ? (
           <img

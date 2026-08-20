@@ -516,11 +516,7 @@ function dbToSummary(rows: DbBookRow[]): BookSummary {
     title: row.book_title,
     author: row.book_author,
     coverUrl: row.book_cover_cache_path ?? null,
-    mediaType: aggregateMediaType(rows.flatMap((candidate) => [
-      candidate.hardcover_media_type,
-      candidate.grimmory_media_type,
-      candidate.chaptarr_media_type
-    ])),
+    mediaType: coerceMediaType(row.book_media_type) ?? "unknown",
     userCount: profileIds.length,
     profileIds,
     grimmoryBookId: first(rows, (candidate) => candidate.grimmory_book_id),
@@ -860,7 +856,9 @@ router.get("/", (req, res) => {
     ? "audiobook"
     : req.query["mediaType"] === "all"
       ? "all"
-      : "book";
+      : req.query["mediaType"] === "hidden"
+        ? "hidden"
+        : "book";
   const rawChaptarr = req.query["chaptarr"] as string | undefined;
   const chaptarr: "in" | "out" | null = rawChaptarr === "in" || rawChaptarr === "out" ? rawChaptarr : null;
   const action = typeof req.query["action"] === "string" ? req.query["action"] : null;
@@ -869,7 +867,15 @@ router.get("/", (req, res) => {
   const pageSize = Math.min(100, parseInt(req.query["pageSize"] as string ?? "48", 10));
   const q = typeof req.query["q"] === "string" ? req.query["q"].trim() : "";
 
-  const allRows = fetchRows().filter((row) => mediaType === "all" || row.book_media_type === mediaType);
+  // "hidden" surfaces books whose media type couldn't be classified (see
+  // bookIdentity.ts's rowFormatBucket) — they're otherwise invisible on both the
+  // Books and Audiobooks pages, so this filter exists purely so they can be found
+  // and fixed rather than being silently dropped from every catalog view.
+  const unfilteredRows = fetchRows();
+  const hiddenCount = countGroups(unfilteredRows.filter((row) => row.book_media_type === "unknown"));
+  const allRows = unfilteredRows.filter((row) =>
+    mediaType === "all" ? true : mediaType === "hidden" ? row.book_media_type === "unknown" : row.book_media_type === mediaType
+  );
   const idReviewBookIds = new Set(
     groupByBook(allRows)
       .filter((rows) => hasBookNeedsIdReview(rows))
@@ -965,6 +971,7 @@ router.get("/", (req, res) => {
     idReviewCount,
     probableDuplicateCount,
     absRuntimeMismatchCount: countGroups(profileRows.filter((row) => absRuntimeMismatchBookIds.has(row.book_id))),
+    hiddenCount,
   };
 
   const response: BooksPageResponse = {

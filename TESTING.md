@@ -167,6 +167,7 @@ so all tests start already authenticated.
 | Test | What it checks |
 |---|---|
 | ISBN13 match | Two sources sharing an ISBN13 merge into one canonical book |
+| ISBN match despite an unresolved format bucket | A Hardcover row with no resolvable edition_format/media_type still merges with a canonical book via a shared ISBN |
 | Conflicting Hardcover book id | Two sources with the same title but different authoritative Hardcover ids stay separate books |
 | Idempotency | Running `reconcileBookIdentities` twice doesn't duplicate books |
 | Orphan cleanup | A book left with zero `book_sources` rows is deleted on the next reconcile pass |
@@ -185,6 +186,35 @@ so all tests start already authenticated.
 | Shared identity key, two owners | Two existing books that legitimately share an identity key (e.g. same title/author, kept separate by design) are each still discoverable — a scoped third row merges with the correct one, not the one that happened to claim the key first |
 | Iteration-cap fallback | `expandScopeToRows` returns `null` (never a partial closure) when a chain of merges needs more hops than its iteration cap allows |
 | Row-cap fallback | `expandScopeToRows` returns `null` when the final candidate-book fetch of a scoped expansion would exceed its row cap, even on the cap's very last allowed iteration |
+
+### `tests/server/hardcover-legacy-cleanup.test.ts` — Legacy Hardcover source cleanup
+
+| Test | What it checks |
+|---|---|
+| Deletes once a live counterpart exists | An instance-less `hardcover` row is deleted once a profile-scoped row with the same external id exists |
+| Deletes even after already splitting into its own book | Still deleted when the instance-less row and its live counterpart have already drifted onto separate books |
+| No live counterpart yet | An instance-less row with no live counterpart is left alone |
+| Never touches the live row | A live, profile-scoped row is never deleted |
+| Migrates state already stranded on the orphan | A profile's `user_book_states` row already sitting on the legacy row's own orphan book (from before this cleanup existed) is moved onto the live row's book, not left behind when the legacy row is deleted |
+| Drops a stranded duplicate when the live state is more current | When the live row's own state was modified more recently, a conflicting stranded duplicate on the orphan is dropped rather than overwriting it |
+| Keeps the stranded state when it is more current | Applies the same conflict rule the identity reconciler uses (meaningful progress, then newer timestamp — see `shouldMoveState`): a stranded state with more recent progress wins over a stale live-row state instead of always being discarded |
+| Leaves the row alone when only some profiles are matched | A legacy row with state from two profiles on its orphan book, only one of which has a live counterpart, is left entirely undeleted — the unmatched profile's state is never stranded |
+| Leaves the row alone when a non-Hardcover state is present | A Grimmory or Goodreads state on the orphan book is never stranded — this cleanup only knows how to migrate Hardcover state, so it defers deletion entirely rather than guess a target for a state type it can't migrate |
+| Leaves the row alone when the matched counterpart has no book_id yet | A live counterpart that exists but hasn't been reconciled yet (book_id still NULL) doesn't count as a migration target — the legacy row is left alone rather than deleted with nowhere for its state to go |
+| Reconciling without cleanup first strands the merge | Documents the underlying bug: a legacy row left in place when a book's live row needs to merge into its Grimmory canonical leaves the merge stranded — book_sources reassigned, but the book row and its user_book_states left behind |
+| Cleaning up before reconciling merges cleanly | Verifies the fix: running the cleanup immediately before reconciling (what `engine.ts` now does on every Hardcover sync, not just the daily job) avoids the conflict entirely — sources and state both end up on the single surviving book |
+| Ghost book removed immediately via `cleanupAfterSourceRemoval` | A book left with no sources and no state right after the legacy cleanup is removed in the same pass (what `engine.ts` now wires up), rather than lingering until the next daily full reconcile |
+
+### `tests/server/hardcover-media-type.test.ts` — Hardcover media-type classification
+
+| Test | What it checks |
+|---|---|
+| Resolves via `reading_format_id` | A blank/uninformative `edition_format` string doesn't block classification when `reading_format_id` is populated |
+| Trusts `reading_format_id` over a mislabeled `edition_format` | `reading_format_id` wins when the two disagree |
+| Format id mapping | `reading_format_id` 2 → audiobook, 4 → ebook |
+| Dual-format ("Both") fallback | A `reading_format_id` of 3 falls through to the `default_*_edition_id` pointers instead of guessing |
+| No edition data | Returns `null` when there's no edition and no matching default pointer |
+| Never falls back to `edition_format` | Even with `reading_format_id` simply absent (not just disagreeing), a populated `edition_format` is still never trusted |
 
 ### `tests/server/settings.test.ts` — App settings
 

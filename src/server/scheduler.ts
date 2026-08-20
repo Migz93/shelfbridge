@@ -5,6 +5,7 @@ import { getActiveSyncStatus, runSync, runExclusiveOfSyncs } from "./sync/engine
 import { refreshStaleCachedCovers } from "./image-cache.js";
 import { refreshStaleGrimmoryCovers } from "./sync/engine.js";
 import { reconcileBookIdentities, type ReconcileProgressPhase } from "./db/bookIdentity.js";
+import { cleanupLegacyHardcoverSources } from "./sync/hardcover-legacy-cleanup.js";
 
 export const scheduler = new JobScheduler();
 
@@ -146,6 +147,12 @@ async function runFullReconcile(): Promise<void> {
   // unserialized while a sync could be mid-flight.
   await runExclusiveOfSyncs(async () => {
     const db = getDb();
+
+    // Runs here, immediately before the full reconcile pass, so any book left
+    // sourceless by the cleanup is picked up by the same pass's stale-book
+    // cleanup rather than lingering until the next scheduled run.
+    cleanupLegacyHardcoverSources(db);
+
     const bookCount = (db.prepare("SELECT COUNT(*) AS count FROM books").get() as { count: number }).count;
     const sourceCount = (db.prepare("SELECT COUNT(*) AS count FROM book_sources").get() as { count: number }).count;
     logger.info("Full reconcile starting", { bookCount, sourceCount });
