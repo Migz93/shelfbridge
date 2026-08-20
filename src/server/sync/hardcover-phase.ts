@@ -134,6 +134,14 @@ function upsertLocalOnlyHardcoverState(
     : null;
   const hasOwnActivity = !!ownGrimmorySibling && hasGrimmoryUserActivity(ownGrimmorySibling);
   const prevState = getUserState(db, targetBookId, profileId, "hardcover");
+  // This run's Grimmory data is empty for every book when Grimmory is
+  // unreachable, so hasOwnActivity's forced-false result here can't be
+  // trusted as "genuinely no activity" — it's indistinguishable from "the
+  // outage hid the activity". Keep whatever was already persisted rather
+  // than flipping an existing (possibly correctly-blank) row to UNREAD.
+  // Mirrors the same outage guard on the 'shared' row itself in
+  // hardcover-sources.ts.
+  if (prevState && !grimmoryAvailable) return;
   const meaningfulChange = hasMeaningfulHcChange(prevState, {
     hardcoverStatusId: hasOwnActivity ? null : 1,
     hardcoverRating: null,

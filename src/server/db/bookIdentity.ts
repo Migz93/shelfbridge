@@ -170,6 +170,19 @@ function inferEditionFormatBucket(format: string | null | undefined): FormatBuck
   return "unknown";
 }
 
+// Collapses a resolved media type string into the two buckets that matter
+// for comparing whether two editions/siblings are "the same format" or
+// genuinely different: physical and ebook (or the generic "book") are both
+// "book", audiobook stays "audiobook", anything else is unresolved. Shared
+// with sync-utils.ts's formatBucket (which narrows the input type further)
+// so the two can't silently drift apart into disagreeing about what counts
+// as which bucket.
+export function resolvedMediaTypeBucket(mediaType: string | null): "book" | "audiobook" | null {
+  if (mediaType === "audiobook") return "audiobook";
+  if (mediaType === "ebook" || mediaType === "physical" || mediaType === "book") return "book";
+  return null;
+}
+
 function rowFormatBucket(row: Pick<BookSourceRow,
   "source_type" | "source_media_type" | "source_edition_format" | "source_narrator" | "grimmory_primary_file_path" | "chaptarr_primary_file_path"
 >): FormatBucket {
@@ -181,8 +194,8 @@ function rowFormatBucket(row: Pick<BookSourceRow,
   // reliable than the free-text edition_format this function otherwise
   // parses — that field is user-submitted and can be blank, absent, or
   // mislabeled relative to the edition's actual reading_format.
-  if (row.source_media_type === "audiobook") return "audiobook";
-  if (row.source_media_type === "ebook" || row.source_media_type === "physical" || row.source_media_type === "book") return "book";
+  const resolvedBucket = resolvedMediaTypeBucket(row.source_media_type);
+  if (resolvedBucket) return resolvedBucket;
 
   if (editionBucket !== "unknown") return editionBucket;
 

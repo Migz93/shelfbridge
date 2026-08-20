@@ -9,6 +9,7 @@ import type { GrimmoryBook } from "./grimmory.js";
 import { GRIMMORY_TO_HARDCOVER } from "./matcher.js";
 import type { UserStateSnapshot } from "./repository.js";
 import { newerSource } from "./time-order.js";
+import { resolvedMediaTypeBucket } from "../db/bookIdentity.js";
 export interface SyncCounters { written: number; skipped: number; superseded: number; sourceFailures: number; }
 
 export type { UserStateSnapshot } from "./repository.js";
@@ -422,12 +423,10 @@ export function inferHardcoverMediaType(
 
 // Collapses a resolved Hardcover/Grimmory format into the two buckets that
 // matter for comparing whether two editions/siblings are "the same format" or
-// genuinely different: physical and ebook are both "book" (see
-// bookIdentity.ts's rowFormatBucket, which folds them the same way).
+// genuinely different. Delegates to bookIdentity.ts's resolvedMediaTypeBucket
+// so this and rowFormatBucket's identical mapping can't drift apart.
 export function formatBucket(mediaType: "physical" | "ebook" | "audiobook" | null): "book" | "audiobook" | null {
-  if (mediaType === "physical" || mediaType === "ebook") return "book";
-  if (mediaType === "audiobook") return "audiobook";
-  return null;
+  return resolvedMediaTypeBucket(mediaType);
 }
 
 export function hasGrimmoryUserActivity(book: GrimmoryBook): boolean {

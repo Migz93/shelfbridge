@@ -1031,40 +1031,42 @@ genuinely separate print + audio Grimmory pair already does (see
 later disappears or stops disagreeing with the current edition, the stale
 `'owned'` row and its canonical are cleaned up.
 
-**Existence vs. write arbitration for genuinely shared books.** A Hardcover
-book that already has both a real Grimmory print/ebook sibling *and* a real
-Grimmory audiobook sibling (see "Shared Hardcover Books" above) is a
-different case, but the same principle applies: which sibling *exists* for a
-profile shouldn't depend on which sibling currently wins Hardcover's
-write-back slot (unchanged, still a contest resolved the same way as
-today). ShelfBridge checks for a real opposite-format sibling first —
-ahead of the Owned-list case, since a real sibling's own data is more
-complete than a guessed Owned-list edition — and if one exists, writes it a
-second `book_sources` row too, bucket `'shared'`, using the shared work's
-title/author/series but deliberately not the sibling's own ISBN, edition id,
-audio-seconds, or cover: an audiobook edition can genuinely report the same
-ISBN as its print counterpart, and copying it here would risk re-merging the
-two canonicals via ISBN identity matching (see the "known bucket mismatch"
-row in [docs/books-and-identity.md](books-and-identity.md)). A stale
-`'owned'` row is removed if a real sibling shows up to replace it, and vice
-versa. On an ownership flip in the write-back arbitration, the `'shared'`
-bucket itself is untouched — it's keyed off sibling *existence*, not
-activity — so both siblings of a genuinely shared book always show as
-belonging to the profile, regardless of which one currently owns the
-write-back slot.
+A Hardcover book that already has both a real Grimmory print/ebook sibling
+*and* a real Grimmory audiobook sibling (see "Shared Hardcover Books" above)
+gets the same second-row treatment, bucket `'shared'` — checked first, ahead
+of the Owned-list case, since a real sibling's own data is more complete
+than a guessed Owned-list edition. A stale `'owned'` row is removed if a
+real sibling shows up to replace it, and vice versa.
 
-**No write-back.** Hardcover has only one `status_id`/`rating`/progress slot
-per book, not one per format, so only the `'primary'` row ever writes back
-to Hardcover — exactly as it does today, including the shared-book
-arbitration described above. Neither the `'owned'` nor the `'shared'` row
-itself ever writes back to Hardcover or is matched against Grimmory by the
-Hardcover↔Grimmory sync loop directly — but the canonical it lives on can
-still be (and, for a `'shared'` row, normally is) matched with a real
-Grimmory record through the same identity reconciliation every other source
-goes through; that's what puts a `'shared'` row on the same canonical as its
-real Grimmory sibling in the first place. Because both bucket types are real
-`book_sources` rows, the "linked to Hardcover" source badge/filter on the
-Books/Audiobooks pages still recognizes them.
+Existence (whether a format shows up at all) and write arbitration (which
+format's status/rating currently reaches Hardcover) are independent:
+Hardcover exposes only one `status_id`/`rating`/progress slot per book, so
+only the `'primary'` row ever writes back — an ownership flip in that
+arbitration (unchanged, still resolved the same way as today) leaves the
+`'shared'` bucket itself untouched, since it's keyed off sibling
+*existence*, not activity.
+
+| Bucket | Trigger | Fields copied | Fields deliberately blank | Writes back to Hardcover | Matched against Grimmory |
+|---|---|---|---|---|---|
+| `'primary'` | Always — the current-read edition | Full Hardcover edition data | — | Yes | Yes |
+| `'owned'` | Owned Import on, and the Owned-list entry's format disagrees with the current edition | Title/author/series; the Owned entry's own edition id/audio-seconds/ASIN | ISBN | No | Not directly by this row |
+| `'shared'` | A real Grimmory sibling of the opposite format already exists | Title/author/series from the shared work | ISBN, edition id, audio-seconds, cover | No | Not directly by this row |
+
+ISBN is deliberately never copied onto an `'owned'`/`'shared'` row: an
+audiobook edition can genuinely report the same ISBN as its print
+counterpart, and copying it here would risk re-merging the two canonicals
+via ISBN identity matching (see the code comment in `hardcover-sources.ts`
+and the "known bucket mismatch" row in
+[docs/books-and-identity.md](books-and-identity.md)).
+
+"Not directly by this row" means the Hardcover↔Grimmory sync loop never
+matches an `'owned'`/`'shared'` row against Grimmory itself — but the
+canonical it lives on can still be (and, for a `'shared'` row, normally is)
+matched with a real Grimmory record through the same identity reconciliation
+every other source goes through; that's what puts a `'shared'` row on the
+same canonical as its real Grimmory sibling in the first place. Because both
+bucket types are real `book_sources` rows, the "linked to Hardcover" source
+badge/filter on the Books/Audiobooks pages still recognizes them.
 
 **Status never crosses formats.** Book and audiobook editions are tracked
 completely independently in Grimmory, each with its own real status/progress

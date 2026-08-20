@@ -581,7 +581,15 @@ export function UserDetailPage() {
         : type === "goodreads" ? Boolean(profile?.goodreads)
         : type === "audiobookshelf" ? Boolean(profile?.audiobookshelf)
         : true;
-      if (result.ok && isPersisted) await loadProfile();
+      if (result.ok && isPersisted) {
+        // loadProfile() overwrites every field on this tab with the server's
+        // persisted values, including hardcoverOwnedImportEnabled — testing
+        // an already-persisted Hardcover connection would otherwise silently
+        // discard an unsaved toggle flip made just before clicking Test.
+        const pendingOwnedImportEnabled = type === "hardcover" ? hardcoverOwnedImportEnabled : null;
+        await loadProfile();
+        if (pendingOwnedImportEnabled !== null) setHardcoverOwnedImportEnabled(pendingOwnedImportEnabled);
+      }
     } catch (e) { setTestResults((r) => ({ ...r, [type]: { ok: false, message: e instanceof Error ? e.message : String(e) } })); }
     finally { setTesting(null); }
   }

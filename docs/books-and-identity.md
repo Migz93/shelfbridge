@@ -35,15 +35,16 @@ the `book_sources` rows for both sources are linked via the same `books.id`.
 `books` is ShelfBridge's canonical book table. The source data sits in two
 additional tables:
 
-**`book_sources`** — one row per (book, source_type); contains book-level facts
-that do not vary per user: external IDs, ISBNs, slugs, cross-system reference
-IDs, Chaptarr monitored/has_file flags, series data, and the `cover_cache_path`
-used by all profiles for that book. There is exactly one `book_sources` row per
-source type per canonical book, with one exception: a Hardcover book can
-contribute a second row, distinguished by `source_bucket` (`'primary'` vs
-`'owned'` for an Owned-list-derived row, or `'shared'` for a row derived
-from a real dual-Grimmory-sibling book) — see "Hardcover Owned-List Import"
-below.
+**`book_sources`** — uniquely identified by `source_type`, `source_instance_id`,
+`external_id`, and `source_bucket`; `book_id` links each row to its canonical
+book. Contains book-level facts that do not vary per user: external IDs, ISBNs,
+slugs, cross-system reference IDs, Chaptarr monitored/has_file flags, series
+data, and the `cover_cache_path` used by all profiles for that book. A
+canonical book usually has one `book_sources` row per source type, with one
+exception: a Hardcover book can contribute a second row, distinguished by
+`source_bucket` (`'primary'` vs `'owned'` for an Owned-list-derived row, or
+`'shared'` for a row derived from a real dual-Grimmory-sibling book) — see
+"Hardcover Owned-List Import" below.
 
 **`user_book_states`** — one row per (book, profile, source_type); contains
 everything that varies per user: sync health, match confidence, `has_superseded`

@@ -251,6 +251,14 @@ test("Owned-list import creates a second row when the owned edition's format dis
   seedHardcoverConnection(db, profileId, "hc-test-token", true);
   seedSyncSettings(db, profileId);
   const book = hcBook({ edition_id: 100 }).book;
+  // Tracked directly rather than relying on createFakeAdapters' "throws if
+  // called" default: runSyncImpl catches and swallows adapter errors
+  // (records sync_runs.status = 'error' but never rethrows), so a thrown
+  // stub would NOT fail this test — only an explicit assertion on the
+  // recorded calls (and the run's status) actually proves write-back never
+  // fired.
+  const hardcoverWrites: string[] = [];
+  const runId = insertSyncRun(db, profileId);
   const adapters = createFakeAdapters({
     fetchHardcoverUserId: async () => 42,
     fetchHardcoverLibrary: async () => [hcBook({ edition_id: 100 })],
@@ -262,10 +270,12 @@ test("Owned-list import creates a second row when the owned edition's format dis
         editionId: 200,
         edition: { id: 200, edition_format: "Audible", reading_format_id: 2, isbn_13: null, isbn_10: null, asin: "AUDIO-ASIN", pages: null, audio_seconds: 36000, image: null }
       }]
-    }]
+    }],
+    updateHardcoverUserBook: async () => { hardcoverWrites.push("update"); },
+    insertHardcoverUserBook: async () => { hardcoverWrites.push("insert"); return 0; }
   });
 
-  await runSyncImpl(profileId, insertSyncRun(db, profileId), false, adapters);
+  await runSyncImpl(profileId, runId, false, adapters);
 
   const sources = db.prepare(
     "SELECT source_bucket, source_media_type, source_edition_id, source_audible_asin, hardcover_audio_seconds FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ? ORDER BY source_bucket"
@@ -318,10 +328,9 @@ test("Owned-list import creates a second row when the owned edition's format dis
   ).get(bookCanonical.id, profileId) as { count: number };
   assert.equal(hardcoverStateOnBookCanonical.count, 1, "the primary/book canonical keeps its normal Hardcover-sourced state");
 
-  // Confirm write-back suppression held: no Hardcover mutation adapter was
-  // ever invoked for the owned side (createFakeAdapters throws on any
-  // adapter call not explicitly stubbed, so a passing sync already proves
-  // update/insertHardcoverUserBook* were never called).
+  const runStatus = db.prepare("SELECT status FROM sync_runs WHERE id = ?").get(runId) as { status: string };
+  assert.equal(runStatus.status, "success", "the sync must not have failed silently");
+  assert.deepEqual(hardcoverWrites, [], "no Hardcover write-back adapter may fire for the owned side");
 });
 
 test("Owned-list import removes a previously-written 'owned' row once it's no longer justified", async () => {
@@ -598,6 +607,14 @@ test("a genuinely shared Hardcover book gives its non-owning Grimmory sibling lo
   // test's literal (e.g. the default hcBook() id 555) risks silently
   // merging unrelated tests' canonicals when run together.
   const sharedBook = { ...hcBook().book, id: 700100 };
+  // Tracked directly rather than relying on createFakeAdapters' "throws if
+  // called" default: runSyncImpl catches and swallows adapter errors
+  // (records sync_runs.status = 'error' but never rethrows), so a thrown
+  // stub would NOT fail this test — only an explicit assertion on the
+  // recorded calls (and the run's status) actually proves write-back never
+  // fired.
+  const hardcoverWrites: string[] = [];
+  const runId = insertSyncRun(db, profileId);
   const adapters = createFakeAdapters({
     fetchHardcoverUserId: async () => 42,
     fetchHardcoverLibrary: async () => [hcBook({ status_id: 2, book: sharedBook })], // READING
@@ -606,10 +623,12 @@ test("a genuinely shared Hardcover book gives its non-owning Grimmory sibling lo
     fetchGrimmoryBooks: async () => [
       grBook({ id: 700101, hardcoverBookId: "700100", readStatus: "READING", mediaType: "physical", isbn13: "9780000700101" }),
       grBook({ id: 700102, hardcoverBookId: "700100", readStatus: null, mediaType: "audiobook", isbn13: "9780000700102" })
-    ]
+    ],
+    updateHardcoverUserBook: async () => { hardcoverWrites.push("update"); },
+    insertHardcoverUserBook: async () => { hardcoverWrites.push("insert"); return 0; }
   });
 
-  await runSyncImpl(profileId, insertSyncRun(db, profileId), false, adapters);
+  await runSyncImpl(profileId, runId, false, adapters);
 
   const hcSources = db.prepare(
     "SELECT book_id, source_bucket, source_media_type FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ? ORDER BY source_bucket"
@@ -642,9 +661,9 @@ test("a genuinely shared Hardcover book gives its non-owning Grimmory sibling lo
   ).get(primary.book_id, profileId) as { count: number };
   assert.equal(bookState.count, 1, "the owning print sibling keeps its normal Hardcover-sourced state");
 
-  // createFakeAdapters throws on any adapter call not stubbed above — a
-  // passing sync already proves no Hardcover write-back adapter (update/
-  // insertHardcoverUserBook*) was ever called for either sibling.
+  const runStatus = db.prepare("SELECT status FROM sync_runs WHERE id = ?").get(runId) as { status: string };
+  assert.equal(runStatus.status, "success", "the sync must not have failed silently");
+  assert.deepEqual(hardcoverWrites, [], "no Hardcover write-back adapter may fire for either sibling — the owning print sibling's status already matches Grimmory's, and the non-owning audiobook sibling never writes back at all");
 });
 
 test("a 'shared' row survives a sync where Grimmory is temporarily unavailable", async () => {
@@ -695,6 +714,65 @@ test("a 'shared' row survives a sync where Grimmory is temporarily unavailable",
   ).get(profileId) as { id: number } | undefined;
   assert.ok(sharedAfter, "the 'shared' row must survive a Grimmory outage, not be deleted just because this run's Grimmory data is empty");
   assert.equal(sharedAfter!.id, sharedBefore!.id, "must be the same row, untouched — not deleted and recreated");
+});
+
+test("a Grimmory outage does not flip an already-deferred local-only state back to UNREAD", async () => {
+  // Mirrors the 'shared' row survival test above, but at the state layer:
+  // hasOwnActivity inside upsertLocalOnlyHardcoverState is forced false for
+  // the whole run whenever Grimmory is unreachable (grimmoryBooks is empty),
+  // which is indistinguishable from "genuinely no activity" unless the
+  // helper also checks grimmoryAvailable directly. Without that check, a
+  // finished audiobook sibling that correctly shows status = null (deferring
+  // to its own real Grimmory activity) would get flipped to UNREAD on every
+  // transient outage, then flipped back on the next successful run — visible
+  // churn for something that never actually changed.
+  const profileId = seedProfile(db);
+  seedHardcoverConnection(db, profileId);
+  seedGrimmoryConnection(db, profileId);
+  seedSyncSettings(db, profileId);
+
+  const sharedBook = { ...hcBook().book, id: 700500 };
+  const editionsMap = async () => new Map([[100, { id: 100, edition_format: "Hardcover", reading_format_id: 1, isbn_13: null, isbn_10: null, asin: null, pages: null, audio_seconds: null, image: null }]]);
+
+  await runSyncImpl(profileId, insertSyncRun(db, profileId), false, createFakeAdapters({
+    fetchHardcoverUserId: async () => 42,
+    fetchHardcoverLibrary: async () => [hcBook({ status_id: 2, edition_id: 100, book: sharedBook })], // READING
+    fetchHardcoverEditions: editionsMap,
+    fetchHardcoverLists: async () => [],
+    testGrimmoryLogin: async () => ({ ok: true, message: "ok", accessToken: "grim-token" }),
+    fetchGrimmoryBooks: async () => [
+      grBook({ id: 700501, hardcoverBookId: "700500", readStatus: "READING", mediaType: "physical", isbn13: "9780000700501" }),
+      // The audiobook sibling is already finished — real activity of its
+      // own, so its local-only state must defer (status/hardcover_status_id
+      // both null) rather than mirror the print sibling's status.
+      grBook({ id: 700502, hardcoverBookId: "700500", readStatus: "READ", mediaType: "audiobook", isbn13: "9780000700502" })
+    ]
+  }));
+
+  const shared = db.prepare(
+    "SELECT book_id FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ? AND source_bucket = 'shared'"
+  ).get(profileId) as { book_id: number };
+
+  const stateBefore = db.prepare(
+    "SELECT status, hardcover_status_id FROM user_book_states WHERE book_id = ? AND profile_id = ? AND source_type = 'hardcover'"
+  ).get(shared.book_id, profileId) as { status: string | null; hardcover_status_id: number | null };
+  assert.equal(stateBefore.status, null, "setup: the finished audiobook sibling's local-only state must defer to its own real activity, not UNREAD");
+  assert.equal(stateBefore.hardcover_status_id, null);
+
+  // Re-sync with Grimmory unreachable — Hardcover data is unchanged.
+  await runSyncImpl(profileId, insertSyncRun(db, profileId), false, createFakeAdapters({
+    fetchHardcoverUserId: async () => 42,
+    fetchHardcoverLibrary: async () => [hcBook({ status_id: 2, edition_id: 100, book: sharedBook })],
+    fetchHardcoverEditions: editionsMap,
+    fetchHardcoverLists: async () => [],
+    testGrimmoryLogin: async () => ({ ok: false, message: "simulated Grimmory outage" })
+  }));
+
+  const stateAfter = db.prepare(
+    "SELECT status, hardcover_status_id FROM user_book_states WHERE book_id = ? AND profile_id = ? AND source_type = 'hardcover'"
+  ).get(shared.book_id, profileId) as { status: string | null; hardcover_status_id: number | null };
+  assert.equal(stateAfter.status, null, "a Grimmory outage must not flip an already-deferred local-only state to UNREAD just because this run's Grimmory data is empty");
+  assert.equal(stateAfter.hardcover_status_id, null);
 });
 
 test("a Grimmory outage does not let a justified Owned-list entry create a competing 'owned' row next to a preserved 'shared' row", async () => {
@@ -817,9 +895,12 @@ test("two finished siblings with no active owner never both attempt to write Har
   // resolved format) — the other must defer rather than reach Phase G's
   // "Grimmory-only book, insert it into Hardcover" fallback, which would
   // otherwise attempt a second, competing write into the same Hardcover
-  // book. insertHardcoverUserBook/updateHardcoverUserBook are deliberately
-  // NOT stubbed below — createFakeAdapters throws if either is called, so a
-  // passing sync already proves neither fired for the unmatched sibling.
+  // book. Tracked directly rather than relying on createFakeAdapters'
+  // "throws if called" default: runSyncImpl catches and swallows adapter
+  // errors (records sync_runs.status = 'error' but never rethrows), so a
+  // thrown stub would NOT fail this test — only an explicit assertion on
+  // the recorded calls (and the run's status) actually proves write-back
+  // never fired.
   const profileId = seedProfile(db);
   seedHardcoverConnection(db, profileId);
   seedGrimmoryConnection(db, profileId);
@@ -828,6 +909,8 @@ test("two finished siblings with no active owner never both attempt to write Har
   // Unique hardcover book id/ISBNs — see the identical comment on the
   // "genuinely shared Hardcover book" test above for why this matters.
   const sharedBook = { ...hcBook().book, id: 700300 };
+  const hardcoverWrites: string[] = [];
+  const runId = insertSyncRun(db, profileId);
   const adapters = createFakeAdapters({
     fetchHardcoverUserId: async () => 42,
     fetchHardcoverLibrary: async () => [hcBook({ status_id: 3, edition_id: 100, book: sharedBook })], // READ
@@ -837,10 +920,12 @@ test("two finished siblings with no active owner never both attempt to write Har
     fetchGrimmoryBooks: async () => [
       grBook({ id: 700301, hardcoverBookId: "700300", readStatus: "READ", mediaType: "physical", isbn13: "9780000700301" }),
       grBook({ id: 700302, hardcoverBookId: "700300", readStatus: "READ", mediaType: "audiobook", isbn13: "9780000700302" })
-    ]
+    ],
+    updateHardcoverUserBook: async () => { hardcoverWrites.push("update"); },
+    insertHardcoverUserBook: async () => { hardcoverWrites.push("insert"); return 0; }
   });
 
-  await runSyncImpl(profileId, insertSyncRun(db, profileId), false, adapters);
+  await runSyncImpl(profileId, runId, false, adapters);
 
   const shared = db.prepare(
     "SELECT book_id FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ? AND source_bucket = 'shared'"
@@ -851,6 +936,10 @@ test("two finished siblings with no active owner never both attempt to write Har
     "SELECT status FROM user_book_states WHERE book_id = ? AND profile_id = ? AND source_type = 'grimmory'"
   ).get(shared!.book_id, profileId) as { status: string | null };
   assert.equal(audiobookGrState.status, "READ", "the unmatched sibling's own Grimmory-sourced status is still recorded locally — it just never writes to Hardcover");
+
+  const runStatus = db.prepare("SELECT status FROM sync_runs WHERE id = ?").get(runId) as { status: string };
+  assert.equal(runStatus.status, "success", "the sync must not have failed silently");
+  assert.deepEqual(hardcoverWrites, [], "no Hardcover write-back adapter may fire — the matched sibling's status already matches Grimmory's, and the unmatched sibling must defer rather than reach the Grimmory-only-book-into-Hardcover fallback");
 });
 
 test("dry run resolves a Hardcover/Grimmory status conflict but never calls the Grimmory write adapter", async () => {
