@@ -36,7 +36,10 @@ the `book_sources` rows for both sources are linked via the same `books.id`.
 additional tables:
 
 **`book_sources`** — uniquely identified by `source_type`, `source_instance_id`,
-`external_id`, and `source_bucket`; `book_id` links each row to its canonical
+`external_id`, and `source_bucket` for a normal row with a populated
+`source_instance_id`; a legacy pre-per-profile-scoping row
+(`source_instance_id IS NULL`) is exempt, since SQLite's `UNIQUE` constraint
+never treats two `NULL`s as equal. `book_id` links each row to its canonical
 book. Contains book-level facts that do not vary per user: external IDs, ISBNs,
 slugs, cross-system reference IDs, Chaptarr monitored/has_file flags, series
 data, and the `cover_cache_path` used by all profiles for that book. A

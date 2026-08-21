@@ -582,13 +582,14 @@ export function UserDetailPage() {
         : type === "audiobookshelf" ? Boolean(profile?.audiobookshelf)
         : true;
       if (result.ok && isPersisted) {
-        // loadProfile() overwrites every field on this tab with the server's
-        // persisted values, including hardcoverOwnedImportEnabled — testing
-        // an already-persisted Hardcover connection would otherwise silently
-        // discard an unsaved toggle flip made just before clicking Test.
-        const pendingOwnedImportEnabled = type === "hardcover" ? hardcoverOwnedImportEnabled : null;
+        // loadProfile() overwrites every field on every tab with the
+        // server's persisted values, including hardcoverOwnedImportEnabled —
+        // testing ANY already-persisted connection (not just Hardcover's own)
+        // would otherwise silently discard an unsaved Owned Import toggle
+        // flip made just before clicking Test.
+        const pendingOwnedImportEnabled = hardcoverOwnedImportEnabled;
         await loadProfile();
-        if (pendingOwnedImportEnabled !== null) setHardcoverOwnedImportEnabled(pendingOwnedImportEnabled);
+        setHardcoverOwnedImportEnabled(pendingOwnedImportEnabled);
       }
     } catch (e) { setTestResults((r) => ({ ...r, [type]: { ok: false, message: e instanceof Error ? e.message : String(e) } })); }
     finally { setTesting(null); }
