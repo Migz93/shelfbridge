@@ -138,10 +138,15 @@ function upsertLocalOnlyHardcoverState(
   // unreachable, so hasOwnActivity's forced-false result here can't be
   // trusted as "genuinely no activity" — it's indistinguishable from "the
   // outage hid the activity". Keep whatever was already persisted rather
-  // than flipping an existing (possibly correctly-blank) row to UNREAD.
-  // Mirrors the same outage guard on the 'shared' row itself in
-  // hardcover-sources.ts.
-  if (prevState && !grimmoryAvailable) return;
+  // than flipping an existing (possibly correctly-blank) row to UNREAD, and
+  // don't create a brand-new row either — a first-ever write during an
+  // outage would otherwise permanently mark it UNREAD based on the outage
+  // alone, an artefact this profile may never actually revisit. Guarded by
+  // hasGrimmory, not just grimmoryAvailable — a profile with no Grimmory
+  // connection at all also has grimmoryAvailable === false, but that's not
+  // an outage, so it must not block state creation. Mirrors the same outage
+  // guard on the 'shared' row itself in hardcover-sources.ts.
+  if (hasGrimmory && !grimmoryAvailable) return;
   const meaningfulChange = hasMeaningfulHcChange(prevState, {
     hardcoverStatusId: hasOwnActivity ? null : 1,
     hardcoverRating: null,
@@ -160,7 +165,7 @@ function upsertLocalOnlyHardcoverState(
     match_type: null,
     last_sync_decision: decision,
     hardcover_status_id: hasOwnActivity ? null : 1,
-    hardcover_user_book_id: hcBook.id ?? null,
+    hardcover_user_book_id: hcBook.id || null,
     hardcover_read_id: null,
     hardcover_updated_at: hcBook.updated_at ?? null,
     hardcover_pages: null
@@ -319,7 +324,7 @@ for (const hcBook of hcBooks) {
     match_type: match?.matchType ?? (localIdentityGrimmoryBook ? "local_identity" : null),
     last_sync_decision: decision,
     hardcover_status_id: hcStatusId ?? null,
-    hardcover_user_book_id: hcBook.id ?? null,
+    hardcover_user_book_id: hcBook.id || null,
     hardcover_read_id: hcRead?.id ?? null,
     hardcover_updated_at: hcBook.updated_at ?? null,
     hardcover_pages: hcPages
