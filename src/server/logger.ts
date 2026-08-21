@@ -150,37 +150,49 @@ const transports: winston.transport[] = [
   new RingTransport()
 ];
 
-// Add disk transports — skip gracefully if the log dir is not writable (dev without a mounted volume).
-// mkdirSync alone doesn't catch this: it succeeds without error when LOG_DIR already exists but is
-// unwritable, so an explicit access check is required — otherwise DailyRotateFile's async EACCES on
-// its first write would go unhandled and crash the process instead of falling back cleanly.
+function onDiskTransportError(err: unknown): void {
+  console.error("Logger disk transport error", err);
+}
+
+// Add disk transports — skip gracefully if the log dir is not usable (dev without a mounted volume,
+// or a directory with the wrong permissions). mkdirSync alone doesn't catch a bad-permissions case:
+// it succeeds without error when LOG_DIR already exists, even if it's unwritable or unsearchable.
+// Checking W_OK alone isn't enough either — a directory can be writable but not searchable (e.g.
+// mode 0222), which still fails to open files inside it. Both bits are required to actually create
+// files in a directory.
 try {
   fs.mkdirSync(LOG_DIR, { recursive: true });
-  fs.accessSync(LOG_DIR, fs.constants.W_OK);
+  fs.accessSync(LOG_DIR, fs.constants.W_OK | fs.constants.X_OK);
 
-  transports.push(
-    // Human-readable log file (7-day rotation)
-    new DailyRotateFile({
-      filename: path.join(LOG_DIR, "shelfbridge-%DATE%.log"),
-      datePattern: "YYYY-MM-DD",
-      maxFiles: "7d",
-      maxSize: "20m",
-      zippedArchive: true,
-      createSymlink: true,
-      symlinkName: "shelfbridge.log"
-    }),
-    // Machine-readable JSON log with a stable symlink for the log viewer API
-    new DailyRotateFile({
-      filename: path.join(LOG_DIR, ".machinelogs-%DATE%.json"),
-      datePattern: "YYYY-MM-DD",
-      maxFiles: "3d",
-      maxSize: "20m",
-      zippedArchive: true,
-      createSymlink: true,
-      symlinkName: ".machinelogs.json"
-    })
-  );
-} catch { /* log dir not writable — console + ring buffer only */ }
+  const humanLog = new DailyRotateFile({
+    filename: path.join(LOG_DIR, "shelfbridge-%DATE%.log"),
+    datePattern: "YYYY-MM-DD",
+    maxFiles: "7d",
+    maxSize: "20m",
+    zippedArchive: true,
+    createSymlink: true,
+    symlinkName: "shelfbridge.log"
+  });
+  const machineLog = new DailyRotateFile({
+    filename: path.join(LOG_DIR, ".machinelogs-%DATE%.json"),
+    datePattern: "YYYY-MM-DD",
+    maxFiles: "3d",
+    maxSize: "20m",
+    zippedArchive: true,
+    createSymlink: true,
+    symlinkName: ".machinelogs.json"
+  });
+
+  // DailyRotateFile does not forward its underlying write stream's errors (e.g. EACCES on open) as
+  // "error" events on itself or on winston's logger — those surface only on `logStream`, the raw
+  // stream from file-stream-rotator. Without listening here directly, a permissions problem that
+  // only bites once a write is attempted (rather than at the mkdir/access check above) is an
+  // unhandled "error" event and crashes the process.
+  humanLog.logStream.on("error", onDiskTransportError);
+  machineLog.logStream.on("error", onDiskTransportError);
+
+  transports.push(humanLog, machineLog);
+} catch { /* log dir not usable — console + ring buffer only */ }
 
 export const logger = winston.createLogger({
   level: process.env["LOG_LEVEL"] ?? "info",
@@ -193,9 +205,9 @@ export const logger = winston.createLogger({
   transports
 });
 
-// A disk transport can still fail after startup (disk full, permissions revoked underneath the
-// mount) even though the access check above passed. Winston re-emits unhandled transport errors on
-// the logger; without a listener here, Node treats that as an unhandled "error" event and crashes.
+// Separately from the raw stream errors handled above, winston itself re-emits errors a transport
+// reports through its own `emit("error", ...)` (e.g. DailyRotateFile's rotation/cleanup failures) on
+// the logger. Without a listener here, Node treats that as an unhandled "error" event and crashes.
 logger.on("error", (err) => {
   console.error("Logger transport error", err);
 });
