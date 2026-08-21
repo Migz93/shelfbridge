@@ -89,9 +89,19 @@ function isPrivateIPv6(address: string): boolean {
   if (/^fe[89ab][0-9a-f]:/.test(normalized)) return true;
   // fc00::/7 unique local
   if (/^f[cd][0-9a-f]{2}:/.test(normalized)) return true;
-  // IPv4-mapped (::ffff:a.b.c.d) — re-check the embedded IPv4 address.
-  const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  if (mapped?.[1]) return isPrivateIPv4(mapped[1]);
+  // IPv4-mapped (::ffff:0:0/96) — re-check the embedded IPv4 address. DNS can
+  // return this in dotted-quad form (::ffff:127.0.0.1) or hex-group form
+  // (::ffff:7f00:1 / the expanded 0:0:0:0:0:ffff:7f00:1), so accept both.
+  const mapped = normalized.match(
+    /^(?:0:0:0:0:0:|::)ffff:(?:(\d+\.\d+\.\d+\.\d+)|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/
+  );
+  if (mapped) {
+    if (mapped[1]) return isPrivateIPv4(mapped[1]);
+    const hi = parseInt(mapped[2]!, 16);
+    const lo = parseInt(mapped[3]!, 16);
+    const dotted = [(hi >> 8) & 255, hi & 255, (lo >> 8) & 255, lo & 255].join(".");
+    return isPrivateIPv4(dotted);
+  }
   return false;
 }
 
@@ -115,7 +125,9 @@ export function isPrivateAddress(address: string): boolean {
 // malicious hostname resolving to a private address, which is the far more
 // practical exploitation path than a precisely-timed DNS rebind.
 async function ensurePublicHostname(url: string): Promise<void> {
-  const { hostname } = new URL(url);
+  // URL.hostname wraps IPv6 literals in brackets (e.g. "[2606:4700::1111]");
+  // net.isIP() and dns.lookup() both expect the bare address.
+  const hostname = new URL(url).hostname.replace(/^\[(.*)\]$/, "$1");
   if (net.isIP(hostname)) {
     if (isPrivateAddress(hostname)) {
       throw new UnsafeIntegrationUrlError("Cover URL must not target a private network address");
