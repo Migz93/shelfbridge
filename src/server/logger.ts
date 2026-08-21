@@ -93,9 +93,23 @@ const LOG_DIR = path.join(DATA_DIR, "logs");
 /** Stable path to the machine-readable JSON log file (via symlink). */
 export const MACHINE_LOG_PATH = path.join(LOG_DIR, ".machinelogs.json");
 
-/** Reads a bounded recent tail, avoiding a synchronous full-log read per request. */
+const FALLBACK_ERROR_CODES = new Set(["ENOENT", "EACCES", "EPERM", "ENOTDIR"]);
+
+/**
+ * Reads a bounded recent tail, avoiding a synchronous full-log read per request. Falls back to the
+ * in-memory ring buffer if the machine log file can't be opened (not yet written, log dir
+ * unwritable, etc.) so callers don't each need to duplicate this fallback.
+ */
 export async function readRecentMachineLogs(filePath = MACHINE_LOG_PATH, limit = LOG_RING_SIZE): Promise<LogEntry[]> {
-  const handle = await fs.promises.open(filePath, "r");
+  let handle: fs.promises.FileHandle;
+  try {
+    handle = await fs.promises.open(filePath, "r");
+  } catch (err) {
+    if (FALLBACK_ERROR_CODES.has((err as NodeJS.ErrnoException).code ?? "")) {
+      return getRecentLogs(limit);
+    }
+    throw err;
+  }
   try {
     const { size } = await handle.stat();
     const start = Math.max(0, size - LOG_TAIL_BYTES);

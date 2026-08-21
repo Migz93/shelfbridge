@@ -267,9 +267,9 @@ router.get("/logs", async (req, res) => {
   try {
     entries = await readRecentMachineLogs();
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      logger.warn("Failed to read machine log file, falling back to in-memory ring buffer", { error: err });
-    }
+    // readRecentMachineLogs already falls back to the ring buffer for expected open() failures
+    // (missing/unwritable log file); anything reaching here is unexpected.
+    logger.warn("Failed to read machine log file, falling back to in-memory ring buffer", { error: err });
     entries = getRecentLogs(500);
   }
 

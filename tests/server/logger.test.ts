@@ -46,3 +46,12 @@ test("readRecentMachineLogs clamps a negative limit to an empty result", async (
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("readRecentMachineLogs falls back to the ring buffer instead of throwing when the file is missing", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "shelfbridge-logs-test-"));
+  const missingPath = path.join(dir, "does-not-exist.json");
+  rmSync(dir, { recursive: true, force: true }); // the containing directory is gone too, not just the file
+
+  const entries = await readRecentMachineLogs(missingPath, 3);
+  assert.deepEqual(entries, getRecentLogs(3));
+});
