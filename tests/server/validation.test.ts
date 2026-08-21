@@ -7,6 +7,7 @@ import {
   hardcoverMappingsSchema,
   integrationTestSchema,
   jobIntervalSchema,
+  parsePositiveId,
   profileCreateSchema,
   profileGrimmoryTestSchema,
   profilePatchSchema,
@@ -14,9 +15,8 @@ import {
   syncRunSchema,
   writeGrimmoryIdSchema
 } from "../../src/server/validation.js";
-import { parseProfileId, replaceHardcoverListMappings } from "../../src/server/routes/profiles.js";
+import { replaceHardcoverListMappings } from "../../src/server/routes/profiles.js";
 import settingsRouter, { applySettingsPatch } from "../../src/server/routes/settings.js";
-import { parsePositiveId } from "../../src/server/routes/books.js";
 import { createTestDatabase } from "./test-db.js";
 import { seedProfile } from "./test-helpers.js";
 
@@ -59,7 +59,7 @@ test("connection tests, jobs, and book actions reject malformed request bodies",
   assert.equal(writeGrimmoryIdSchema.safeParse({ source: "goodreads" }).success, true);
 });
 
-test("book mutation IDs must be complete positive integers", () => {
+test("book and profile mutation IDs must be complete positive integers", () => {
   assert.equal(parsePositiveId("12"), 12);
   assert.equal(parsePositiveId("12oops"), null);
   assert.equal(parsePositiveId("1e3"), null);
@@ -68,14 +68,9 @@ test("book mutation IDs must be complete positive integers", () => {
   assert.equal(parsePositiveId(" 12 "), null);
   assert.equal(parsePositiveId("1.5"), null);
   assert.equal(parsePositiveId("0"), null);
-});
-
-test("profile mutation IDs must be complete positive integers", () => {
-  assert.equal(parseProfileId("12"), 12);
-  assert.equal(parseProfileId("1e3"), null);
-  assert.equal(parseProfileId("0x10"), null);
-  assert.equal(parseProfileId("+12"), null);
-  assert.equal(parseProfileId(" 12 "), null);
+  assert.equal(parsePositiveId(String(Number.MAX_SAFE_INTEGER)), Number.MAX_SAFE_INTEGER);
+  assert.equal(parsePositiveId(String(Number.MAX_SAFE_INTEGER + 1)), null);
+  assert.equal(parsePositiveId("9".repeat(400)), null);
 });
 
 test("mutating routes return structured validation errors before database access", async () => {

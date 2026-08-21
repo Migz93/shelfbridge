@@ -18,6 +18,7 @@ import {
   profileGrimmoryTestSchema,
   profileHardcoverTestSchema,
   profilePatchSchema,
+  parsePositiveId,
   validationErrorResponse
 } from "../validation.js";
 import type Database from "better-sqlite3";
@@ -61,12 +62,6 @@ export function replaceHardcoverListMappings(
     }
   });
   replace();
-}
-
-export function parseProfileId(value: string | undefined): number | null {
-  if (value === undefined || !/^\d+$/.test(value)) return null;
-  const id = Number(value);
-  return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 
 function profileExists(db: Database.Database, id: number): boolean {
@@ -276,7 +271,7 @@ router.post("/", (req, res) => {
 
 // PATCH /api/profiles/:id
 router.patch("/:id", (req, res) => {
-  const id = parseProfileId(req.params["id"]);
+  const id = parsePositiveId(req.params["id"]);
   if (id === null) {
     res.status(400).json({ error: "Invalid profile id" });
     return;
@@ -431,7 +426,7 @@ router.patch("/:id", (req, res) => {
 
 // DELETE /api/profiles/:id
 router.delete("/:id", (req, res) => {
-  const id = parseProfileId(req.params["id"]);
+  const id = parsePositiveId(req.params["id"]);
   if (id === null) {
     res.status(400).json({ error: "Invalid profile id" });
     return;
@@ -499,7 +494,7 @@ router.get("/:id/goodreads/shelf-mappings", (req, res) => {
 
 // POST /api/profiles/:id/goodreads/shelf-mappings — full replace
 router.post("/:id/goodreads/shelf-mappings", (req, res) => {
-  const id = parseProfileId(req.params["id"]);
+  const id = parsePositiveId(req.params["id"]);
   if (id === null) {
     res.status(400).json({ error: "Invalid profile id" });
     return;
@@ -564,7 +559,7 @@ router.get("/:id/list-mappings", (req, res) => {
 
 // POST /api/profiles/:id/list-mappings — full replace
 router.post("/:id/list-mappings", (req, res) => {
-  const id = parseProfileId(req.params["id"]);
+  const id = parsePositiveId(req.params["id"]);
   if (id === null) {
     res.status(400).json({ error: "Invalid profile id" });
     return;
@@ -587,7 +582,7 @@ router.post("/:id/list-mappings", (req, res) => {
 // Accepts optional { username, password, baseUrl } in body — uses those directly
 // so the UI can test unsaved form values without a save-first round trip.
 router.post("/:id/test/grimmory", async (req, res) => {
-  const id = parseProfileId(req.params["id"]);
+  const id = parsePositiveId(req.params["id"]);
   if (id === null) { res.status(400).json({ error: "Invalid profile id" }); return; }
   const parsed = profileGrimmoryTestSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json(validationErrorResponse(parsed.error)); return; }
@@ -620,7 +615,7 @@ router.post("/:id/test/grimmory", async (req, res) => {
 // POST /api/profiles/:id/test/hardcover
 // Accepts optional { apiToken } in body.
 router.post("/:id/test/hardcover", async (req, res) => {
-  const id = parseProfileId(req.params["id"]);
+  const id = parsePositiveId(req.params["id"]);
   if (id === null) { res.status(400).json({ error: "Invalid profile id" }); return; }
   const parsed = profileHardcoverTestSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json(validationErrorResponse(parsed.error)); return; }
@@ -651,7 +646,7 @@ router.post("/:id/test/hardcover", async (req, res) => {
 // POST /api/profiles/:id/test/goodreads
 // Accepts optional { goodreadsUserId } in body.
 router.post("/:id/test/goodreads", async (req, res) => {
-  const id = parseProfileId(req.params["id"]);
+  const id = parsePositiveId(req.params["id"]);
   if (id === null) { res.status(400).json({ error: "Invalid profile id" }); return; }
   const parsed = profileGoodreadsTestSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json(validationErrorResponse(parsed.error)); return; }
@@ -682,7 +677,7 @@ router.post("/:id/test/goodreads", async (req, res) => {
 // POST /api/profiles/:id/test/audiobookshelf
 // Accepts optional { apiKey } in body.
 router.post("/:id/test/audiobookshelf", async (req, res) => {
-  const id = parseProfileId(req.params["id"]);
+  const id = parsePositiveId(req.params["id"]);
   if (id === null) { res.status(400).json({ error: "Invalid profile id" }); return; }
   const parsed = profileAudiobookshelfTestSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json(validationErrorResponse(parsed.error)); return; }

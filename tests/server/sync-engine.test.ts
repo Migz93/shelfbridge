@@ -143,10 +143,11 @@ test("a Hardcover-only sync writes book_sources and user_book_states, and re-run
   await runSyncImpl(profileId, insertSyncRun(db, profileId), false, adapters);
 
   const sourcesAfterFirst = db.prepare(
-    "SELECT external_id, source_instance_id FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ?"
-  ).all(profileId) as { external_id: string; source_instance_id: number }[];
+    "SELECT external_id, source_instance_id, book_id FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ?"
+  ).all(profileId) as { external_id: string; source_instance_id: number; book_id: number }[];
   assert.equal(sourcesAfterFirst.length, 1);
   assert.equal(sourcesAfterFirst[0]!.external_id, "555");
+  const bookId = sourcesAfterFirst[0]!.book_id;
 
   const statesAfterFirst = db.prepare(`
     SELECT COUNT(*) AS count FROM user_book_states
@@ -155,7 +156,7 @@ test("a Hardcover-only sync writes book_sources and user_book_states, and re-run
   assert.equal(statesAfterFirst.count, 1);
 
   db.prepare("UPDATE book_sources SET last_modified_at = '2020-01-01 00:00:00' WHERE source_type = 'hardcover' AND source_instance_id = ?").run(profileId);
-  db.prepare("UPDATE books SET last_modified_at = '2020-01-01 00:00:00'").run();
+  db.prepare("UPDATE books SET last_modified_at = '2020-01-01 00:00:00' WHERE id = ?").run(bookId);
   db.prepare("UPDATE user_book_states SET last_modified_at = '2020-01-01 00:00:00' WHERE source_type = 'hardcover' AND profile_id = ?").run(profileId);
 
   await runSyncImpl(profileId, insertSyncRun(db, profileId), false, adapters);
@@ -173,9 +174,9 @@ test("a Hardcover-only sync writes book_sources and user_book_states, and re-run
   const timestamps = db.prepare(`
     SELECT
       (SELECT last_modified_at FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ?) AS source_modified_at,
-      (SELECT last_modified_at FROM books LIMIT 1) AS book_modified_at,
+      (SELECT last_modified_at FROM books WHERE id = ?) AS book_modified_at,
       (SELECT last_modified_at FROM user_book_states WHERE source_type = 'hardcover' AND profile_id = ?) AS state_modified_at
-  `).get(profileId, profileId) as { source_modified_at: string; book_modified_at: string; state_modified_at: string };
+  `).get(profileId, bookId, profileId) as { source_modified_at: string; book_modified_at: string; state_modified_at: string };
   assert.deepEqual(timestamps, {
     source_modified_at: "2020-01-01 00:00:00",
     book_modified_at: "2020-01-01 00:00:00",

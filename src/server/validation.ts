@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { UnsafeIntegrationUrlError, validateIntegrationUrl, validateOutboundUrl } from "./security/outbound.js";
 
+export function parsePositiveId(value: string | undefined): number | null {
+  if (value === undefined || !/^\d+$/.test(value)) return null;
+  const id = Number(value);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
 const conflictStrategySchema = z.enum(["latest_wins", "grimmory_wins", "hardcover_wins"]);
 
 const suppliedOutboundUrlSchema = z.string().superRefine((value, context) => {

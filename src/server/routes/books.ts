@@ -17,17 +17,11 @@ import { logger } from "../logger.js";
 import { reconcileBookIdentities } from "../db/bookIdentity.js";
 import { cleanupImageCacheForSourceIds } from "../db/imageCacheMaintenance.js";
 import { normalizeExternalId, identifiersEqual } from "../identifiers.js";
-import { validationErrorResponse, writeGrimmoryIdSchema } from "../validation.js";
+import { parsePositiveId, validationErrorResponse, writeGrimmoryIdSchema } from "../validation.js";
 import { hasIdentityReviewConflict } from "../sync/identity-review.js";
 import { normalizeReviewText, probableDuplicateTitleKey, normalizeDuplicateSeriesNumber } from "../db/duplicateKeys.js";
 
 const router = Router();
-
-export function parsePositiveId(value: string | undefined): number | null {
-  if (value === undefined || !/^\d+$/.test(value)) return null;
-  const id = Number(value);
-  return Number.isSafeInteger(id) && id > 0 ? id : null;
-}
 
 export async function writeAndPersistDuplicateMergePlan(
   db: ReturnType<typeof getDb>,
@@ -878,7 +872,24 @@ router.get("/", (req, res) => {
   // Books and Audiobooks pages, so this filter exists purely so they can be found
   // and fixed rather than being silently dropped from every catalog view.
   const unfilteredRows = fetchRows();
-  const hiddenCount = countGroups(unfilteredRows.filter((row) => row.book_media_type === "unknown"));
+  // The mediaType-filtered `allRows`/`hardcoverBookIds`-style sets below exclude
+  // "unknown" rows entirely once mediaType isn't "all"/"hidden", so hiddenCount
+  // needs its own source-presence sets built from every row to still honor the
+  // active profile/source filters.
+  const hiddenHardcoverBookIds = new Set(unfilteredRows.filter((r) => r.hardcover_book_id !== null).map((r) => r.book_id));
+  const hiddenGoodreadsBookIds = new Set(unfilteredRows.filter((r) => r.goodreads_book_link !== null).map((r) => r.book_id));
+  const hiddenOnDiskBookIds = new Set(unfilteredRows.filter((r) => r.grimmory_book_id !== null || r.chaptarr_book_id !== null).map((r) => r.book_id));
+  const hiddenCount = countGroups(unfilteredRows.filter((row) =>
+    row.book_media_type === "unknown" &&
+    // Mirrors matchesFilters' profile check below: an included-profile filter
+    // must still require actual user-book activity, not just a passive
+    // cross-joined catalog row, or this count would disagree with what the
+    // "hidden" view itself shows under the same filter.
+    (includedProfileIds.length === 0 || (includedProfileIds.includes(row.profile_id) && Boolean(row.has_any_ubs))) &&
+    !excludedProfileIds.includes(row.profile_id) &&
+    (includedSources.length === 0 || includedSources.some((s) => matchesSource(row, s, hiddenHardcoverBookIds, hiddenGoodreadsBookIds, hiddenOnDiskBookIds))) &&
+    !excludedSources.some((s) => matchesSource(row, s, hiddenHardcoverBookIds, hiddenGoodreadsBookIds, hiddenOnDiskBookIds))
+  ));
   const allRows = unfilteredRows.filter((row) =>
     mediaType === "all" ? true : mediaType === "hidden" ? row.book_media_type === "unknown" : row.book_media_type === mediaType
   );
@@ -1150,7 +1161,12 @@ router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
         const touchedSourceIds = (db.prepare("SELECT id FROM book_sources WHERE book_id IN (?, ?)").all(bookId, duplicateId) as { id: number }[]).map((row) => row.id);
         reconcileBookIdentities(db, { sourceIds: touchedSourceIds });
       })();
-      reconciled = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(plans[0]!.grimmory.id) as { book_id: number } | undefined;
+      // plans[0] is not necessarily one of the plans that actually succeeded —
+      // only a succeeded plan's Grimmory row was written with the new external
+      // IDs, so it's the only one guaranteed to have merged into the right book.
+      const succeededPlan = plans.find((plan) => succeededProfileIds.includes(plan.profileId));
+      if (!succeededPlan) throw new Error("No succeeded merge plan available to resolve the reconciled book");
+      reconciled = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(succeededPlan.grimmory.id) as { book_id: number } | undefined;
       if (!reconciled) throw new Error("Reconciled Grimmory record could not be found");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1313,7 +1329,8 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
 
 // GET /api/books/:id
 router.get("/:id", (req, res) => {
-  const id = parseInt(req.params["id"] ?? "0", 10);
+  const id = parsePositiveId(req.params["id"]);
+  if (id === null) { res.status(400).json({ error: "Invalid book id" }); return; }
   // Duplicate matching only needs title/author/series, so candidates are looked
   // up via the indexed duplicate_title_key/duplicate_author_key columns instead
   // of scanning the whole `books` table; the heavier fetchRows() join is then
