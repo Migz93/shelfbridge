@@ -295,6 +295,7 @@ Also covers `cleanupAfterSourceRemoval` (shared with Chaptarr's own source remov
 | Test | What it checks |
 |---|---|
 | Oversized machine log | Only the recent bounded tail is parsed, malformed lines are skipped, and the requested newest entries are returned. |
+| Missing machine log file | A missing machine log file falls back to the in-memory ring buffer instead of throwing. |
 
 ### `tests/server/shelves.test.ts` — Shelf synchronization
 

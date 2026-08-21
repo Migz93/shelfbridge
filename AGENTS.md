@@ -115,8 +115,9 @@ Everything for ShelfBridge lives under a single directory on the host:
 ```
 
 All files the app needs — config, database, logs, whatever — go directly in
-there. Do not create subdirectories like `config/`, `data/`, or `logs/` unless
-the app itself requires a specific path inside the container. Keep it flat.
+there. Do not create subdirectories like `config/` or `data/` unless the app
+itself requires a specific path inside the container. Keep it flat, except for
+`logs/`, which the app requires (matching hubarr/pacearr) and creates itself.
 
 ## Docker Naming Conventions
 

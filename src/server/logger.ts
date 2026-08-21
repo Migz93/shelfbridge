@@ -88,12 +88,28 @@ export function getRecentLogs(limit = 200): LogEntry[] {
   return clamped === 0 ? [] : ring.slice(-clamped);
 }
 
-/** Stable path to the machine-readable JSON log file (via symlink). */
-export const MACHINE_LOG_PATH = path.join(DATA_DIR, ".machinelogs.json");
+const LOG_DIR = path.join(DATA_DIR, "logs");
 
-/** Reads a bounded recent tail, avoiding a synchronous full-log read per request. */
+/** Stable path to the machine-readable JSON log file (via symlink). */
+export const MACHINE_LOG_PATH = path.join(LOG_DIR, ".machinelogs.json");
+
+const FALLBACK_ERROR_CODES = new Set(["ENOENT", "EACCES", "EPERM", "ENOTDIR"]);
+
+/**
+ * Reads a bounded recent tail, avoiding a synchronous full-log read per request. Falls back to the
+ * in-memory ring buffer if the machine log file can't be opened (not yet written, log dir
+ * unwritable, etc.) so callers don't each need to duplicate this fallback.
+ */
 export async function readRecentMachineLogs(filePath = MACHINE_LOG_PATH, limit = LOG_RING_SIZE): Promise<LogEntry[]> {
-  const handle = await fs.promises.open(filePath, "r");
+  let handle: fs.promises.FileHandle;
+  try {
+    handle = await fs.promises.open(filePath, "r");
+  } catch (err) {
+    if (FALLBACK_ERROR_CODES.has((err as NodeJS.ErrnoException).code ?? "")) {
+      return getRecentLogs(limit);
+    }
+    throw err;
+  }
   try {
     const { size } = await handle.stat();
     const start = Math.max(0, size - LOG_TAIL_BYTES);
@@ -137,8 +153,62 @@ export type Logger = {
   error: (message: string, meta?: Record<string, unknown>) => void;
 };
 
-// Ensure DATA_DIR exists before setting up file transports
-try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch { /* ignore */ }
+const transports: winston.transport[] = [
+  new winston.transports.Console({
+    format: winston.format.combine(
+      winston.format.colorize(),
+      winston.format.simple()
+    )
+  }),
+  // In-memory ring buffer (fallback when log file is not yet available)
+  new RingTransport()
+];
+
+function onDiskTransportError(err: unknown): void {
+  console.error("Logger disk transport error", err);
+}
+
+// Add disk transports — skip gracefully if the log dir is not usable (dev without a mounted volume,
+// or a directory with the wrong permissions). mkdirSync alone doesn't catch a bad-permissions case:
+// it succeeds without error when LOG_DIR already exists, even if it's unwritable or unsearchable.
+// Checking W_OK alone isn't enough either — a directory can be writable but not searchable (e.g.
+// mode 0222), which still fails to open files inside it. Both bits are required to actually create
+// files in a directory.
+try {
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+  fs.accessSync(LOG_DIR, fs.constants.W_OK | fs.constants.X_OK);
+
+  const humanLog = new DailyRotateFile({
+    filename: path.join(LOG_DIR, "shelfbridge-%DATE%.log"),
+    datePattern: "YYYY-MM-DD",
+    maxFiles: "7d",
+    maxSize: "20m",
+    zippedArchive: true,
+    createSymlink: true,
+    symlinkName: "shelfbridge.log"
+  });
+  const machineLog = new DailyRotateFile({
+    filename: path.join(LOG_DIR, ".machinelogs-%DATE%.json"),
+    datePattern: "YYYY-MM-DD",
+    maxFiles: "3d",
+    maxSize: "20m",
+    zippedArchive: true,
+    createSymlink: true,
+    symlinkName: ".machinelogs.json"
+  });
+
+  // DailyRotateFile does not forward its underlying write stream's errors (e.g. EACCES on open) as
+  // "error" events on itself or on winston's logger — those surface only on `logStream`, the raw
+  // stream from file-stream-rotator. Without listening here directly, a permissions problem that
+  // only bites once a write is attempted (rather than at the mkdir/access check above) is an
+  // unhandled "error" event and crashes the process.
+  humanLog.logStream.on("error", onDiskTransportError);
+  machineLog.logStream.on("error", onDiskTransportError);
+
+  transports.push(humanLog, machineLog);
+} catch (err) {
+  console.error("Logger disk transports disabled — log dir not usable, falling back to console + ring buffer", err);
+}
 
 export const logger = winston.createLogger({
   level: process.env["LOG_LEVEL"] ?? "info",
@@ -148,30 +218,12 @@ export const logger = winston.createLogger({
     redactFormat(),
     winston.format.json()
   ),
-  transports: [
-    new winston.transports.Console({
-      format: winston.format.combine(
-        winston.format.colorize(),
-        winston.format.simple()
-      )
-    }),
-    // Human-readable log file (7-day rotation)
-    new DailyRotateFile({
-      filename: path.join(DATA_DIR, "shelfbridge-%DATE%.log"),
-      datePattern: "YYYY-MM-DD",
-      maxFiles: "7d",
-      maxSize: "20m"
-    }),
-    // Machine-readable JSON log with a stable symlink for the log viewer API
-    new DailyRotateFile({
-      filename: path.join(DATA_DIR, ".machinelogs-%DATE%.json"),
-      datePattern: "YYYY-MM-DD",
-      maxFiles: "3d",
-      maxSize: "20m",
-      createSymlink: true,
-      symlinkName: ".machinelogs.json"
-    }),
-    // In-memory ring buffer (fallback when log file is not yet available)
-    new RingTransport()
-  ]
+  transports
+});
+
+// Separately from the raw stream errors handled above, winston itself re-emits errors a transport
+// reports through its own `emit("error", ...)` (e.g. DailyRotateFile's rotation/cleanup failures) on
+// the logger. Without a listener here, Node treats that as an unhandled "error" event and crashes.
+logger.on("error", (err) => {
+  console.error("Logger transport error", err);
 });
