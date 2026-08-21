@@ -68,6 +68,9 @@ test("book and profile mutation IDs must be complete positive integers", () => {
   assert.equal(parsePositiveId(" 12 "), null);
   assert.equal(parsePositiveId("1.5"), null);
   assert.equal(parsePositiveId("0"), null);
+  assert.equal(parsePositiveId(String(Number.MAX_SAFE_INTEGER)), Number.MAX_SAFE_INTEGER);
+  assert.equal(parsePositiveId(String(Number.MAX_SAFE_INTEGER + 1)), null);
+  assert.equal(parsePositiveId("9".repeat(400)), null);
 });
 
 test("mutating routes return structured validation errors before database access", async () => {

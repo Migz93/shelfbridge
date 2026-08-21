@@ -227,25 +227,22 @@ async function refreshInBackground(cacheKey: string, entityId: string, sourceUrl
     WHERE cache_key = ?
   `).run(sourceUrl, newFilePath, newWebPath, new Date().toISOString(), refreshAfter, cacheKey);
 
-  // Delete the old file only once image_cache itself is durably pointing at
-  // the new one — deleting it first would leave the row referencing a path
-  // that no longer exists on disk if the process died in between.
-  if (oldFilePath && oldFilePath !== newFilePath) {
-    try { fs.unlinkSync(oldFilePath); } catch { /* best-effort */ }
-  }
-
   logger.info("ImageCache: cover refreshed", { cacheKey, webPath: newWebPath });
 
   // entityId is always a book_sources.id (see the cacheKey convention in
   // fetchAndStore/storeFetchedCover). ensureCoverCached returns the OLD path
   // immediately when it schedules this refresh, so book_sources.cover_cache_path
   // (written from that stale return value) and the canonical
-  // books.cover_cache_path would otherwise keep pointing at the file just
-  // deleted above until some unrelated later write happens to re-cache this
-  // same source. Propagate the new path now instead. Isolated in its own
-  // try/catch: the refresh itself already succeeded and committed above, so a
-  // propagation failure here must not abort refreshStaleCachedCovers's loop
-  // over the rest of its batch.
+  // books.cover_cache_path would otherwise keep pointing at a file this
+  // function is about to delete below, until some unrelated later write
+  // happens to re-cache this same source. Propagate the new path now instead.
+  // Isolated in its own try/catch: the refresh itself already succeeded and
+  // committed above, so a propagation failure here must not abort
+  // refreshStaleCachedCovers's loop over the rest of its batch.
+  // Only true once book_sources (if applicable) durably points at newFilePath
+  // — false leaves oldFilePath as the last surviving reference, so it must
+  // not be deleted below.
+  let propagated = false;
   try {
     const sourceId = Number.parseInt(entityId, 10);
     if (Number.isFinite(sourceId)) {
@@ -257,10 +254,20 @@ async function refreshInBackground(cacheKey: string, entityId: string, sourceUrl
         })();
       });
     }
+    propagated = true;
   } catch (err) {
     logger.warn("ImageCache: failed to propagate refreshed cover path to book_sources", {
       cacheKey, error: err instanceof Error ? err.message : String(err)
     });
+  }
+
+  // Delete the old file only once every row that could still reference it
+  // (image_cache, already updated above, and book_sources when propagation
+  // ran) durably points at the new one instead — otherwise a propagation
+  // failure would roll back book_sources.cover_cache_path to a path this
+  // function just deleted.
+  if (propagated && oldFilePath && oldFilePath !== newFilePath) {
+    try { fs.unlinkSync(oldFilePath); } catch { /* best-effort */ }
   }
 }
 

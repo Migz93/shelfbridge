@@ -111,6 +111,26 @@ test("isPrivateAddress fails closed for a non-IP-literal input", () => {
   assert.equal(isPrivateAddress("not-an-ip"), true);
 });
 
+test("isPrivateAddress classifies alternate IPv6 compressions of a mapped address", () => {
+  assert.equal(isPrivateAddress("0:0:0::ffff:7f00:1"), true);
+  assert.equal(isPrivateAddress("::ffff:7f00:1"), true);
+  assert.equal(isPrivateAddress("0:0:0:0:0:ffff:7f00:1"), true);
+});
+
+test("isPrivateAddress classifies IPv4-compatible IPv6 addresses (::/96)", () => {
+  assert.equal(isPrivateAddress("::10.0.0.1"), true);
+  assert.equal(isPrivateAddress("::000a:0001"), true);
+  assert.equal(isPrivateAddress("::8.8.8.8"), false);
+  assert.equal(isPrivateAddress("::0808:0808"), false);
+});
+
+test("isPrivateAddress classifies NAT64 addresses (64:ff9b::/96)", () => {
+  assert.equal(isPrivateAddress("64:ff9b::10.0.0.1"), true);
+  assert.equal(isPrivateAddress("64:ff9b::0a00:0001"), true);
+  assert.equal(isPrivateAddress("64:ff9b::8.8.8.8"), false);
+  assert.equal(isPrivateAddress("64:ff9b::0808:0808"), false);
+});
+
 test("cover image requests reject a hostname that resolves to a private address via DNS, even though the hostname string itself isn't a private literal", async () => {
   const originalLookup = dns.lookup;
   const originalFetch = globalThis.fetch;

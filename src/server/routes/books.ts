@@ -881,7 +881,11 @@ router.get("/", (req, res) => {
   const hiddenOnDiskBookIds = new Set(unfilteredRows.filter((r) => r.grimmory_book_id !== null || r.chaptarr_book_id !== null).map((r) => r.book_id));
   const hiddenCount = countGroups(unfilteredRows.filter((row) =>
     row.book_media_type === "unknown" &&
-    (includedProfileIds.length === 0 || includedProfileIds.includes(row.profile_id)) &&
+    // Mirrors matchesFilters' profile check below: an included-profile filter
+    // must still require actual user-book activity, not just a passive
+    // cross-joined catalog row, or this count would disagree with what the
+    // "hidden" view itself shows under the same filter.
+    (includedProfileIds.length === 0 || (includedProfileIds.includes(row.profile_id) && Boolean(row.has_any_ubs))) &&
     !excludedProfileIds.includes(row.profile_id) &&
     (includedSources.length === 0 || includedSources.some((s) => matchesSource(row, s, hiddenHardcoverBookIds, hiddenGoodreadsBookIds, hiddenOnDiskBookIds))) &&
     !excludedSources.some((s) => matchesSource(row, s, hiddenHardcoverBookIds, hiddenGoodreadsBookIds, hiddenOnDiskBookIds))
