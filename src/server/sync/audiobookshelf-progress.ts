@@ -245,9 +245,11 @@ if (hasAbs && absApiKey && (hasHardcover || grimmoryAvailable)) {
       // well as our persisted cache so ABS repairs that divergence immediately.
       const liveTrackedRead = liveHcBookForEdition?.user_book_reads?.find((read: any) =>
         read.id === hcState?.hardcover_read_id
-      ) ?? liveHcBookForEdition?.user_book_reads?.find((read: any) =>
-        read.edition_id === hcState?.hardcover_edition_id && read.finished_at === null
-      );
+      ) ?? (hcState?.hardcover_edition_id != null
+        ? liveHcBookForEdition?.user_book_reads?.find((read: any) =>
+            read.edition_id === hcState.hardcover_edition_id && read.finished_at === null
+          )
+        : undefined);
       const liveReadProgress = liveTrackedRead?.progress != null
         ? meaningfulProgress(liveTrackedRead.progress)
         : liveTrackedRead?.progress_seconds && absDuration > 0
