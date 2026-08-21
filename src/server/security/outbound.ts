@@ -129,11 +129,19 @@ function isPrivateIPv6(address: string): boolean {
   if (/^fe[89ab][0-9a-f]:/.test(normalized)) return true;
   // fc00::/7 unique local
   if (/^f[cd][0-9a-f]{2}:/.test(normalized)) return true;
-  // IPv4-mapped (::ffff:0:0/96) — expand structurally so any valid "::"
-  // compression point and any textual form of the embedded IPv4 address are
-  // caught, then re-check the embedded IPv4 address.
+  // Addresses that embed an IPv4 address in their final 32 bits — expand
+  // structurally so any valid "::" compression point and any textual form of
+  // the embedded IPv4 address are caught, then re-check that address:
+  //   - IPv4-mapped (::ffff:0:0/96)
+  //   - IPv4-compatible (::0:0/96, deprecated by RFC 4291 but still parseable)
+  //   - NAT64 well-known prefix (64:ff9b::/96) — a DNS64 resolver can
+  //     synthesize one of these for a private-IPv4 target
   const groups = expandIPv6Groups(normalized);
-  if (groups && groups.slice(0, 5).every((g) => g === "0000") && groups[5] === "ffff") {
+  const embedsIPv4 =
+    groups !== null &&
+    ((groups.slice(0, 5).every((g) => g === "0000") && (groups[5] === "ffff" || groups[5] === "0000")) ||
+      (groups[0] === "0064" && groups[1] === "ff9b" && groups.slice(2, 6).every((g) => g === "0000")));
+  if (groups && embedsIPv4) {
     const hi = parseInt(groups[6]!, 16);
     const lo = parseInt(groups[7]!, 16);
     const dotted = [(hi >> 8) & 255, hi & 255, (lo >> 8) & 255, lo & 255].join(".");

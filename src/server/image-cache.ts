@@ -250,9 +250,11 @@ async function refreshInBackground(cacheKey: string, entityId: string, sourceUrl
     const sourceId = Number.parseInt(entityId, 10);
     if (Number.isFinite(sourceId)) {
       const db = getDb();
-      db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(newWebPath, sourceId);
       await runExclusiveOfSyncs(async () => {
-        reconcileBookIdentities(db, { sourceIds: [sourceId] });
+        db.transaction(() => {
+          db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(newWebPath, sourceId);
+          reconcileBookIdentities(db, { sourceIds: [sourceId] });
+        })();
       });
     }
   } catch (err) {
