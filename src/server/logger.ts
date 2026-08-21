@@ -206,7 +206,9 @@ try {
   machineLog.logStream.on("error", onDiskTransportError);
 
   transports.push(humanLog, machineLog);
-} catch { /* log dir not usable — console + ring buffer only */ }
+} catch (err) {
+  console.error("Logger disk transports disabled — log dir not usable, falling back to console + ring buffer", err);
+}
 
 export const logger = winston.createLogger({
   level: process.env["LOG_LEVEL"] ?? "info",
