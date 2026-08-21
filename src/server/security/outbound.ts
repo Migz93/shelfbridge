@@ -205,6 +205,10 @@ async function fetchFollowingSameOriginRedirects(url: string, init: RequestInit)
     const location = res.headers.get("location");
     if (!location) return res;
     const nextUrl = new URL(location, currentUrl);
+    // This response is a redirect being followed or rejected, not returned to
+    // the caller — its body is never read, so it must be released here or the
+    // connection stays pooled until GC for every hop of a redirect chain.
+    await res.body?.cancel();
     if (nextUrl.origin !== originalOrigin) {
       throw new UnsafeIntegrationUrlError("Integration redirected to a different origin");
     }
