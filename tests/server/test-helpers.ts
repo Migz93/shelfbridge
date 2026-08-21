@@ -49,8 +49,8 @@ export function seedSyncSettings(
 }
 
 /** Inserts a Hardcover connection. */
-export function seedHardcoverConnection(db: Database.Database, profileId: number, token = "hc-test-token"): void {
-  db.prepare("INSERT INTO hardcover_connections (profile_id, api_token) VALUES (?, ?)").run(profileId, token);
+export function seedHardcoverConnection(db: Database.Database, profileId: number, token = "hc-test-token", ownedImportEnabled = false): void {
+  db.prepare("INSERT INTO hardcover_connections (profile_id, api_token, owned_import_enabled) VALUES (?, ?, ?)").run(profileId, token, ownedImportEnabled ? 1 : 0);
 }
 
 /** Inserts a Grimmory connection. */

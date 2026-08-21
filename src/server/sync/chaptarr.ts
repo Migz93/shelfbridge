@@ -388,7 +388,7 @@ export async function syncChaptarrStatus(profileId: number): Promise<number[]> {
       last_sync_at, last_modified_at
     )
     VALUES (?, 'chaptarr', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-    ON CONFLICT(source_type, source_instance_id, external_id) DO UPDATE SET
+    ON CONFLICT(source_type, source_instance_id, external_id, source_bucket) DO UPDATE SET
       book_id                    = excluded.book_id,
       title                      = excluded.title,
       author                     = excluded.author,

@@ -115,7 +115,8 @@ export const profilePatchSchema = z.object({
     apiToken: z.string().optional(),
     syncListId: z.number().int().positive().nullable().optional(),
     syncListName: z.string().nullable().optional(),
-    targetShelfName: z.string().nullable().optional()
+    targetShelfName: z.string().nullable().optional(),
+    ownedImportEnabled: z.boolean().optional()
   }).strict().optional(),
   goodreads: z.object({
     goodreadsUserId: z.string().optional(),

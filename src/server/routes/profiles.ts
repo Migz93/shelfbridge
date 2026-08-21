@@ -218,6 +218,7 @@ router.get("/:id", (req, res) => {
       syncListId: hardcover.sync_list_id ? parseInt(hardcover.sync_list_id, 10) : null,
       syncListName: hardcover.sync_list_name,
       targetShelfName: hardcover.target_shelf_name,
+      ownedImportEnabled: Boolean(hardcover.owned_import_enabled),
       status: hardcover.status as ConnectionStatus,
       lastTestedAt: hardcover.last_tested_at,
       lastSuccessAt: hardcover.last_success_at
@@ -335,6 +336,7 @@ router.patch("/:id", (req, res) => {
       if (h.syncListId !== undefined) { updates.push("sync_list_id = ?"); vals.push(h.syncListId ? String(h.syncListId) : null); }
       if (h.syncListName !== undefined) { updates.push("sync_list_name = ?"); vals.push(h.syncListName?.trim() || null); }
       if (h.targetShelfName !== undefined) { updates.push("target_shelf_name = ?"); vals.push(h.targetShelfName?.trim() || null); }
+      if (h.ownedImportEnabled !== undefined) { updates.push("owned_import_enabled = ?"); vals.push(h.ownedImportEnabled ? 1 : 0); }
       if (updates.length) {
         vals.push(id);
         db.prepare(`UPDATE hardcover_connections SET ${updates.join(", ")} WHERE profile_id = ?`).run(...vals);
@@ -345,9 +347,9 @@ router.patch("/:id", (req, res) => {
         return;
       }
       db.prepare(`
-        INSERT INTO hardcover_connections (profile_id, api_token, sync_list_id, sync_list_name, target_shelf_name)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(id, h.apiToken ?? "", h.syncListId ? String(h.syncListId) : null, h.syncListName?.trim() || null, h.targetShelfName?.trim() || null);
+        INSERT INTO hardcover_connections (profile_id, api_token, sync_list_id, sync_list_name, target_shelf_name, owned_import_enabled)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(id, h.apiToken ?? "", h.syncListId ? String(h.syncListId) : null, h.syncListName?.trim() || null, h.targetShelfName?.trim() || null, h.ownedImportEnabled ? 1 : 0);
     }
     logger.info("Updated Hardcover connection", { profileId: id });
     }
@@ -750,6 +752,7 @@ interface DbHardcover {
   sync_list_id: string | null;
   sync_list_name: string | null;
   target_shelf_name: string | null;
+  owned_import_enabled: number;
 }
 
 interface DbGoodreads {

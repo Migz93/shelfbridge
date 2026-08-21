@@ -9,6 +9,7 @@ import type { GrimmoryBook } from "./grimmory.js";
 import { GRIMMORY_TO_HARDCOVER } from "./matcher.js";
 import type { UserStateSnapshot } from "./repository.js";
 import { newerSource } from "./time-order.js";
+import { resolvedMediaTypeBucket } from "../db/bookIdentity.js";
 export interface SyncCounters { written: number; skipped: number; superseded: number; sourceFailures: number; }
 
 export type { UserStateSnapshot } from "./repository.js";
@@ -388,10 +389,14 @@ export function normalizeEditionFormat(value: string | null | undefined): string
 
 export function inferHardcoverMediaType(
   hcBook: HardcoverUserBook,
-  edition: HardcoverEdition | null | undefined
+  edition: HardcoverEdition | null | undefined,
+  // Defaults to the user's current reading-status edition. Pass a different
+  // edition id to classify some OTHER edition of this book against the same
+  // book's default_*_edition_id pointers — e.g. an edition attached to a
+  // Hardcover list entry rather than hcBook's own current edition (see
+  // hardcover-sources.ts's Owned-list handling).
+  editionId: number | null = hcBook.edition_id
 ): "physical" | "ebook" | "audiobook" | null {
-  const editionId = hcBook.edition_id;
-
   // reading_format_id is Hardcover's structured "Type" classification
   // (Physical Book/Audiobook/E-Book/Both) and is normally populated on every
   // edition — unlike the free-text edition_format field, which is often blank
@@ -416,12 +421,24 @@ export function inferHardcoverMediaType(
   return null;
 }
 
+// Collapses a resolved Hardcover/Grimmory format into the two buckets that
+// matter for comparing whether two editions/siblings are "the same format" or
+// genuinely different. Delegates to bookIdentity.ts's resolvedMediaTypeBucket
+// so this and rowFormatBucket's identical mapping can't drift apart.
+export function formatBucket(mediaType: "physical" | "ebook" | "audiobook" | null): "book" | "audiobook" | null {
+  return resolvedMediaTypeBucket(mediaType);
+}
+
 export function hasGrimmoryUserActivity(book: GrimmoryBook): boolean {
-  return book.readStatus !== null
+  // Loose comparisons: these fields are declared optional (`?:`) as well as
+  // nullable on GrimmoryBook, so `undefined` is a type-valid input here, not
+  // just `null` — treat them the same rather than letting an absent field
+  // silently read as "has activity".
+  return book.readStatus != null
     || grimmoryRating(book) !== null
-    || book.readProgress !== null
-    || book.lastReadTime !== null
-    || book.dateFinished !== null;
+    || book.readProgress != null
+    || book.lastReadTime != null
+    || book.dateFinished != null;
 }
 
 // ── DB helpers ────────────────────────────────────────────────────────────────

@@ -67,6 +67,46 @@ export function pruneOrphanedHardcoverUserStates(db: Db, profileId: number): voi
   if (result.changes > 0) logger.info("Pruned orphaned Hardcover user states after reconciliation", { profileId, deleted: result.changes });
 }
 
+/**
+ * Same as pruneOrphanedHardcoverUserStates, but scoped to specific book ids
+ * AND only when the book has zero book_sources rows of *any* kind left — for
+ * a caller that needs the prune to happen *before* the usual post-reconcile
+ * point (see engine.ts's cleanupAfterSourceRemoval call for a removed
+ * 'owned'/'shared' secondary row: deleteOrphanedBooks needs the stale state
+ * gone this same run to recognize the book as truly orphaned, and that's the
+ * only case deleteOrphanedBooks can act on anyway — it independently
+ * requires zero book_sources rows itself). Deliberately not just "no
+ * profile-scoped Hardcover source": a legacy (source_instance_id IS NULL)
+ * Hardcover row can share the very book this run's deleted secondary row
+ * reconciled onto (matching bucket-prefixed hardcover_book_id, independent
+ * of instance), in which case the book still has a real book_sources row and
+ * isn't actually orphaned — pruning its state here would only destroy it for
+ * no benefit, since cleanupLegacyHardcoverSources (which runs right after,
+ * and could migrate that state onto a live counterpart) would still see the
+ * legacy row present regardless. Requiring zero book_sources rows of any
+ * kind makes this a no-op for that case, leaving it entirely to
+ * cleanupLegacyHardcoverSources and the later, unscoped prune.
+ */
+export function pruneOrphanedHardcoverUserStatesForBooks(db: Db, profileId: number, bookIds: number[]): void {
+  if (bookIds.length === 0) return;
+  let totalChanges = 0;
+  for (const batch of chunk(bookIds, BATCH_SIZE)) {
+    const placeholders = batch.map(() => "?").join(",");
+    const result = db.prepare(`
+      DELETE FROM user_book_states
+      WHERE profile_id = ?
+        AND source_type = 'hardcover'
+        AND book_id IN (${placeholders})
+        AND NOT EXISTS (
+          SELECT 1 FROM book_sources
+          WHERE book_sources.book_id = user_book_states.book_id
+        )
+    `).run(profileId, ...batch);
+    totalChanges += result.changes;
+  }
+  if (totalChanges > 0) logger.info("Pruned orphaned Hardcover user states for books affected by a removed secondary row", { profileId, deleted: totalChanges });
+}
+
 export function pruneHardcoverSourcesMissingFromFetch(db: Db, profileId: number, fetchedIds: Set<number>, snapshotStatus: SourceSnapshotStatus): void {
   pruneSources(db, profileId, "hardcover", fetchedIds, snapshotStatus, "HC");
 }

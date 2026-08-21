@@ -48,6 +48,46 @@ test("real ABS listening activity blocks a finished ebook sibling from overwriti
   assert.equal(isOwnedBySomeoneElse(ownership, untouchedAudiobook as any), false);
 });
 
+test("two genuinely finished siblings with no active owner: the unmatched one defers rather than competing to write", () => {
+  // Unlike the "untouched audiobook" case above, BOTH siblings here have
+  // real Grimmory activity of their own (both finished) — Phase F's matcher
+  // already picked exactly one to own the write-back slot this run (via
+  // matchedGrimmoryIds, outside this module's scope); the other must not
+  // independently push a second, competing write into the same Hardcover
+  // record just because neither is "actively reading" right now.
+  const finishedBook = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READ" };
+  const finishedAudiobook = { id: 2, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "READ" };
+  const ownership = resolveSharedHardcoverOwnership([finishedBook, finishedAudiobook] as any, new Set());
+
+  const record = sharedHardcoverRecordFor(ownership, "42");
+  assert.equal(record?.owner.kind, "none", "neither finished sibling is actively reading, so there's no active owner");
+  assert.equal(isOwnedBySomeoneElse(ownership, finishedBook as any), true);
+  assert.equal(isOwnedBySomeoneElse(ownership, finishedAudiobook as any), true);
+});
+
+test("a duplicate untouched sibling of the same format must not mask a different sibling's real activity", () => {
+  // Two ebook entries share hardcoverBookId "42": an untouched one with the
+  // higher id (id 2) and no lastReadTime, and a genuinely finished one (id
+  // 1). The anyBook/anyAudiobook tie-break (recency, then higher id) would
+  // pick the untouched id-2 entry as its single representative — if the
+  // no-active-owner activity check relied on that single representative, it
+  // would wrongly conclude "the ebook side has no activity" and fail to
+  // suppress the competing finished-audiobook write.
+  const finishedEbook = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READ" };
+  const untouchedDuplicateEbook = { id: 2, hardcoverBookId: "42", mediaType: "ebook", readStatus: null };
+  const finishedAudiobook = { id: 3, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "READ" };
+  const ownership = resolveSharedHardcoverOwnership(
+    [finishedEbook, untouchedDuplicateEbook, finishedAudiobook] as any,
+    new Set()
+  );
+
+  const record = sharedHardcoverRecordFor(ownership, "42");
+  assert.equal(record?.owner.kind, "none");
+  // Setup check: the tie-break representative really is the untouched one.
+  assert.equal(record?.anyBook?.id, 2, "setup: the higher-id, no-lastReadTime entry wins the anyBook tie-break");
+  assert.equal(isOwnedBySomeoneElse(ownership, finishedAudiobook as any), true, "the ebook side's real activity (from a different sibling than the tie-break winner) must still suppress the competing audiobook write");
+});
+
 test("bookOwnsSharedHardcoverRecord requires a distinct audiobook sibling to exist", () => {
   const soloBook = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READING" };
   const audiobook = { id: 2, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "UNREAD" };

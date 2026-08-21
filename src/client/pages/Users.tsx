@@ -428,6 +428,24 @@ export function UserDetailPage() {
   const [hardcoverSyncListId, setHardcoverSyncListId] = useState<number | null>(null);
   const [hardcoverSyncListName, setHardcoverSyncListName] = useState<string | null>(null);
   const [hardcoverTargetShelfName, setHardcoverTargetShelfName] = useState<string | null>(null);
+  const [hardcoverOwnedImportEnabled, setHardcoverOwnedImportEnabled] = useState(false);
+  // Tracks the user's own latest toggle intent, independent of React state
+  // updates, so testConnection() can restore it after a test-triggered
+  // loadProfile() reload without losing a change made while that request
+  // was still in flight (testConnection's own closure only sees whatever
+  // hardcoverOwnedImportEnabled was at the moment Test was clicked). Updated
+  // synchronously by the toggle's own handler below
+  // (setHardcoverOwnedImportEnabledFromToggle) — not by a useEffect, since
+  // an effect only runs after the next render commits, which is still late
+  // enough for the test request to resolve first and read a stale .current.
+  // An ordinary loadProfile() call (initial mount, after Save) instead
+  // brings the ref back in sync with the real persisted value, same as the
+  // state — see loadProfile's own preserveOwnedImportToggle parameter.
+  const hardcoverOwnedImportEnabledRef = useRef(hardcoverOwnedImportEnabled);
+  const setHardcoverOwnedImportEnabledFromToggle = useCallback((v: boolean) => {
+    hardcoverOwnedImportEnabledRef.current = v;
+    setHardcoverOwnedImportEnabled(v);
+  }, []);
   const [hardcoverListMappings, setHardcoverListMappings] = useState<Record<string, string>>({});
   const [hardcoverListNames, setHardcoverListNames] = useState<Record<string, string>>({});
   const [hardcoverMappingsLoaded, setHardcoverMappingsLoaded] = useState(false);
@@ -441,7 +459,15 @@ export function UserDetailPage() {
   const [absEnabled, setAbsEnabled] = useState(false);
   const [syncSettings, setSyncSettings] = useState<Partial<SyncSettings>>({});
 
-  async function loadProfile() {
+  // preserveOwnedImportToggle: true only for the reload testConnection()
+  // triggers after successfully testing an already-persisted connection —
+  // that reload must keep whatever the user's own last toggle interaction
+  // set (tracked in the ref, updated synchronously by the toggle's own
+  // handler) rather than overwrite it with the just-fetched persisted
+  // value. Every other call site (initial mount, after Save) is an
+  // ordinary load: the ref is brought back in sync with the real persisted
+  // value there, same as the state.
+  async function loadProfile(preserveOwnedImportToggle = false) {
     if (!Number.isFinite(profileId)) {
       setError("User not found");
       setLoading(false);
@@ -462,6 +488,12 @@ export function UserDetailPage() {
       setHardcoverSyncListId(p.hardcover?.syncListId ?? null);
       setHardcoverSyncListName(p.hardcover?.syncListName ?? null);
       setHardcoverTargetShelfName(p.hardcover?.targetShelfName ?? null);
+      if (preserveOwnedImportToggle) {
+        setHardcoverOwnedImportEnabled(hardcoverOwnedImportEnabledRef.current);
+      } else {
+        hardcoverOwnedImportEnabledRef.current = p.hardcover?.ownedImportEnabled ?? false;
+        setHardcoverOwnedImportEnabled(p.hardcover?.ownedImportEnabled ?? false);
+      }
       setGoodreadsId(p.goodreads?.goodreadsUserId ?? "");
       setGoodreadsEnabled(p.goodreads?.enabled ?? false);
       setGoodreadsSyncShelfName(p.goodreads?.syncShelfName ?? null);
@@ -500,14 +532,16 @@ export function UserDetailPage() {
         hardcoverToken ||
         hardcoverSyncListId !== (profile?.hardcover?.syncListId ?? null) ||
         hardcoverSyncListName !== (profile?.hardcover?.syncListName ?? null) ||
-        hardcoverTargetShelfName !== (profile?.hardcover?.targetShelfName ?? null)
+        hardcoverTargetShelfName !== (profile?.hardcover?.targetShelfName ?? null) ||
+        hardcoverOwnedImportEnabled !== (profile?.hardcover?.ownedImportEnabled ?? false)
       ) {
         patch["hardcover"] = {
           enabled: hardcoverEnabled,
           ...(hardcoverToken ? { apiToken: hardcoverToken } : {}),
           syncListId: hardcoverSyncListId,
           syncListName: hardcoverSyncListName,
-          targetShelfName: hardcoverTargetShelfName
+          targetShelfName: hardcoverTargetShelfName,
+          ownedImportEnabled: hardcoverOwnedImportEnabled
         };
       }
       if (
@@ -528,7 +562,10 @@ export function UserDetailPage() {
       } else if (absApiKey.trim()) {
         patch["audiobookshelf"] = { apiKey: absApiKey };
       }
-      if (Object.keys(syncSettings).length) patch["syncSettings"] = syncSettings;
+      if (Object.keys(syncSettings).length) {
+        const { id: _id, ...syncSettingsPatch } = syncSettings;
+        if (Object.keys(syncSettingsPatch).length) patch["syncSettings"] = syncSettingsPatch;
+      }
       await apiPatch(`/api/profiles/${profileId}`, patch);
       if (hardcoverMappingsLoaded) {
         const mappings = Object.entries(hardcoverListMappings)
@@ -574,7 +611,14 @@ export function UserDetailPage() {
         : type === "goodreads" ? Boolean(profile?.goodreads)
         : type === "audiobookshelf" ? Boolean(profile?.audiobookshelf)
         : true;
-      if (result.ok && isPersisted) await loadProfile();
+      // loadProfile() overwrites every field on every tab with the server's
+      // persisted values, including hardcoverOwnedImportEnabled — testing
+      // ANY already-persisted connection (not just Hardcover's own) would
+      // otherwise silently discard an unsaved Owned Import toggle flip made
+      // just before clicking Test. preserveOwnedImportToggle = true tells
+      // loadProfile() to restore the ref's value (the user's latest toggle
+      // intent) instead of the just-fetched persisted one.
+      if (result.ok && isPersisted) await loadProfile(true);
     } catch (e) { setTestResults((r) => ({ ...r, [type]: { ok: false, message: e instanceof Error ? e.message : String(e) } })); }
     finally { setTesting(null); }
   }
@@ -693,6 +737,8 @@ export function UserDetailPage() {
               setSyncList={(id, name) => { setHardcoverSyncListId(id); setHardcoverSyncListName(name); }}
               targetShelfName={hardcoverTargetShelfName}
               setTargetShelfName={setHardcoverTargetShelfName}
+              ownedImportEnabled={hardcoverOwnedImportEnabled}
+              setOwnedImportEnabled={setHardcoverOwnedImportEnabledFromToggle}
               listMappings={hardcoverListMappings}
               setListMappings={setHardcoverListMappings}
               setListNames={setHardcoverListNames}
@@ -834,6 +880,8 @@ function HardcoverTabContent({
   setSyncList,
   targetShelfName,
   setTargetShelfName,
+  ownedImportEnabled,
+  setOwnedImportEnabled,
   listMappings,
   setListMappings,
   setListNames,
@@ -854,6 +902,8 @@ function HardcoverTabContent({
   setSyncList: (id: number | null, name: string | null) => void;
   targetShelfName: string | null;
   setTargetShelfName: (v: string | null) => void;
+  ownedImportEnabled: boolean;
+  setOwnedImportEnabled: (v: boolean) => void;
   listMappings: Record<string, string>;
   setListMappings: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   setListNames: React.Dispatch<React.SetStateAction<Record<string, string>>>;
@@ -930,6 +980,12 @@ function HardcoverTabContent({
           hint="Sync reading progress percentages bidirectionally between Hardcover and Grimmory when Hardcover is connected."
           checked={Boolean(syncSettings.syncProgressEnabled ?? true)}
           onChange={(v) => setSyncSettings((s) => ({ ...s, syncProgressEnabled: v }))}
+        />
+        <ToggleField
+          label="Owned Import"
+          hint="Also check your Hardcover Owned list. When an owned edition's format (book vs. audiobook) differs from your current edition, track both separately."
+          checked={ownedImportEnabled}
+          onChange={setOwnedImportEnabled}
         />
       </div>
 

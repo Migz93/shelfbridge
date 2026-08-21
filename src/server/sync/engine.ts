@@ -12,7 +12,8 @@ import {
   pruneGrimmoryUserStatesMissingFromFetch,
   pruneHardcoverSourcesMissingFromFetch,
   pruneHardcoverUserStatesMissingFromFetch,
-  pruneOrphanedHardcoverUserStates
+  pruneOrphanedHardcoverUserStates,
+  pruneOrphanedHardcoverUserStatesForBooks
 } from "./pruning.js";
 import { cacheGrimmoryCover, cacheSourceCover, refreshStaleGrimmoryCovers } from "./covers.js";
 import { syncGoodreadsShelvesToGrimmory, syncListsToShelves } from "./shelves.js";
@@ -87,6 +88,7 @@ export async function runSyncImpl(
              h.sync_list_id as hardcover_sync_list_id,
              h.sync_list_name as hardcover_sync_list_name,
              h.target_shelf_name as hardcover_target_shelf_name,
+             h.owned_import_enabled as hardcover_owned_import_enabled,
              gr.goodreads_user_id, gr.enabled as goodreads_enabled,
              gr.sync_shelf_name as goodreads_sync_shelf_name,
              gr.target_shelf_name as goodreads_target_shelf_name,
@@ -114,6 +116,7 @@ export async function runSyncImpl(
     const conflictStrategy = (profile["conflict_strategy"] as ConflictStrategy | null)
       ?? (getSetting("sync.conflictStrategy", "latest_wins") as ConflictStrategy);
     const writeTagEnabled = !!(profile["sync_write_tag_enabled"] as number | null);
+    const ownedImportEnabled = !!(profile["hardcover_owned_import_enabled"] as number | null);
     const writeTagName = sourceTagName(username, profile["display_name"] as string | null);
 
     const hasGrimmory = !!(baseUrl && username && password);
@@ -133,18 +136,20 @@ export async function runSyncImpl(
     // Phase D's reconcile can be scoped to just what this profile's sync touched
     // instead of the whole catalog. upsertBookSource is injected as plain context
     // data by both persist* functions (see grimmory-sources.ts/hardcover-sources.ts),
-    // so wrapping it here needs no changes to either.
+    // so wrapping it here needs no changes to either. Must forward every
+    // parameter, including bucket — dropping it would silently collapse
+    // hardcover-sources.ts's 'owned' bucket writes onto the 'primary' row.
     const phaseDTouchedSourceIds: number[] = [];
-    const trackingUpsertBookSource: typeof upsertBookSource = (db, sourceType, instanceId, externalId, fields) => {
-      const id = upsertBookSource(db, sourceType, instanceId, externalId, fields);
+    const trackingUpsertBookSource: typeof upsertBookSource = (db, sourceType, instanceId, externalId, fields, bucket) => {
+      const id = upsertBookSource(db, sourceType, instanceId, externalId, fields, bucket);
       phaseDTouchedSourceIds.push(id);
       return id;
     };
 
     await persistGrimmorySources({ db, profileId, grimmoryAvailable, grimmoryBooks, upsertBookSource: trackingUpsertBookSource, enqueueImageCacheTask, cacheSourceCover, sqliteNow, grimmoryToken, cacheGrimmoryCover, baseUrl });
 
-    await persistHardcoverSources({ db, profileId, hcBooks, hcEditions, upsertBookSource: trackingUpsertBookSource, cacheSourceCover, sqliteNow,
-      hasHardcover, sharedHardcoverOwnership,
+    const hardcoverSourcesResult = await persistHardcoverSources({ db, profileId, hcBooks, hcEditions, hcLists, ownedImportEnabled, upsertBookSource: trackingUpsertBookSource, cacheSourceCover, sqliteNow,
+      hasHardcover, grimmoryAvailable, sharedHardcoverOwnership,
       inferHardcoverMediaType, firstHardcoverSeries, normalizeEditionFormat, enqueueImageCacheTask,
       pruneHardcoverUserStatesMissingFromFetch, pruneHardcoverSourcesMissingFromFetch, hardcoverSnapshotStatus });
 
@@ -158,6 +163,31 @@ export async function runSyncImpl(
     // before every sync's own reconcile, means that stale row is never present
     // to cause the conflict in the first place.
     if (hasHardcover) {
+      // Same reasoning as the legacy-row cleanup right below: a book left with
+      // a removed 'owned' row and no other surviving source needs the same
+      // immediate reconcile-or-remove treatment, not just whatever the next
+      // daily full reconcile happens to notice.
+      if (hardcoverSourcesResult.deletedSecondarySourceIds.length > 0) {
+        // Must run before cleanupAfterSourceRemoval: a book whose only
+        // book_sources row was just deleted this run (an 'owned'/'shared' row
+        // no longer justified) can still be carrying a stale local-only
+        // Hardcover state from a previous run. deleteOrphanedBooks (inside
+        // cleanupAfterSourceRemoval) only removes a book once it has BOTH
+        // zero sources and zero user states — without pruning that state
+        // first, the now-sourceless book survives as a permanent ghost
+        // canonical, since nothing re-checks it once the later, post-reconcile
+        // prune finally clears the stale state.
+        //
+        // Scoped to affectedBookIds specifically, NOT the profile-wide
+        // pruneOrphanedHardcoverUserStates below — a blanket sweep this early
+        // would also delete state still stranded on a legacy
+        // (source_instance_id IS NULL) Hardcover row, before
+        // cleanupLegacyHardcoverSources gets its own chance, right below, to
+        // migrate that state onto a live counterpart instead of losing it.
+        pruneOrphanedHardcoverUserStatesForBooks(db, profileId, hardcoverSourcesResult.affectedBookIds);
+        cleanupAfterSourceRemoval(db, hardcoverSourcesResult.affectedBookIds, hardcoverSourcesResult.deletedSecondarySourceIds);
+      }
+
       const legacyCleanup = cleanupLegacyHardcoverSources(db);
       if (legacyCleanup.deleted > 0) {
         // A deleted legacy row's book can end up with zero remaining sources —
