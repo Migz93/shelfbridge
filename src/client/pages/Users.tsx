@@ -432,10 +432,18 @@ export function UserDetailPage() {
   // testConnection's closure otherwise captures whatever this was at the
   // moment Test was clicked — if the user flips the toggle while the test
   // request is still in flight, that stale closure value would overwrite
-  // their newer change when restoring it after loadProfile(). A ref always
-  // reflects the latest value regardless of when the closure was created.
+  // their newer change when restoring it after loadProfile(). A ref tracks
+  // the user's own latest toggle intent so testConnection can read it after
+  // the fact; updated synchronously by the toggle's own handler below
+  // (setHardcoverOwnedImportEnabledFromToggle), not by a useEffect — an
+  // effect only runs after the next render commits, which is still late
+  // enough for the test request to have already resolved and read a stale
+  // .current in between the user's click and that commit.
   const hardcoverOwnedImportEnabledRef = useRef(hardcoverOwnedImportEnabled);
-  useEffect(() => { hardcoverOwnedImportEnabledRef.current = hardcoverOwnedImportEnabled; }, [hardcoverOwnedImportEnabled]);
+  const setHardcoverOwnedImportEnabledFromToggle = useCallback((v: boolean) => {
+    hardcoverOwnedImportEnabledRef.current = v;
+    setHardcoverOwnedImportEnabled(v);
+  }, []);
   const [hardcoverListMappings, setHardcoverListMappings] = useState<Record<string, string>>({});
   const [hardcoverListNames, setHardcoverListNames] = useState<Record<string, string>>({});
   const [hardcoverMappingsLoaded, setHardcoverMappingsLoaded] = useState(false);
@@ -719,7 +727,7 @@ export function UserDetailPage() {
               targetShelfName={hardcoverTargetShelfName}
               setTargetShelfName={setHardcoverTargetShelfName}
               ownedImportEnabled={hardcoverOwnedImportEnabled}
-              setOwnedImportEnabled={setHardcoverOwnedImportEnabled}
+              setOwnedImportEnabled={setHardcoverOwnedImportEnabledFromToggle}
               listMappings={hardcoverListMappings}
               setListMappings={setHardcoverListMappings}
               setListNames={setHardcoverListNames}
