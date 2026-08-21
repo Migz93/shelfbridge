@@ -150,9 +150,13 @@ const transports: winston.transport[] = [
   new RingTransport()
 ];
 
-// Add disk transports — skip gracefully if the log dir is not writable (dev without a mounted volume)
+// Add disk transports — skip gracefully if the log dir is not writable (dev without a mounted volume).
+// mkdirSync alone doesn't catch this: it succeeds without error when LOG_DIR already exists but is
+// unwritable, so an explicit access check is required — otherwise DailyRotateFile's async EACCES on
+// its first write would go unhandled and crash the process instead of falling back cleanly.
 try {
   fs.mkdirSync(LOG_DIR, { recursive: true });
+  fs.accessSync(LOG_DIR, fs.constants.W_OK);
 
   transports.push(
     // Human-readable log file (7-day rotation)
@@ -187,4 +191,11 @@ export const logger = winston.createLogger({
     winston.format.json()
   ),
   transports
+});
+
+// A disk transport can still fail after startup (disk full, permissions revoked underneath the
+// mount) even though the access check above passed. Winston re-emits unhandled transport errors on
+// the logger; without a listener here, Node treats that as an unhandled "error" event and crashes.
+logger.on("error", (err) => {
+  console.error("Logger transport error", err);
 });
