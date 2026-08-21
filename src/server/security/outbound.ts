@@ -208,7 +208,10 @@ async function fetchFollowingSameOriginRedirects(url: string, init: RequestInit)
     // This response is a redirect being followed or rejected, not returned to
     // the caller — its body is never read, so it must be released here or the
     // connection stays pooled until GC for every hop of a redirect chain.
-    await res.body?.cancel();
+    // Best-effort: an already-errored body (e.g. a connection drop after
+    // headers) rejects on cancel() too, and that must not fail an otherwise
+    // valid redirect.
+    await res.body?.cancel().catch(() => {});
     if (nextUrl.origin !== originalOrigin) {
       throw new UnsafeIntegrationUrlError("Integration redirected to a different origin");
     }
