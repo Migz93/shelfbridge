@@ -429,16 +429,18 @@ export function UserDetailPage() {
   const [hardcoverSyncListName, setHardcoverSyncListName] = useState<string | null>(null);
   const [hardcoverTargetShelfName, setHardcoverTargetShelfName] = useState<string | null>(null);
   const [hardcoverOwnedImportEnabled, setHardcoverOwnedImportEnabled] = useState(false);
-  // testConnection's closure otherwise captures whatever this was at the
-  // moment Test was clicked — if the user flips the toggle while the test
-  // request is still in flight, that stale closure value would overwrite
-  // their newer change when restoring it after loadProfile(). A ref tracks
-  // the user's own latest toggle intent so testConnection can read it after
-  // the fact; updated synchronously by the toggle's own handler below
-  // (setHardcoverOwnedImportEnabledFromToggle), not by a useEffect — an
-  // effect only runs after the next render commits, which is still late
-  // enough for the test request to have already resolved and read a stale
-  // .current in between the user's click and that commit.
+  // Tracks the user's own latest toggle intent, independent of React state
+  // updates, so testConnection() can restore it after a test-triggered
+  // loadProfile() reload without losing a change made while that request
+  // was still in flight (testConnection's own closure only sees whatever
+  // hardcoverOwnedImportEnabled was at the moment Test was clicked). Updated
+  // synchronously by the toggle's own handler below
+  // (setHardcoverOwnedImportEnabledFromToggle) — not by a useEffect, since
+  // an effect only runs after the next render commits, which is still late
+  // enough for the test request to resolve first and read a stale .current.
+  // An ordinary loadProfile() call (initial mount, after Save) instead
+  // brings the ref back in sync with the real persisted value, same as the
+  // state — see loadProfile's own preserveOwnedImportToggle parameter.
   const hardcoverOwnedImportEnabledRef = useRef(hardcoverOwnedImportEnabled);
   const setHardcoverOwnedImportEnabledFromToggle = useCallback((v: boolean) => {
     hardcoverOwnedImportEnabledRef.current = v;
@@ -457,7 +459,15 @@ export function UserDetailPage() {
   const [absEnabled, setAbsEnabled] = useState(false);
   const [syncSettings, setSyncSettings] = useState<Partial<SyncSettings>>({});
 
-  async function loadProfile() {
+  // preserveOwnedImportToggle: true only for the reload testConnection()
+  // triggers after successfully testing an already-persisted connection —
+  // that reload must keep whatever the user's own last toggle interaction
+  // set (tracked in the ref, updated synchronously by the toggle's own
+  // handler) rather than overwrite it with the just-fetched persisted
+  // value. Every other call site (initial mount, after Save) is an
+  // ordinary load: the ref is brought back in sync with the real persisted
+  // value there, same as the state.
+  async function loadProfile(preserveOwnedImportToggle = false) {
     if (!Number.isFinite(profileId)) {
       setError("User not found");
       setLoading(false);
@@ -478,7 +488,12 @@ export function UserDetailPage() {
       setHardcoverSyncListId(p.hardcover?.syncListId ?? null);
       setHardcoverSyncListName(p.hardcover?.syncListName ?? null);
       setHardcoverTargetShelfName(p.hardcover?.targetShelfName ?? null);
-      setHardcoverOwnedImportEnabled(p.hardcover?.ownedImportEnabled ?? false);
+      if (preserveOwnedImportToggle) {
+        setHardcoverOwnedImportEnabled(hardcoverOwnedImportEnabledRef.current);
+      } else {
+        hardcoverOwnedImportEnabledRef.current = p.hardcover?.ownedImportEnabled ?? false;
+        setHardcoverOwnedImportEnabled(p.hardcover?.ownedImportEnabled ?? false);
+      }
       setGoodreadsId(p.goodreads?.goodreadsUserId ?? "");
       setGoodreadsEnabled(p.goodreads?.enabled ?? false);
       setGoodreadsSyncShelfName(p.goodreads?.syncShelfName ?? null);
@@ -596,18 +611,14 @@ export function UserDetailPage() {
         : type === "goodreads" ? Boolean(profile?.goodreads)
         : type === "audiobookshelf" ? Boolean(profile?.audiobookshelf)
         : true;
-      if (result.ok && isPersisted) {
-        // loadProfile() overwrites every field on every tab with the
-        // server's persisted values, including hardcoverOwnedImportEnabled —
-        // testing ANY already-persisted connection (not just Hardcover's own)
-        // would otherwise silently discard an unsaved Owned Import toggle
-        // flip made just before clicking Test. Read the ref rather than the
-        // closure's own value: the test request can still be in flight when
-        // the user flips the toggle, and the closure only sees whatever the
-        // value was at the moment Test was clicked.
-        await loadProfile();
-        setHardcoverOwnedImportEnabled(hardcoverOwnedImportEnabledRef.current);
-      }
+      // loadProfile() overwrites every field on every tab with the server's
+      // persisted values, including hardcoverOwnedImportEnabled — testing
+      // ANY already-persisted connection (not just Hardcover's own) would
+      // otherwise silently discard an unsaved Owned Import toggle flip made
+      // just before clicking Test. preserveOwnedImportToggle = true tells
+      // loadProfile() to restore the ref's value (the user's latest toggle
+      // intent) instead of the just-fetched persisted one.
+      if (result.ok && isPersisted) await loadProfile(true);
     } catch (e) { setTestResults((r) => ({ ...r, [type]: { ok: false, message: e instanceof Error ? e.message : String(e) } })); }
     finally { setTesting(null); }
   }
