@@ -16,6 +16,7 @@ import { getGrimmoryToken, writeGrimmoryExternalIds } from "../sync/grimmory.js"
 import { logger } from "../logger.js";
 import { reconcileBookIdentities } from "../db/bookIdentity.js";
 import { cleanupImageCacheForSourceIds } from "../db/imageCacheMaintenance.js";
+import { runExclusiveOfSyncs } from "../sync/sync-queue.js";
 import { normalizeExternalId, identifiersEqual } from "../identifiers.js";
 import { parsePositiveId, validationErrorResponse, writeGrimmoryIdSchema } from "../validation.js";
 import { hasIdentityReviewConflict } from "../sync/identity-review.js";
@@ -1157,10 +1158,12 @@ router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
     // handling above, just one step later in the flow.
     let reconciled: { book_id: number } | undefined;
     try {
-      db.transaction(() => {
-        const touchedSourceIds = (db.prepare("SELECT id FROM book_sources WHERE book_id IN (?, ?)").all(bookId, duplicateId) as { id: number }[]).map((row) => row.id);
-        reconcileBookIdentities(db, { sourceIds: touchedSourceIds });
-      })();
+      await runExclusiveOfSyncs(async () => {
+        db.transaction(() => {
+          const touchedSourceIds = (db.prepare("SELECT id FROM book_sources WHERE book_id IN (?, ?)").all(bookId, duplicateId) as { id: number }[]).map((row) => row.id);
+          reconcileBookIdentities(db, { sourceIds: touchedSourceIds });
+        })();
+      });
       // plans[0] is not necessarily one of the plans that actually succeeded —
       // only a succeeded plan's Grimmory row was written with the new external
       // IDs, so it's the only one guaranteed to have merged into the right book.
@@ -1318,8 +1321,10 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
       logger.info("Wrote Hardcover ID to Grimmory metadata", { bookId, profileId, grimmoryBookId, hardcoverBookId, hardcoverId });
     }
 
-    const touchedSourceIds = (db.prepare("SELECT id FROM book_sources WHERE book_id = ?").all(bookId) as { id: number }[]).map((row) => row.id);
-    reconcileBookIdentities(db, { sourceIds: touchedSourceIds });
+    await runExclusiveOfSyncs(async () => {
+      const touchedSourceIds = (db.prepare("SELECT id FROM book_sources WHERE book_id = ?").all(bookId) as { id: number }[]).map((row) => row.id);
+      reconcileBookIdentities(db, { sourceIds: touchedSourceIds });
+    });
     res.json({ ok: true });
   } catch (err) {
     logger.warn("Failed to write external ID to Grimmory", { bookId, profileId, source, error: err });

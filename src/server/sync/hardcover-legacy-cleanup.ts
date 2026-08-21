@@ -41,9 +41,15 @@ export function cleanupLegacyHardcoverSources(db: Db): { deleted: number; affect
 
   if (legacyRows.length === 0) return { deleted: 0, affectedBookIds: [], deletedSourceIds: [] };
 
+  // source_bucket = 'primary' only: 'owned'/'shared' rows are secondary,
+  // derived rows for a *different* canonical book (the Owned-list bucket book
+  // or a shared-sibling book — see docs/books-and-identity.md), not the real
+  // one-to-one Hardcover source this legacy row's state should migrate onto.
+  // Without this filter, a book with multiple buckets for the same external_id
+  // could nondeterministically match whichever row SQLite returns first.
   const liveCounterparts = db.prepare(`
     SELECT source_instance_id AS profile_id, book_id FROM book_sources
-    WHERE source_type = 'hardcover' AND source_instance_id IS NOT NULL AND external_id = ?
+    WHERE source_type = 'hardcover' AND source_instance_id IS NOT NULL AND external_id = ? AND source_bucket = 'primary'
   `);
   const stateProfilesOnBook = db.prepare(`
     SELECT DISTINCT profile_id FROM user_book_states WHERE book_id = ? AND source_type = 'hardcover'

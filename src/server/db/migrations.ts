@@ -477,8 +477,17 @@ const migration6: Migration = {
       "audiobookshelf_duration", "audiobookshelf_file_path", "audiobookshelf_asin",
       "audiobookshelf_runtime_validated", "audiobookshelf_runtime_delta",
       "last_sync_at", "last_sync_decision", "last_modified_at", "created_at"
-    ].filter((column) => existingColumns.has(column));
-    const columnList = copyColumns.join(", ");
+    ];
+    const droppedColumns = [...existingColumns].filter((column) => !copyColumns.includes(column));
+    if (droppedColumns.length > 0) {
+      // Not necessarily a bug — this rebuild's target shape is the flattened
+      // v14 baseline, so an old column genuinely retired since then is
+      // expected to be dropped here. But an unrecognized column could also
+      // mean copyColumns is stale relative to a newer schema, so surface it
+      // rather than silently discarding whatever data it held.
+      logger.warn("Migration 6: dropping book_sources column(s) not in the target schema", { columns: droppedColumns });
+    }
+    const columnList = copyColumns.filter((column) => existingColumns.has(column)).join(", ");
 
     db.exec(`
       CREATE TABLE book_sources_new (
