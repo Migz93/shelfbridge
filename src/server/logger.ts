@@ -88,8 +88,10 @@ export function getRecentLogs(limit = 200): LogEntry[] {
   return clamped === 0 ? [] : ring.slice(-clamped);
 }
 
+const LOG_DIR = path.join(DATA_DIR, "logs");
+
 /** Stable path to the machine-readable JSON log file (via symlink). */
-export const MACHINE_LOG_PATH = path.join(DATA_DIR, ".machinelogs.json");
+export const MACHINE_LOG_PATH = path.join(LOG_DIR, ".machinelogs.json");
 
 /** Reads a bounded recent tail, avoiding a synchronous full-log read per request. */
 export async function readRecentMachineLogs(filePath = MACHINE_LOG_PATH, limit = LOG_RING_SIZE): Promise<LogEntry[]> {
@@ -137,8 +139,44 @@ export type Logger = {
   error: (message: string, meta?: Record<string, unknown>) => void;
 };
 
-// Ensure DATA_DIR exists before setting up file transports
-try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch { /* ignore */ }
+const transports: winston.transport[] = [
+  new winston.transports.Console({
+    format: winston.format.combine(
+      winston.format.colorize(),
+      winston.format.simple()
+    )
+  }),
+  // In-memory ring buffer (fallback when log file is not yet available)
+  new RingTransport()
+];
+
+// Add disk transports — skip gracefully if the log dir is not writable (dev without a mounted volume)
+try {
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+
+  transports.push(
+    // Human-readable log file (7-day rotation)
+    new DailyRotateFile({
+      filename: path.join(LOG_DIR, "shelfbridge-%DATE%.log"),
+      datePattern: "YYYY-MM-DD",
+      maxFiles: "7d",
+      maxSize: "20m",
+      zippedArchive: true,
+      createSymlink: true,
+      symlinkName: "shelfbridge.log"
+    }),
+    // Machine-readable JSON log with a stable symlink for the log viewer API
+    new DailyRotateFile({
+      filename: path.join(LOG_DIR, ".machinelogs-%DATE%.json"),
+      datePattern: "YYYY-MM-DD",
+      maxFiles: "3d",
+      maxSize: "20m",
+      zippedArchive: true,
+      createSymlink: true,
+      symlinkName: ".machinelogs.json"
+    })
+  );
+} catch { /* log dir not writable — console + ring buffer only */ }
 
 export const logger = winston.createLogger({
   level: process.env["LOG_LEVEL"] ?? "info",
@@ -148,30 +186,5 @@ export const logger = winston.createLogger({
     redactFormat(),
     winston.format.json()
   ),
-  transports: [
-    new winston.transports.Console({
-      format: winston.format.combine(
-        winston.format.colorize(),
-        winston.format.simple()
-      )
-    }),
-    // Human-readable log file (7-day rotation)
-    new DailyRotateFile({
-      filename: path.join(DATA_DIR, "shelfbridge-%DATE%.log"),
-      datePattern: "YYYY-MM-DD",
-      maxFiles: "7d",
-      maxSize: "20m"
-    }),
-    // Machine-readable JSON log with a stable symlink for the log viewer API
-    new DailyRotateFile({
-      filename: path.join(DATA_DIR, ".machinelogs-%DATE%.json"),
-      datePattern: "YYYY-MM-DD",
-      maxFiles: "3d",
-      maxSize: "20m",
-      createSymlink: true,
-      symlinkName: ".machinelogs.json"
-    }),
-    // In-memory ring buffer (fallback when log file is not yet available)
-    new RingTransport()
-  ]
+  transports
 });
