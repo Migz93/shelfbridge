@@ -31,7 +31,10 @@ export function probableDuplicateAuthorKey(value: string | null | undefined): st
 }
 
 export function normalizeDuplicateSeriesNumber(value: string | null | undefined): string | null {
-  const text = normalizeReviewText(value);
-  if (!text) return null;
-  return text.match(/\d+(?:\.\d+)?/)?.[0] ?? text;
+  // Extract the decimal number from the raw value first — normalizeReviewText
+  // strips "." along with all other punctuation, which would collapse "1.5"
+  // to "1 5" and lose the fractional part before it could be matched.
+  const decimalMatch = value?.match(/\d+(?:\.\d+)?/)?.[0];
+  if (decimalMatch) return decimalMatch;
+  return normalizeReviewText(value);
 }
