@@ -7,6 +7,7 @@ import { testGoodreadsUser, fetchGoodreadsCustomShelves } from "../sync/goodread
 import { testAudiobookshelfToken } from "../sync/audiobookshelf.js";
 import type { HardcoverListMapping, GoodreadsShelfMapping } from "../../shared/types.js";
 import { reconcileBookIdentities } from "../db/bookIdentity.js";
+import { runExclusiveOfSyncs } from "../sync/sync-queue.js";
 import { logger } from "../logger.js";
 import { validateIntegrationUrl } from "../security/outbound.js";
 import {
@@ -78,7 +79,7 @@ function profileSourceIds(db: Database.Database, profileId: number): number[] {
     .map((row) => row.id);
 }
 
-function cleanupHardcoverSourceData(profileId: number): void {
+async function cleanupHardcoverSourceData(profileId: number): Promise<void> {
   const db = getDb();
   const result = db.transaction(() => {
     // Delete the HC user state for this profile
@@ -104,11 +105,21 @@ function cleanupHardcoverSourceData(profileId: number): void {
     return { deleted, detached };
   })();
 
-  reconcileBookIdentities(db, { sourceIds: profileSourceIds(db, profileId) });
+  // The connection row and local state are already deleted above — a
+  // reconcile failure here must not fail the whole PATCH request or leave an
+  // unhandled rejection in the caller; the next sync's own reconcile will
+  // catch up regardless.
+  try {
+    await runExclusiveOfSyncs(async () => {
+      reconcileBookIdentities(db, { sourceIds: profileSourceIds(db, profileId) });
+    });
+  } catch (err) {
+    logger.warn("Failed to reconcile after cleaning local Hardcover source data", { profileId, error: err });
+  }
   logger.info("Cleaned local Hardcover source data after disabling connection", { profileId, ...result });
 }
 
-function cleanupGoodreadsSourceData(profileId: number): void {
+async function cleanupGoodreadsSourceData(profileId: number): Promise<void> {
   const db = getDb();
   const result = db.transaction(() => {
     // Delete the GR user state for this profile
@@ -122,7 +133,13 @@ function cleanupGoodreadsSourceData(profileId: number): void {
     return { deleted, detached: 0 };
   })();
 
-  reconcileBookIdentities(db, { sourceIds: profileSourceIds(db, profileId) });
+  try {
+    await runExclusiveOfSyncs(async () => {
+      reconcileBookIdentities(db, { sourceIds: profileSourceIds(db, profileId) });
+    });
+  } catch (err) {
+    logger.warn("Failed to reconcile after cleaning local Goodreads source data", { profileId, error: err });
+  }
   logger.info("Cleaned local Goodreads source data after disabling connection", { profileId, ...result });
 }
 
@@ -270,7 +287,7 @@ router.post("/", (req, res) => {
 });
 
 // PATCH /api/profiles/:id
-router.patch("/:id", (req, res) => {
+router.patch("/:id", async (req, res) => {
   const id = parsePositiveId(req.params["id"]);
   if (id === null) {
     res.status(400).json({ error: "Invalid profile id" });
@@ -320,7 +337,7 @@ router.patch("/:id", (req, res) => {
     const h = body.hardcover;
     if (h.enabled === false) {
       db.prepare("DELETE FROM hardcover_connections WHERE profile_id = ?").run(id);
-      cleanupHardcoverSourceData(id);
+      await cleanupHardcoverSourceData(id);
       logger.info("Removed Hardcover connection", { profileId: id });
     } else {
     const existing = db.prepare("SELECT id FROM hardcover_connections WHERE profile_id = ?").get(id);
@@ -364,7 +381,7 @@ router.patch("/:id", (req, res) => {
         vals.push(id);
         db.prepare(`UPDATE goodreads_connections SET ${updates.join(", ")} WHERE profile_id = ?`).run(...vals);
       }
-      if (gr.enabled === false) cleanupGoodreadsSourceData(id);
+      if (gr.enabled === false) await cleanupGoodreadsSourceData(id);
     } else {
       db.prepare(`
         INSERT INTO goodreads_connections (profile_id, goodreads_user_id, enabled, sync_shelf_name, target_shelf_name)
@@ -372,7 +389,7 @@ router.patch("/:id", (req, res) => {
       `).run(
         id, gr.goodreadsUserId ?? "", gr.enabled ? 1 : 0, gr.syncShelfName?.trim() || null, gr.targetShelfName?.trim() || null
       );
-      if (gr.enabled === false) cleanupGoodreadsSourceData(id);
+      if (gr.enabled === false) await cleanupGoodreadsSourceData(id);
     }
   }
 

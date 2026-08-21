@@ -387,7 +387,12 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
     }
     for (const pending of pendingGoodreadsOnly) {
       const newSource = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(pending.newSourceId) as { book_id: number } | undefined;
-      if (!newSource?.book_id) continue;
+      if (!newSource?.book_id) {
+        logger.warn("Goodreads-only book has no book_id after reconcile; skipping its user state", {
+          profileId, goodreadsId: pending.goodreadsId, title: pending.title, sourceId: pending.newSourceId
+        });
+        continue;
+      }
       db.prepare(`
         INSERT OR IGNORE INTO user_book_states
           (book_id, profile_id, source_type, rating, sync_health,
