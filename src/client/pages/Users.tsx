@@ -429,6 +429,13 @@ export function UserDetailPage() {
   const [hardcoverSyncListName, setHardcoverSyncListName] = useState<string | null>(null);
   const [hardcoverTargetShelfName, setHardcoverTargetShelfName] = useState<string | null>(null);
   const [hardcoverOwnedImportEnabled, setHardcoverOwnedImportEnabled] = useState(false);
+  // testConnection's closure otherwise captures whatever this was at the
+  // moment Test was clicked — if the user flips the toggle while the test
+  // request is still in flight, that stale closure value would overwrite
+  // their newer change when restoring it after loadProfile(). A ref always
+  // reflects the latest value regardless of when the closure was created.
+  const hardcoverOwnedImportEnabledRef = useRef(hardcoverOwnedImportEnabled);
+  useEffect(() => { hardcoverOwnedImportEnabledRef.current = hardcoverOwnedImportEnabled; }, [hardcoverOwnedImportEnabled]);
   const [hardcoverListMappings, setHardcoverListMappings] = useState<Record<string, string>>({});
   const [hardcoverListNames, setHardcoverListNames] = useState<Record<string, string>>({});
   const [hardcoverMappingsLoaded, setHardcoverMappingsLoaded] = useState(false);
@@ -586,10 +593,12 @@ export function UserDetailPage() {
         // server's persisted values, including hardcoverOwnedImportEnabled —
         // testing ANY already-persisted connection (not just Hardcover's own)
         // would otherwise silently discard an unsaved Owned Import toggle
-        // flip made just before clicking Test.
-        const pendingOwnedImportEnabled = hardcoverOwnedImportEnabled;
+        // flip made just before clicking Test. Read the ref rather than the
+        // closure's own value: the test request can still be in flight when
+        // the user flips the toggle, and the closure only sees whatever the
+        // value was at the moment Test was clicked.
         await loadProfile();
-        setHardcoverOwnedImportEnabled(pendingOwnedImportEnabled);
+        setHardcoverOwnedImportEnabled(hardcoverOwnedImportEnabledRef.current);
       }
     } catch (e) { setTestResults((r) => ({ ...r, [type]: { ok: false, message: e instanceof Error ? e.message : String(e) } })); }
     finally { setTesting(null); }
