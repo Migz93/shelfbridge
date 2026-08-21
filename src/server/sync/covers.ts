@@ -74,11 +74,18 @@ export async function fetchGrimmoryCoverBuffer(baseUrl: string, token: string, g
 // this source afterward, so book_sources.cover_cache_path landing here would
 // otherwise never propagate into the canonical books.cover_cache_path (see
 // bookIdentity.ts's canonicalValues/bestCoverRow) until the next unrelated
-// reconcile touches this book. Serialized via runExclusiveOfSyncs since this
-// can fire concurrently with an in-flight sync or the full-reconcile job.
-async function reconcileCoverSource(db: Db, sourceId: number): Promise<void> {
+// reconcile touches this book. The UPDATE and reconcile run together inside
+// the same runExclusiveOfSyncs+transaction so a sync can't interleave between
+// them and a reconcile failure can't leave cover_cache_path pointing at a
+// path nothing else will retry. Reconcile only fires when the UPDATE actually
+// changed the row, so re-caching an already-current path is a no-op.
+async function writeCoverPathAndReconcile(db: Db, sourceId: number, newPath: string): Promise<void> {
   await runExclusiveOfSyncs(async () => {
-    reconcileBookIdentities(db, { sourceIds: [sourceId] });
+    db.transaction(() => {
+      const { changes } = db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ? AND cover_cache_path IS NOT ?")
+        .run(newPath, sourceId, newPath);
+      if (changes > 0) reconcileBookIdentities(db, { sourceIds: [sourceId] });
+    })();
   });
 }
 
@@ -86,9 +93,8 @@ export async function cacheSourceCover(db: Db, sourceId: number, sourceType: str
   try {
     const localPath = await ensureCoverCached(sourceId, coverUrl);
     if (localPath) {
-      db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(localPath, sourceId);
+      await writeCoverPathAndReconcile(db, sourceId, localPath);
       logger.info("Cached source cover", { sourceType, sourceId });
-      await reconcileCoverSource(db, sourceId);
     }
   } catch (err) { logger.warn("Failed to cache source cover", { sourceType, sourceId, coverUrl, error: err }); }
 }
@@ -97,17 +103,15 @@ export async function cacheGrimmoryCover(db: Db, bookSourceId: number, baseUrl: 
   try {
     const cachedPath = getCachedCoverPath(bookSourceId);
     if (cachedPath) {
-      db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(cachedPath, bookSourceId);
-      await reconcileCoverSource(db, bookSourceId);
+      await writeCoverPathAndReconcile(db, bookSourceId, cachedPath);
       return;
     }
     const data = await fetchGrimmoryCoverBuffer(baseUrl, token, grimmoryBookId, mediaType);
     if (!data) { logger.info("No Grimmory cover available; leaving other source covers eligible", { bookSourceId, grimmoryBookId }); return; }
     const webPath = storeFetchedCover(bookSourceId, data);
     if (webPath) {
-      db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(webPath, bookSourceId);
+      await writeCoverPathAndReconcile(db, bookSourceId, webPath);
       logger.info("Cached Grimmory source cover", { bookSourceId, grimmoryBookId });
-      await reconcileCoverSource(db, bookSourceId);
     }
   } catch (err) { logger.warn("Failed to cache Grimmory source cover", { bookSourceId, grimmoryBookId, error: err }); }
 }
@@ -155,8 +159,7 @@ export async function refreshStaleGrimmoryCovers(): Promise<void> {
           if (!data) continue;
           const webPath = storeFetchedCover(sourceId, data);
           if (webPath) {
-            db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(webPath, sourceId);
-            await reconcileCoverSource(db, sourceId);
+            await writeCoverPathAndReconcile(db, sourceId, webPath);
             refreshed++;
           }
         } catch (error) {
