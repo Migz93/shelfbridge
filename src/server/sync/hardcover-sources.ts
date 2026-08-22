@@ -1,26 +1,68 @@
 import { logger } from "../logger.js";
-import { normalizeExternalId } from "../identifiers.js";
-export async function persistHardcoverSources(context: any): Promise<void> {
-  const { db, profileId, hcBooks, hcEditions, grimmoryAvailable, upsertBookSource, cacheSourceCover, sqliteNow,
-    hasHardcover, activeGrimmorySiblingsForHardcover, grimmoryBooks, absOwnedHardcoverBookIds,
+import type { getDb } from "../db/index.js";
+import type { HardcoverEdition, HardcoverList, HardcoverUserBook } from "./hardcover.js";
+import type { upsertBookSource } from "./repository.js";
+import type { cacheSourceCover } from "./covers.js";
+import type { enqueueImageCacheTask } from "../image-cache.js";
+import type {
+  firstHardcoverSeries,
+  inferHardcoverMediaType,
+  normalizeEditionFormat,
+  sqliteNow
+} from "./sync-utils.js";
+import { formatBucket } from "./sync-utils.js";
+import { bookOwnsSharedHardcoverRecord, absOwnsSharedHardcoverRecord, sharedHardcoverRecordFor, type SharedHardcoverOwnership } from "./hardcover-ownership.js";
+import type { pruneHardcoverSourcesMissingFromFetch, pruneHardcoverUserStatesMissingFromFetch, SourceSnapshotStatus } from "./pruning.js";
+import { getBookSource } from "./repository.js";
+
+type Db = ReturnType<typeof getDb>;
+
+export interface HardcoverSourcesContext {
+  db: Db;
+  profileId: number;
+  hcBooks: HardcoverUserBook[];
+  hcEditions: Map<number, HardcoverEdition>;
+  hcLists: HardcoverList[];
+  ownedImportEnabled: boolean;
+  upsertBookSource: typeof upsertBookSource;
+  cacheSourceCover: typeof cacheSourceCover;
+  sqliteNow: typeof sqliteNow;
+  hasHardcover: boolean;
+  grimmoryAvailable: boolean;
+  sharedHardcoverOwnership: SharedHardcoverOwnership;
+  inferHardcoverMediaType: typeof inferHardcoverMediaType;
+  firstHardcoverSeries: typeof firstHardcoverSeries;
+  normalizeEditionFormat: typeof normalizeEditionFormat;
+  enqueueImageCacheTask: typeof enqueueImageCacheTask;
+  pruneHardcoverUserStatesMissingFromFetch: typeof pruneHardcoverUserStatesMissingFromFetch;
+  pruneHardcoverSourcesMissingFromFetch: typeof pruneHardcoverSourcesMissingFromFetch;
+  hardcoverSnapshotStatus: SourceSnapshotStatus;
+}
+
+export interface PersistHardcoverSourcesResult {
+  /** book_sources ids deleted because their 'owned' or 'shared' secondary row was no longer justified this run — feed into cleanupAfterSourceRemoval, same as legacy-cleanup's deletions. */
+  deletedSecondarySourceIds: number[];
+  affectedBookIds: number[];
+}
+
+export async function persistHardcoverSources(context: HardcoverSourcesContext): Promise<PersistHardcoverSourcesResult> {
+  const { db, profileId, hcBooks, hcEditions, hcLists, ownedImportEnabled, upsertBookSource, cacheSourceCover, sqliteNow,
+    hasHardcover, grimmoryAvailable, sharedHardcoverOwnership,
     inferHardcoverMediaType, firstHardcoverSeries, normalizeEditionFormat, enqueueImageCacheTask,
     pruneHardcoverUserStatesMissingFromFetch, pruneHardcoverSourcesMissingFromFetch, hardcoverSnapshotStatus } = context;
+  const deletedSecondarySourceIds: number[] = [];
+  const affectedBookIds = new Set<number>();
+  const ownedList = hcLists.find((list) => list.slug === "owned");
+  const ownedEntriesByBookId = new Map(ownedList?.entries.map((entry) => [entry.book.id, entry]) ?? []);
+  const deleteBookSource = db.prepare("DELETE FROM book_sources WHERE id = ?");
 // ── Phase C: Write HC book_sources ─────────────────────────────────────
 if (hasHardcover) {
   for (const hcBook of hcBooks) {
     const userEdition = hcBook.edition_id ? hcEditions.get(hcBook.edition_id) : null;
-    const preferredSiblings = grimmoryAvailable
-      ? activeGrimmorySiblingsForHardcover(grimmoryBooks, hcBook.book.id)
-      : { book: null, audiobook: null };
-    const bookOwnsSharedHardcover = preferredSiblings.book !== null && preferredSiblings.audiobook !== null;
-    const normalizedHcBookId = normalizeExternalId(hcBook.book.id) ?? String(hcBook.book.id);
-    // Hardcover's "currently pinned" edition on a shared book can drift on
-    // its own (e.g. editing any read on the book appears to retarget it),
-    // which would otherwise bounce this row between audiobook/print every
-    // run. When we already know (from ABS) that this Hardcover book is the
-    // audiobook side, keep routing it there regardless of what edition
-    // Hardcover currently reports as current.
-    const absOwnsThisHardcoverBook = !bookOwnsSharedHardcover && absOwnedHardcoverBookIds.has(normalizedHcBookId);
+    // A book owns a shared work regardless of whether its audiobook sibling is
+    // active. Do not apply this to an ordinary book with no audio sibling.
+    const bookOwnsSharedHardcover = bookOwnsSharedHardcoverRecord(sharedHardcoverOwnership, hcBook.book.id);
+    const absOwnsThisHardcoverBook = absOwnsSharedHardcoverRecord(sharedHardcoverOwnership, hcBook.book.id);
     const inferredMediaType = inferHardcoverMediaType(hcBook, userEdition);
     // Hardcover uses one book ID for multiple active editions, while our
     // book_sources row is keyed by that book ID. Keep the row in the book
@@ -30,13 +72,12 @@ if (hasHardcover) {
       ? "physical"
       : absOwnsThisHardcoverBook
         ? "audiobook"
-        : inferredMediaType;
+      : inferredMediaType;
     // Only trust Hardcover's live "current edition" data for audio-specific
-    // fields (edition id, format, audio seconds, ASIN) when it actually
-    // looks like an audio edition this run. If ABS ownership forced
-    // mediaType to "audiobook" but Hardcover's current edition has drifted
-    // to something else, keep whatever audio edition data was already
-    // persisted rather than overwriting it with mismatched (e.g. ebook) data.
+    // fields (edition id, format, audio seconds, ASIN) when the current
+    // Hardcover edition is actually audio. Shared-book ownership is resolved
+    // from active Grimmory siblings above; an inactive ABS sibling must not
+    // rewrite the primary book record as audio.
     const trustCurrentEditionForAudio = mediaType !== "audiobook" || inferredMediaType === "audiobook";
     const edition = mediaType === "audiobook"
       ? hcBook.book.default_audio_edition
@@ -110,12 +151,170 @@ if (hasHardcover) {
         await cacheSourceCover(db, sourceId, "hardcover", coverUrl);
       });
     }
+
+    // Secondary-format signal: existence of a format the profile owns is
+    // independent of which format currently wins Hardcover's write-back slot
+    // (see hardcover-ownership.ts / docs/sync.md's "Existence vs. write
+    // arbitration" section) — so this always runs, never gated on
+    // bookOwnsSharedHardcover/absOwnsThisHardcoverBook.
+    //
+    // Two possible sources, in priority order:
+    //  1. A real Grimmory sibling of the opposite format already exists
+    //     (bucket 'shared') — its own data is more complete/accurate than a
+    //     guessed Owned-list edition, so prefer it whenever present.
+    //  2. Otherwise, a Hardcover Owned-list entry whose format disagrees with
+    //     the primary edition (bucket 'owned', unchanged from before).
+    const primaryBucket = formatBucket(mediaType);
+    // An unresolved primary format (mediaType null — the "Needs Fix"/hidden
+    // case) has no known bucket to compare against, so "disagreement" is
+    // meaningless here: skip secondary-row reconciliation entirely this run
+    // rather than silently treating the unknown primary as "book" (which the
+    // ternaries below would otherwise do), which could wrongly create a
+    // secondary row or wrongly delete an existing valid one. Any existing
+    // secondary row is left untouched until the primary format resolves.
+    if (primaryBucket === null) continue;
+    const sharedRecord = sharedHardcoverRecordFor(sharedHardcoverOwnership, hcBook.book.id);
+    const secondarySibling = primaryBucket === "audiobook" ? sharedRecord?.anyBook ?? null : sharedRecord?.anyAudiobook ?? null;
+
+    if (secondarySibling) {
+      const secondaryMediaType: "physical" | "ebook" | "audiobook" = primaryBucket === "audiobook"
+        ? (secondarySibling.mediaType === "ebook" ? "ebook" : "physical")
+        : "audiobook";
+      const sharedSourceFields: Record<string, unknown> = {
+        title,
+        author,
+        cover_url: null,
+        // Deliberately not copying the sibling's own ISBN: it isn't needed to
+        // reconcile onto the sibling's canonical (the bucket-prefixed
+        // source_hardcover_book_id key below already does that), and an
+        // audiobook edition can genuinely report the same ISBN as its print
+        // counterpart — since ISBN identity keys are NOT bucket-prefixed
+        // (see bookIdentity.ts's isbnIdentityKeys), copying it here would
+        // union this row right back into the primary/print canonical,
+        // undoing the split this mechanism exists to create.
+        isbn13: null,
+        isbn10: null,
+        series_name: series.name,
+        series_number: series.number,
+        source_hardcover_book_id: hcBook.book.id,
+        source_hardcover_slug: hardcoverSlug,
+        source_media_type: secondaryMediaType,
+        source_asin: null,
+        source_audible_asin: null,
+        source_edition_id: null,
+        source_edition_format: null,
+        hardcover_slug: hardcoverSlug,
+        hardcover_audio_seconds: null,
+        last_sync_at: sqliteNow()
+      };
+      upsertBookSource(db, "hardcover", profileId, hcBook.book.id, sharedSourceFields, "shared");
+      // A real sibling now covers this format — remove a stale Owned-list row
+      // rather than leave two secondary rows racing each other.
+      const staleOwned = getBookSource(db, "hardcover", profileId, hcBook.book.id, "owned");
+      if (staleOwned) {
+        deleteBookSource.run(staleOwned.id);
+        deletedSecondarySourceIds.push(staleOwned.id);
+        if (staleOwned.book_id !== null) affectedBookIds.add(staleOwned.book_id);
+      }
+    } else {
+      // Only remove a previously-justified 'shared' row when this run's
+      // Grimmory data is actually trustworthy. When Grimmory is unavailable,
+      // grimmoryBooks (and so sharedHardcoverOwnership) is empty for the
+      // whole run — every secondarySibling above would resolve to null
+      // regardless of whether the real sibling still exists, so deleting the
+      // row here unconditionally would strip a still-valid 'shared' row (and
+      // its canonical's local presence) on every transient Grimmory outage.
+      // Left alone, it's correctly re-evaluated the next time Grimmory data
+      // is actually available.
+      const existingShared = getBookSource(db, "hardcover", profileId, hcBook.book.id, "shared");
+      if (grimmoryAvailable) {
+        if (existingShared) {
+          deleteBookSource.run(existingShared.id);
+          deletedSecondarySourceIds.push(existingShared.id);
+          if (existingShared.book_id !== null) affectedBookIds.add(existingShared.book_id);
+        }
+      } else if (existingShared) {
+        // Grimmory is unavailable this run AND a 'shared' row is being
+        // preserved above rather than evaluated — secondarySibling being
+        // null can't be trusted as "no real sibling" here, so proceeding
+        // with the Owned-list logic below could create a competing 'owned'
+        // row right alongside the preserved 'shared' one (primary + shared +
+        // owned all at once). Defer Owned-list handling too, until Grimmory
+        // data is trustworthy again. This only applies when a 'shared' row
+        // is actually in play — a profile with no Grimmory connection at all
+        // (also grimmoryAvailable === false, but never has a 'shared' row to
+        // begin with) is unaffected and keeps working exactly as before.
+        continue;
+      }
+
+      const ownedEntry = ownedEntriesByBookId.get(hcBook.book.id);
+      const ownedMediaType = ownedImportEnabled && ownedEntry
+        ? inferHardcoverMediaType(hcBook, ownedEntry.edition, ownedEntry.editionId)
+        : null;
+      const ownedBucket = formatBucket(ownedMediaType);
+      const justified = ownedImportEnabled && ownedBucket !== null && ownedBucket !== primaryBucket;
+
+      if (justified && ownedEntry) {
+        const ownedEdition = ownedEntry.edition;
+        const ownedCoverUrl = ownedEdition?.image?.url ?? hcBook.book.image?.url ?? null;
+        const ownedAsin = ownedEdition?.asin?.trim() || null;
+        const ownedSourceFields: Record<string, unknown> = {
+          title,
+          author,
+          cover_url: ownedCoverUrl,
+          // Deliberately not copying the Owned-list edition's own ISBN — see
+          // the identical comment on the 'shared' bucket row above: it isn't
+          // needed for this row to reconcile onto its own canonical (the
+          // bucket-prefixed source_hardcover_book_id key does that), and an
+          // Owned-list edition can report the same ISBN as the primary
+          // edition, which would incorrectly re-merge the two canonicals via
+          // ISBN identity keys (not bucket-prefixed).
+          isbn13: null,
+          isbn10: null,
+          series_name: series.name,
+          series_number: series.number,
+          source_hardcover_book_id: hcBook.book.id,
+          source_hardcover_slug: hardcoverSlug,
+          source_media_type: ownedMediaType,
+          source_asin: ownedBucket === "book" ? ownedAsin : null,
+          source_audible_asin: ownedBucket === "audiobook" ? ownedAsin : null,
+          source_edition_id: ownedEntry.editionId,
+          source_edition_format: normalizeEditionFormat(ownedEdition?.edition_format),
+          hardcover_slug: hardcoverSlug,
+          hardcover_audio_seconds: ownedEdition?.audio_seconds ?? null,
+          last_sync_at: sqliteNow()
+        };
+        const ownedSourceId = upsertBookSource(db, "hardcover", profileId, hcBook.book.id, ownedSourceFields, "owned");
+        if (ownedCoverUrl) {
+          enqueueImageCacheTask(`cover:${ownedSourceId}`, async () => {
+            await cacheSourceCover(db, ownedSourceId, "hardcover", ownedCoverUrl);
+          });
+        }
+      } else {
+        // Not (or no longer) justified — the setting was turned off, the Owned
+        // entry/edition disappeared, or its format now matches the primary
+        // edition. Remove any previously-written 'owned' row rather than
+        // leaving it stranded on stale data forever (nothing else ever prunes
+        // it: it shares its external_id with the primary row, which is always
+        // still present in the fetch).
+        const existingOwned = getBookSource(db, "hardcover", profileId, hcBook.book.id, "owned");
+        if (existingOwned) {
+          deleteBookSource.run(existingOwned.id);
+          deletedSecondarySourceIds.push(existingOwned.id);
+          if (existingOwned.book_id !== null) affectedBookIds.add(existingOwned.book_id);
+        }
+      }
+    }
   }
 
   // Prune states first: source pruning preserves rows with a live state.
-  pruneHardcoverUserStatesMissingFromFetch(db, profileId, new Set(hcBooks.map((b: any) => b.book.id)), hardcoverSnapshotStatus);
-  pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set(hcBooks.map((b: any) => b.book.id)), hardcoverSnapshotStatus);
+  pruneHardcoverUserStatesMissingFromFetch(db, profileId, new Set(hcBooks.map((b) => b.book.id)), hardcoverSnapshotStatus);
+  pruneHardcoverSourcesMissingFromFetch(db, profileId, new Set(hcBooks.map((b) => b.book.id)), hardcoverSnapshotStatus);
   logger.info("Hardcover book_sources written", { profileId, count: hcBooks.length });
+  if (deletedSecondarySourceIds.length > 0) {
+    logger.info("Removed no-longer-justified Hardcover secondary (owned/shared) rows", { profileId, count: deletedSecondarySourceIds.length });
+  }
 }
 
+return { deletedSecondarySourceIds, affectedBookIds: Array.from(affectedBookIds) };
 }

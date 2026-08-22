@@ -7,57 +7,169 @@ import { testGoodreadsUser, fetchGoodreadsCustomShelves } from "../sync/goodread
 import { testAudiobookshelfToken } from "../sync/audiobookshelf.js";
 import type { HardcoverListMapping, GoodreadsShelfMapping } from "../../shared/types.js";
 import { reconcileBookIdentities } from "../db/bookIdentity.js";
+import { runExclusiveOfSyncs } from "../sync/sync-queue.js";
 import { logger } from "../logger.js";
-import { UnsafeIntegrationUrlError, validateIntegrationUrl } from "../security/outbound.js";
+import { validateIntegrationUrl } from "../security/outbound.js";
+import {
+  goodreadsMappingsSchema,
+  hardcoverMappingsSchema,
+  profileAudiobookshelfTestSchema,
+  profileCreateSchema,
+  profileGoodreadsTestSchema,
+  profileGrimmoryTestSchema,
+  profileHardcoverTestSchema,
+  profilePatchSchema,
+  parsePositiveId,
+  validationErrorResponse
+} from "../validation.js";
+import type Database from "better-sqlite3";
 
 const router = Router();
 
-function cleanupHardcoverSourceData(profileId: number): void {
-  const db = getDb();
-  const result = db.transaction(() => {
-    // Delete the HC user state for this profile
-    const deleted = db.prepare(`
-      DELETE FROM user_book_states WHERE profile_id = ? AND source_type = 'hardcover'
-    `).run(profileId).changes;
+type GoodreadsMappingInput = { goodreadsShelfName: string; grimmoryShelfName: string };
+type HardcoverMappingInput = { hardcoverListId: number; hardcoverListName: string; grimmoryShelfName: string };
 
-    // Reset sync_health for Grimmory user states on books that no longer have an HC match
-    const detached = db.prepare(`
-      UPDATE user_book_states SET
-        sync_health = 'missing',
-        last_sync_decision = 'hardcover_source_disabled',
-        last_modified_at = datetime('now')
-      WHERE profile_id = ? AND source_type = 'grimmory'
-        AND book_id NOT IN (
-          SELECT DISTINCT ubs.book_id FROM user_book_states ubs
-          JOIN book_sources bs ON bs.book_id = ubs.book_id AND bs.source_type = 'hardcover'
-          WHERE ubs.profile_id = ? AND ubs.source_type = 'grimmory'
-        )
-    `).run(profileId, profileId).changes;
-
-    db.prepare("DELETE FROM shelf_mappings WHERE profile_id = ? AND source = 'hardcover'").run(profileId);
-    return { deleted, detached };
-  })();
-
-  reconcileBookIdentities(db);
-  logger.info("Cleaned local Hardcover source data after disabling connection", { profileId, ...result });
+export function replaceGoodreadsShelfMappings(
+  db: Database.Database,
+  profileId: number,
+  mappings: GoodreadsMappingInput[]
+): void {
+  const replace = db.transaction(() => {
+    db.prepare("DELETE FROM shelf_mappings WHERE profile_id = ? AND source = 'goodreads' AND source_list_id IS NULL").run(profileId);
+    const insert = db.prepare(`
+      INSERT INTO shelf_mappings (profile_id, source, source_status, source_list_name, grimmory_shelf_name)
+      VALUES (?, 'goodreads', ?, ?, ?)
+    `);
+    for (const mapping of mappings) {
+      insert.run(profileId, mapping.goodreadsShelfName, mapping.goodreadsShelfName, mapping.grimmoryShelfName);
+    }
+  });
+  replace();
 }
 
-function cleanupGoodreadsSourceData(profileId: number): void {
+export function replaceHardcoverListMappings(
+  db: Database.Database,
+  profileId: number,
+  mappings: HardcoverMappingInput[]
+): void {
+  const replace = db.transaction(() => {
+    db.prepare("DELETE FROM shelf_mappings WHERE profile_id = ? AND source = 'hardcover' AND source_list_id IS NOT NULL").run(profileId);
+    const insert = db.prepare(`
+      INSERT INTO shelf_mappings (profile_id, source, source_status, source_list_id, source_list_name, grimmory_shelf_name)
+      VALUES (?, 'hardcover', ?, ?, ?, ?)
+    `);
+    for (const mapping of mappings) {
+      insert.run(profileId, mapping.hardcoverListName, String(mapping.hardcoverListId), mapping.hardcoverListName, mapping.grimmoryShelfName);
+    }
+  });
+  replace();
+}
+
+function profileExists(db: Database.Database, id: number): boolean {
+  return Boolean(db.prepare("SELECT 1 FROM profiles WHERE id = ?").get(id));
+}
+
+// A profile's own connections use its profile id as their source_instance_id
+// (see routes/books.ts's write-grimmory-id route for the same convention).
+// Chaptarr is the one source type this doesn't apply to (its instance is the
+// single, shared Chaptarr install, not per-profile) — irrelevant here since
+// neither cleanup below touches Chaptarr data.
+function profileSourceIds(db: Database.Database, profileId: number): number[] {
+  return (db.prepare("SELECT id FROM book_sources WHERE source_instance_id = ?").all(profileId) as { id: number }[])
+    .map((row) => row.id);
+}
+
+// The connection deletion, local-state cleanup, and reconcile all run inside
+// one runExclusiveOfSyncs task — a sync occupies the same queue for its
+// entire duration (see engine.ts's runSync), so serializing the whole disable
+// operation this way guarantees it never interleaves with an in-flight sync
+// that read the connection before it was removed: that sync's writes can
+// only land either fully before this task starts (and get deleted below) or
+// fully after it finishes (a stale write against a now-disabled connection,
+// which is a pre-existing risk independent of this cleanup's own timing).
+async function cleanupHardcoverSourceData(profileId: number): Promise<void> {
   const db = getDb();
-  const result = db.transaction(() => {
-    // Delete the GR user state for this profile
-    const deleted = db.prepare(`
-      DELETE FROM user_book_states WHERE profile_id = ? AND source_type = 'goodreads'
-    `).run(profileId).changes;
+  // The transaction (connection deletion + local-state cleanup) must
+  // propagate its errors — a failure there means the connection is not
+  // actually disabled, and the caller needs to know rather than report
+  // success. Reconcile is the one part that stays best-effort: the cleanup
+  // itself already fully committed by the time it runs, so a reconcile
+  // failure shouldn't undo reporting that success.
+  await runExclusiveOfSyncs(async () => {
+    const result = db.transaction(() => {
+      db.prepare("DELETE FROM hardcover_connections WHERE profile_id = ?").run(profileId);
 
-    // GR book_sources rows are book-level; leave them in place so the book identity is preserved.
-    // Just clean the shelf mappings for this profile.
-    db.prepare("DELETE FROM shelf_mappings WHERE profile_id = ? AND source = 'goodreads'").run(profileId);
-    return { deleted, detached: 0 };
-  })();
+      // Capture which books this profile actually had a Hardcover match on
+      // *before* deleting that state below — book_sources isn't a reliable
+      // signal for this (it persists regardless of this cleanup, so a stale
+      // same-profile row would wrongly look like "still matched" forever,
+      // and a different profile's row would wrongly suppress detachment
+      // entirely). The user_book_states row we're about to delete is the
+      // actual, precise record of "this profile had an HC match here."
+      const previouslyMatchedBookIds = (db.prepare(`
+        SELECT DISTINCT book_id FROM user_book_states WHERE profile_id = ? AND source_type = 'hardcover'
+      `).all(profileId) as { book_id: number }[]).map((row) => row.book_id);
 
-  reconcileBookIdentities(db);
-  logger.info("Cleaned local Goodreads source data after disabling connection", { profileId, ...result });
+      // Delete the HC user state for this profile
+      const deleted = db.prepare(`
+        DELETE FROM user_book_states WHERE profile_id = ? AND source_type = 'hardcover'
+      `).run(profileId).changes;
+
+      // Reset sync_health for this profile's Grimmory rows on exactly the
+      // books captured above — the ones that just lost their HC match.
+      // Batched: some supported SQLite builds cap bound parameters at 999,
+      // and a single profile can plausibly have that many Hardcover matches.
+      let detached = 0;
+      const DETACH_BATCH_SIZE = 500;
+      for (let i = 0; i < previouslyMatchedBookIds.length; i += DETACH_BATCH_SIZE) {
+        const batch = previouslyMatchedBookIds.slice(i, i + DETACH_BATCH_SIZE);
+        const placeholders = batch.map(() => "?").join(",");
+        detached += db.prepare(`
+          UPDATE user_book_states SET
+            sync_health = 'missing',
+            last_sync_decision = 'hardcover_source_disabled',
+            last_modified_at = datetime('now')
+          WHERE profile_id = ? AND source_type = 'grimmory' AND book_id IN (${placeholders})
+        `).run(profileId, ...batch).changes;
+      }
+
+      db.prepare("DELETE FROM shelf_mappings WHERE profile_id = ? AND source = 'hardcover'").run(profileId);
+      return { deleted, detached };
+    })();
+
+    try {
+      reconcileBookIdentities(db, { sourceIds: profileSourceIds(db, profileId) });
+    } catch (err) {
+      logger.warn("Failed to reconcile after cleaning local Hardcover source data", { profileId, error: err });
+    }
+    logger.info("Cleaned local Hardcover source data after disabling connection", { profileId, ...result });
+  });
+}
+
+async function cleanupGoodreadsSourceData(profileId: number): Promise<void> {
+  const db = getDb();
+  // See cleanupHardcoverSourceData: the cleanup transaction propagates its
+  // errors, only reconcile is best-effort.
+  await runExclusiveOfSyncs(async () => {
+    const result = db.transaction(() => {
+      // Delete the GR user state for this profile
+      const deleted = db.prepare(`
+        DELETE FROM user_book_states WHERE profile_id = ? AND source_type = 'goodreads'
+      `).run(profileId).changes;
+
+      // GR book_sources rows are book-level; leave them in place so the book identity is preserved.
+      // Just clean the shelf mappings for this profile.
+      db.prepare("DELETE FROM shelf_mappings WHERE profile_id = ? AND source = 'goodreads'").run(profileId);
+      return { deleted, detached: 0 };
+    })();
+
+    try {
+      reconcileBookIdentities(db, { sourceIds: profileSourceIds(db, profileId) });
+    } catch (err) {
+      logger.warn("Failed to reconcile after cleaning local Goodreads source data", { profileId, error: err });
+    }
+    logger.info("Cleaned local Goodreads source data after disabling connection", { profileId, ...result });
+  });
 }
 
 function buildProfileSummary(profileId: number): ProfileSummary | null {
@@ -147,6 +259,7 @@ router.get("/:id", (req, res) => {
       syncListId: hardcover.sync_list_id ? parseInt(hardcover.sync_list_id, 10) : null,
       syncListName: hardcover.sync_list_name,
       targetShelfName: hardcover.target_shelf_name,
+      ownedImportEnabled: Boolean(hardcover.owned_import_enabled),
       status: hardcover.status as ConnectionStatus,
       lastTestedAt: hardcover.last_tested_at,
       lastSuccessAt: hardcover.last_success_at
@@ -183,11 +296,15 @@ router.get("/:id", (req, res) => {
 
 // POST /api/profiles
 router.post("/", (req, res) => {
+  const parsed = profileCreateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(validationErrorResponse(parsed.error));
+    return;
+  }
+  const { displayName } = parsed.data;
   const db = getDb();
-  const { displayName } = req.body as { displayName: string };
-  if (!displayName?.trim()) { res.status(400).json({ error: "displayName required" }); return; }
 
-  const result = db.prepare("INSERT INTO profiles (display_name) VALUES (?)").run(displayName.trim());
+  const result = db.prepare("INSERT INTO profiles (display_name) VALUES (?)").run(displayName);
   const id = result.lastInsertRowid as number;
 
   // New users inherit the current global conflict default, then can override it
@@ -199,27 +316,22 @@ router.post("/", (req, res) => {
 });
 
 // PATCH /api/profiles/:id
-router.patch("/:id", (req, res) => {
+router.patch("/:id", async (req, res) => {
+  const id = parsePositiveId(req.params["id"]);
+  if (id === null) {
+    res.status(400).json({ error: "Invalid profile id" });
+    return;
+  }
+  const parsed = profilePatchSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(validationErrorResponse(parsed.error));
+    return;
+  }
+  const body = parsed.data;
   const db = getDb();
-  const id = parseInt(req.params["id"] ?? "0", 10);
-  const body = req.body as Partial<{
-    displayName: string;
-    enabled: boolean;
-    grimmory: { username: string; password: string; baseUrl?: string };
-    hardcover: { enabled?: boolean; apiToken?: string; syncListId?: number | null; syncListName?: string | null; targetShelfName?: string | null };
-    goodreads: { goodreadsUserId?: string; enabled?: boolean; syncShelfName?: string | null; targetShelfName?: string | null };
-    audiobookshelf: { enabled?: boolean; apiKey?: string };
-    syncSettings: Partial<SyncSettings>;
-  }>;
-
-  try {
-    if (body.grimmory?.baseUrl !== undefined) validateIntegrationUrl(body.grimmory.baseUrl);
-  } catch (error) {
-    if (error instanceof UnsafeIntegrationUrlError) {
-      res.status(400).json({ error: error.message });
-      return;
-    }
-    throw error;
+  if (!profileExists(db, id)) {
+    res.status(404).json({ error: "Profile not found" });
+    return;
   }
 
   if (body.displayName !== undefined) {
@@ -253,8 +365,17 @@ router.patch("/:id", (req, res) => {
   if (body.hardcover) {
     const h = body.hardcover;
     if (h.enabled === false) {
-      db.prepare("DELETE FROM hardcover_connections WHERE profile_id = ?").run(id);
-      cleanupHardcoverSourceData(id);
+      // Connection deletion itself now happens inside cleanupHardcoverSourceData,
+      // serialized with the local-state cleanup and reconcile against the sync
+      // queue — see that function's docs for why.
+      try {
+        await cleanupHardcoverSourceData(id);
+      } catch (err) {
+        logger.warn("Failed to disable Hardcover connection", { profileId: id, error: err });
+        res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
+        return;
+      }
+      logger.info("Removed Hardcover connection", { profileId: id });
     } else {
     const existing = db.prepare("SELECT id FROM hardcover_connections WHERE profile_id = ?").get(id);
     if (existing) {
@@ -264,6 +385,7 @@ router.patch("/:id", (req, res) => {
       if (h.syncListId !== undefined) { updates.push("sync_list_id = ?"); vals.push(h.syncListId ? String(h.syncListId) : null); }
       if (h.syncListName !== undefined) { updates.push("sync_list_name = ?"); vals.push(h.syncListName?.trim() || null); }
       if (h.targetShelfName !== undefined) { updates.push("target_shelf_name = ?"); vals.push(h.targetShelfName?.trim() || null); }
+      if (h.ownedImportEnabled !== undefined) { updates.push("owned_import_enabled = ?"); vals.push(h.ownedImportEnabled ? 1 : 0); }
       if (updates.length) {
         vals.push(id);
         db.prepare(`UPDATE hardcover_connections SET ${updates.join(", ")} WHERE profile_id = ?`).run(...vals);
@@ -274,12 +396,12 @@ router.patch("/:id", (req, res) => {
         return;
       }
       db.prepare(`
-        INSERT INTO hardcover_connections (profile_id, api_token, sync_list_id, sync_list_name, target_shelf_name)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(id, h.apiToken ?? "", h.syncListId ? String(h.syncListId) : null, h.syncListName?.trim() || null, h.targetShelfName?.trim() || null);
-    }
+        INSERT INTO hardcover_connections (profile_id, api_token, sync_list_id, sync_list_name, target_shelf_name, owned_import_enabled)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(id, h.apiToken ?? "", h.syncListId ? String(h.syncListId) : null, h.syncListName?.trim() || null, h.targetShelfName?.trim() || null, h.ownedImportEnabled ? 1 : 0);
     }
     logger.info("Updated Hardcover connection", { profileId: id });
+    }
   }
 
   if (body.goodreads) {
@@ -296,7 +418,6 @@ router.patch("/:id", (req, res) => {
         vals.push(id);
         db.prepare(`UPDATE goodreads_connections SET ${updates.join(", ")} WHERE profile_id = ?`).run(...vals);
       }
-      if (gr.enabled === false) cleanupGoodreadsSourceData(id);
     } else {
       db.prepare(`
         INSERT INTO goodreads_connections (profile_id, goodreads_user_id, enabled, sync_shelf_name, target_shelf_name)
@@ -304,7 +425,15 @@ router.patch("/:id", (req, res) => {
       `).run(
         id, gr.goodreadsUserId ?? "", gr.enabled ? 1 : 0, gr.syncShelfName?.trim() || null, gr.targetShelfName?.trim() || null
       );
-      if (gr.enabled === false) cleanupGoodreadsSourceData(id);
+    }
+    if (gr.enabled === false) {
+      try {
+        await cleanupGoodreadsSourceData(id);
+      } catch (err) {
+        logger.warn("Failed to disable Goodreads connection", { profileId: id, error: err });
+        res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
+        return;
+      }
     }
   }
 
@@ -358,8 +487,16 @@ router.patch("/:id", (req, res) => {
 
 // DELETE /api/profiles/:id
 router.delete("/:id", (req, res) => {
-  const id = parseInt(req.params["id"] ?? "0", 10);
-  getDb().prepare("DELETE FROM profiles WHERE id = ?").run(id);
+  const id = parsePositiveId(req.params["id"]);
+  if (id === null) {
+    res.status(400).json({ error: "Invalid profile id" });
+    return;
+  }
+  const result = getDb().prepare("DELETE FROM profiles WHERE id = ?").run(id);
+  if (result.changes === 0) {
+    res.status(404).json({ error: "Profile not found" });
+    return;
+  }
   res.json({ ok: true });
 });
 
@@ -418,23 +555,22 @@ router.get("/:id/goodreads/shelf-mappings", (req, res) => {
 
 // POST /api/profiles/:id/goodreads/shelf-mappings — full replace
 router.post("/:id/goodreads/shelf-mappings", (req, res) => {
-  const db = getDb();
-  const id = parseInt(req.params["id"] ?? "0", 10);
-  const { mappings } = req.body as {
-    mappings: { goodreadsShelfName: string; grimmoryShelfName: string }[];
-  };
-  if (!Array.isArray(mappings)) { res.status(400).json({ error: "mappings must be an array" }); return; }
-
-  // Delete existing Goodreads shelf mappings (those without a source_list_id, i.e. shelf-name-keyed)
-  db.prepare("DELETE FROM shelf_mappings WHERE profile_id = ? AND source = 'goodreads' AND source_list_id IS NULL").run(id);
-  const insert = db.prepare(`
-    INSERT INTO shelf_mappings (profile_id, source, source_status, source_list_name, grimmory_shelf_name)
-    VALUES (?, 'goodreads', ?, ?, ?)
-  `);
-  for (const m of mappings) {
-    if (!m.grimmoryShelfName?.trim() || !m.goodreadsShelfName?.trim()) continue;
-    insert.run(id, m.goodreadsShelfName, m.goodreadsShelfName, m.grimmoryShelfName.trim());
+  const id = parsePositiveId(req.params["id"]);
+  if (id === null) {
+    res.status(400).json({ error: "Invalid profile id" });
+    return;
   }
+  const parsed = goodreadsMappingsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(validationErrorResponse(parsed.error));
+    return;
+  }
+  const db = getDb();
+  if (!profileExists(db, id)) {
+    res.status(404).json({ error: "Profile not found" });
+    return;
+  }
+  replaceGoodreadsShelfMappings(db, id, parsed.data.mappings);
   res.json({ ok: true });
 });
 
@@ -484,22 +620,22 @@ router.get("/:id/list-mappings", (req, res) => {
 
 // POST /api/profiles/:id/list-mappings — full replace
 router.post("/:id/list-mappings", (req, res) => {
-  const db = getDb();
-  const id = parseInt(req.params["id"] ?? "0", 10);
-  const { mappings } = req.body as {
-    mappings: { hardcoverListId: number; hardcoverListName: string; grimmoryShelfName: string }[];
-  };
-  if (!Array.isArray(mappings)) { res.status(400).json({ error: "mappings must be an array" }); return; }
-
-  db.prepare("DELETE FROM shelf_mappings WHERE profile_id = ? AND source = 'hardcover' AND source_list_id IS NOT NULL").run(id);
-  const insert = db.prepare(`
-    INSERT INTO shelf_mappings (profile_id, source, source_status, source_list_id, source_list_name, grimmory_shelf_name)
-    VALUES (?, 'hardcover', ?, ?, ?, ?)
-  `);
-  for (const m of mappings) {
-    if (!m.grimmoryShelfName?.trim() || !m.hardcoverListId) continue;
-    insert.run(id, m.hardcoverListName, String(m.hardcoverListId), m.hardcoverListName, m.grimmoryShelfName.trim());
+  const id = parsePositiveId(req.params["id"]);
+  if (id === null) {
+    res.status(400).json({ error: "Invalid profile id" });
+    return;
   }
+  const parsed = hardcoverMappingsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(validationErrorResponse(parsed.error));
+    return;
+  }
+  const db = getDb();
+  if (!profileExists(db, id)) {
+    res.status(404).json({ error: "Profile not found" });
+    return;
+  }
+  replaceHardcoverListMappings(db, id, parsed.data.mappings);
   res.json({ ok: true });
 });
 
@@ -507,9 +643,13 @@ router.post("/:id/list-mappings", (req, res) => {
 // Accepts optional { username, password, baseUrl } in body — uses those directly
 // so the UI can test unsaved form values without a save-first round trip.
 router.post("/:id/test/grimmory", async (req, res) => {
+  const id = parsePositiveId(req.params["id"]);
+  if (id === null) { res.status(400).json({ error: "Invalid profile id" }); return; }
+  const parsed = profileGrimmoryTestSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json(validationErrorResponse(parsed.error)); return; }
+  const body = parsed.data;
   const db = getDb();
-  const id = parseInt(req.params["id"] ?? "0", 10);
-  const body = req.body as { username?: string; password?: string; baseUrl?: string };
+  if (!profileExists(db, id)) { res.status(404).json({ error: "Profile not found" }); return; }
 
   const stored = db.prepare("SELECT * FROM grimmory_connections WHERE profile_id = ?").get(id) as DbGrimmory | undefined;
 
@@ -536,9 +676,13 @@ router.post("/:id/test/grimmory", async (req, res) => {
 // POST /api/profiles/:id/test/hardcover
 // Accepts optional { apiToken } in body.
 router.post("/:id/test/hardcover", async (req, res) => {
+  const id = parsePositiveId(req.params["id"]);
+  if (id === null) { res.status(400).json({ error: "Invalid profile id" }); return; }
+  const parsed = profileHardcoverTestSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json(validationErrorResponse(parsed.error)); return; }
+  const body = parsed.data;
   const db = getDb();
-  const id = parseInt(req.params["id"] ?? "0", 10);
-  const body = req.body as { apiToken?: string };
+  if (!profileExists(db, id)) { res.status(404).json({ error: "Profile not found" }); return; }
 
   const stored = db.prepare("SELECT * FROM hardcover_connections WHERE profile_id = ?").get(id) as DbHardcover | undefined;
   const token = body.apiToken ?? stored?.api_token ?? "";
@@ -563,9 +707,13 @@ router.post("/:id/test/hardcover", async (req, res) => {
 // POST /api/profiles/:id/test/goodreads
 // Accepts optional { goodreadsUserId } in body.
 router.post("/:id/test/goodreads", async (req, res) => {
+  const id = parsePositiveId(req.params["id"]);
+  if (id === null) { res.status(400).json({ error: "Invalid profile id" }); return; }
+  const parsed = profileGoodreadsTestSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json(validationErrorResponse(parsed.error)); return; }
+  const body = parsed.data;
   const db = getDb();
-  const id = parseInt(req.params["id"] ?? "0", 10);
-  const body = req.body as { goodreadsUserId?: string };
+  if (!profileExists(db, id)) { res.status(404).json({ error: "Profile not found" }); return; }
 
   const stored = db.prepare("SELECT * FROM goodreads_connections WHERE profile_id = ?").get(id) as DbGoodreads | undefined;
   const userId = body.goodreadsUserId ?? stored?.goodreads_user_id ?? "";
@@ -590,9 +738,13 @@ router.post("/:id/test/goodreads", async (req, res) => {
 // POST /api/profiles/:id/test/audiobookshelf
 // Accepts optional { apiKey } in body.
 router.post("/:id/test/audiobookshelf", async (req, res) => {
+  const id = parsePositiveId(req.params["id"]);
+  if (id === null) { res.status(400).json({ error: "Invalid profile id" }); return; }
+  const parsed = profileAudiobookshelfTestSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json(validationErrorResponse(parsed.error)); return; }
+  const body = parsed.data;
   const db = getDb();
-  const id = parseInt(req.params["id"] ?? "0", 10);
-  const body = req.body as { apiKey?: string };
+  if (!profileExists(db, id)) { res.status(404).json({ error: "Profile not found" }); return; }
 
   const stored = db.prepare("SELECT * FROM audiobookshelf_connections WHERE profile_id = ?").get(id) as DbAudiobookshelf | undefined;
   const apiKey = body.apiKey ?? stored?.api_key ?? "";
@@ -656,6 +808,7 @@ interface DbHardcover {
   sync_list_id: string | null;
   sync_list_name: string | null;
   target_shelf_name: string | null;
+  owned_import_enabled: number;
 }
 
 interface DbGoodreads {

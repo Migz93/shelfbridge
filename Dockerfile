@@ -41,6 +41,10 @@ ENV COMMIT_SHA=$COMMIT_SHA
 RUN apt-get update \
   && apt-get install -y --no-install-recommends gosu python3 tzdata \
   && rm -rf /var/lib/apt/lists/*
+# The runtime image never invokes npm (CMD runs node directly) — the global
+# npm CLI bundled by the base image just sits there dragging in CVEs against
+# its own dependencies (brace-expansion, tar, sigstore, etc). Drop it.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 COPY --from=build /app/package.json ./package.json
 COPY --from=production-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
@@ -53,4 +57,6 @@ RUN mkdir -p /config && chown node:node /config
 # before running the app — the app process itself never runs as root.
 ENTRYPOINT ["/entrypoint.sh"]
 EXPOSE 9303
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||9303)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "dist/server/server/index.js"]

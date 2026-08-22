@@ -1,9 +1,11 @@
 import { JobScheduler } from "./job-scheduler.js";
 import { getDb, getSetting } from "./db/index.js";
 import { logger } from "./logger.js";
-import { getActiveSyncStatus, runSync } from "./sync/engine.js";
+import { getActiveSyncStatus, runSync, runExclusiveOfSyncs } from "./sync/engine.js";
 import { refreshStaleCachedCovers } from "./image-cache.js";
 import { refreshStaleGrimmoryCovers } from "./sync/engine.js";
+import { reconcileBookIdentities, type ReconcileProgressPhase } from "./db/bookIdentity.js";
+import { cleanupLegacyHardcoverSources } from "./sync/hardcover-legacy-cleanup.js";
 
 export const scheduler = new JobScheduler();
 
@@ -67,6 +69,18 @@ export function initScheduler(): void {
     }
   });
 
+  // Full Reconciliation: periodic full-catalog identity reconcile. Every write
+  // path already reconciles its own scope on the fly (see bookIdentity.ts), so
+  // this is a correction pass for the narrow gaps scoped reconciliation
+  // intentionally accepts (see expandScopeToRows's doc comment) — not the
+  // primary mechanism keeping identities correct. Runs daily at 4 AM.
+  scheduler.registerDailyJob({
+    id: "full-reconcile",
+    hour: 4,
+    minute: 0,
+    task: runFullReconcile
+  });
+
   logger.info("Job scheduler initialised", {
     syncEnabled,
     intervalMinutes: syncEnabled ? intervalMinutes : 0
@@ -124,6 +138,35 @@ async function runProfileSync(): Promise<void> {
   }
 
   logger.info("Scheduled profile sync completed", { profileCount: profiles.length });
+}
+
+async function runFullReconcile(): Promise<void> {
+  // Serialized against every profile sync (see runExclusiveOfSyncs) — this
+  // mutates shared book identity state exactly like a sync does, and a sync
+  // yields to the event loop between remote I/O calls, so it must never run
+  // unserialized while a sync could be mid-flight.
+  await runExclusiveOfSyncs(async () => {
+    const db = getDb();
+
+    // Runs here, immediately before the full reconcile pass, so any book left
+    // sourceless by the cleanup is picked up by the same pass's stale-book
+    // cleanup rather than lingering until the next scheduled run.
+    cleanupLegacyHardcoverSources(db);
+
+    const bookCount = (db.prepare("SELECT COUNT(*) AS count FROM books").get() as { count: number }).count;
+    const sourceCount = (db.prepare("SELECT COUNT(*) AS count FROM book_sources").get() as { count: number }).count;
+    logger.info("Full reconcile starting", { bookCount, sourceCount });
+
+    const startedAt = Date.now();
+    let lastPhaseAt = startedAt;
+    reconcileBookIdentities(db, undefined, (phase: ReconcileProgressPhase, details) => {
+      const now = Date.now();
+      logger.info("Full reconcile progress", { phase, ...details, phaseMs: now - lastPhaseAt, elapsedMs: now - startedAt });
+      lastPhaseAt = now;
+    });
+
+    logger.info("Full reconcile complete", { elapsedMs: Date.now() - startedAt });
+  });
 }
 
 async function runMaintenance(): Promise<void> {

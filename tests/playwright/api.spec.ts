@@ -2,30 +2,32 @@ import { test, expect } from "@playwright/test";
 
 /**
  * API smoke tests — verify key endpoints return healthy responses.
- * Uses the request fixture (no browser), with the stored session cookie applied
- * automatically via storageState.
+ * Uses page.request rather than the bare request fixture: the bare fixture
+ * opens its own APIRequestContext with no storageState/baseURL, so it never
+ * carries the authenticated session cookie the protected endpoints need.
+ * page.request shares its page's (authenticated) browser context instead.
  * Read-only. Safe to run against a live instance.
  */
 
 test.describe("API smoke tests", () => {
-  test("GET /api/health returns 200", async ({ request }) => {
-    const response = await request.get("/api/health");
+  test("GET /api/health returns 200", async ({ page }) => {
+    const response = await page.request.get("/api/health");
     expect(response.status()).toBe(200);
 
     const body = await response.json() as Record<string, unknown>;
     expect(body).toHaveProperty("ok", true);
   });
 
-  test("GET /api/auth/session returns authenticated session", async ({ request }) => {
-    const response = await request.get("/api/auth/session");
+  test("GET /api/auth/session returns authenticated session", async ({ page }) => {
+    const response = await page.request.get("/api/auth/session");
     expect(response.status()).toBe(200);
 
     const body = await response.json() as { authenticated: boolean };
     expect(body.authenticated).toBe(true);
   });
 
-  test("GET /api/dashboard returns expected shape", async ({ request }) => {
-    const response = await request.get("/api/dashboard");
+  test("GET /api/dashboard returns expected shape", async ({ page }) => {
+    const response = await page.request.get("/api/dashboard");
     expect(response.status()).toBe(200);
 
     const body = await response.json() as Record<string, unknown>;
@@ -34,9 +36,17 @@ test.describe("API smoke tests", () => {
     expect(body).toHaveProperty("recentActivity");
 
     const stats = body.stats as Record<string, unknown>;
-    expect(stats).toHaveProperty("totalBooks");
-    expect(stats).toHaveProperty("missingInGrimmory");
-    expect(stats).toHaveProperty("pendingDownload");
-    expect(stats).toHaveProperty("needsReview");
+    expect(stats).toHaveProperty("book");
+    expect(stats).toHaveProperty("audiobook");
+    for (const mediaStats of [stats.book, stats.audiobook] as Record<string, unknown>[]) {
+      expect(mediaStats).toHaveProperty("totalBooks");
+      expect(mediaStats).toHaveProperty("notInChaptarr");
+      expect(mediaStats).toHaveProperty("grabInChaptarr");
+      expect(mediaStats).toHaveProperty("needsReview");
+      expect(typeof mediaStats.totalBooks).toBe("number");
+      expect(typeof mediaStats.notInChaptarr).toBe("number");
+      expect(typeof mediaStats.grabInChaptarr).toBe("number");
+      expect(typeof mediaStats.needsReview).toBe("number");
+    }
   });
 });

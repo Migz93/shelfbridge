@@ -15,7 +15,12 @@ import type {
 import { getGrimmoryToken, writeGrimmoryExternalIds } from "../sync/grimmory.js";
 import { logger } from "../logger.js";
 import { reconcileBookIdentities } from "../db/bookIdentity.js";
+import { cleanupImageCacheForSourceIds } from "../db/imageCacheMaintenance.js";
+import { runExclusiveOfSyncs } from "../sync/sync-queue.js";
 import { normalizeExternalId, identifiersEqual } from "../identifiers.js";
+import { parsePositiveId, validationErrorResponse, writeGrimmoryIdSchema } from "../validation.js";
+import { hasIdentityReviewConflict } from "../sync/identity-review.js";
+import { normalizeReviewText, probableDuplicateTitleKey, normalizeDuplicateSeriesNumber } from "../db/duplicateKeys.js";
 
 const router = Router();
 
@@ -175,76 +180,46 @@ function hasNeedsIdReview(row: Pick<DbBookRow,
     || (sourceHardcoverId !== null && !identifiersEqual(grimmoryHardcoverId, sourceHardcoverId));
 }
 
-function distinctClean(values: Array<string | number | null | undefined>): string[] {
-  return Array.from(new Set(
-    values
-      .map((value) => normalizeExternalId(value))
-      .filter((value): value is string => Boolean(value))
-  ));
-}
+type DuplicateMatchRow = Pick<DbBookRow, "book_id" | "book_title" | "book_author" | "book_series_name" | "book_series_number" | "book_media_type">;
 
-function distinctComparableIds(
-  rows: Array<Pick<DbBookRow, "goodreads_book_id" | "grimmory_goodreads_id" | "hardcover_book_id" | "grimmory_hardcover_book_id">>,
-  source: "goodreads" | "hardcover"
-): string[] {
-  if (source === "goodreads") {
-    const comparableRows = rows.filter((row) => normalizeExternalId(row.goodreads_book_id) !== null);
-    return distinctClean(comparableRows.flatMap((row) => [row.goodreads_book_id, row.grimmory_goodreads_id]));
+// Duplicate matching only compares book-level title/author/series fields, so this
+// looks up candidates via the indexed duplicate_title_key/duplicate_author_key
+// columns (populated on every books write, see bookIdentity.ts's insertBook/
+// updateBook) instead of scanning every row in the `books` table. Candidates are
+// also scoped to the target's own media_type ('book' or 'audiobook') — a book and
+// its independently-tracked audiobook counterpart (see the Hardcover Owned-list
+// import in docs/sync.md) legitimately share a title/author and must not be
+// flagged as duplicates of each other.
+function fetchDuplicateMatchRows(targetBookId: number): DuplicateMatchRow[] {
+  const db = getDb();
+  const baseSelect = `
+    SELECT
+      id AS book_id,
+      title AS book_title,
+      author AS book_author,
+      series_name AS book_series_name,
+      series_number AS book_series_number,
+      media_type AS book_media_type
+    FROM books
+  `;
+  const target = db.prepare(`SELECT duplicate_title_key, duplicate_author_key, media_type FROM books WHERE id = ?`)
+    .get(targetBookId) as { duplicate_title_key: string | null; duplicate_author_key: string | null; media_type: string } | undefined;
+  if (!target || target.duplicate_title_key === null || target.duplicate_author_key === null) {
+    // No key means the title/author couldn't normalize to anything comparable
+    // (e.g. blank) — no book can share a duplicate group with it.
+    return db.prepare(`${baseSelect} WHERE id = ?`).all(targetBookId) as DuplicateMatchRow[];
   }
-
-  // Only compare Grimmory's stored Hardcover ID when we also have a ShelfBridge
-  // Hardcover source row for the canonical book. Grimmory can legitimately carry
-  // a Hardcover cross-reference for books that never came from Hardcover.
-  const comparableRows = rows.filter((row) => row.hardcover_book_id !== null);
-  return distinctClean(comparableRows.flatMap((row) => [row.hardcover_book_id, row.grimmory_hardcover_book_id]));
+  return db.prepare(`${baseSelect} WHERE id = ? OR (duplicate_title_key = ? AND duplicate_author_key = ? AND media_type = ?)`)
+    .all(targetBookId, target.duplicate_title_key, target.duplicate_author_key, target.media_type) as DuplicateMatchRow[];
 }
 
-function hasAggregateSourceReviewConflict(
-  rows: Array<Pick<DbBookRow, "goodreads_book_id" | "grimmory_goodreads_id" | "hardcover_book_id" | "grimmory_hardcover_book_id">>,
-  source: "goodreads" | "hardcover"
-): boolean {
-  const sourceIds = distinctComparableIds(rows, source);
-  const grimmoryIds = source === "goodreads"
-    ? distinctClean(rows.map((row) => row.grimmory_goodreads_id))
-    : distinctClean(rows.map((row) => row.grimmory_hardcover_book_id));
-
-  // If Grimmory doesn't carry an ID for this source, there is nothing actionable
-  // to review here beyond the canonical merge itself.
-  if (grimmoryIds.length === 0) return false;
-  if (grimmoryIds.length > 1) return true;
-
-  const [grimmoryId] = grimmoryIds;
-  return grimmoryId !== undefined && sourceIds.length > 0 && !sourceIds.includes(grimmoryId);
-}
-
-function normalizeReviewText(value: string | null | undefined): string | null {
-  const text = value
-    ?.toLowerCase()
-    .replace(/\s*\(.*?\)\s*/g, " ")
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim() ?? null;
-  return text || null;
-}
-
-function probableDuplicateTitleKey(value: string | null | undefined): string | null {
-  const stripped = value?.split(/:|\s+-\s+/)[0]?.trim();
-  return normalizeReviewText(stripped);
-}
-
-function normalizeSeriesNumber(value: string | null | undefined): string | null {
-  const text = normalizeReviewText(value);
-  if (!text) return null;
-  return text.match(/\d+(?:\.\d+)?/)?.[0] ?? text;
-}
-
-function hasDistinctSeriesPosition(a: DbBookRow, b: DbBookRow): boolean {
+function hasDistinctSeriesPosition(a: DuplicateMatchRow, b: DuplicateMatchRow): boolean {
   const seriesA = normalizeReviewText(a.book_series_name);
   const seriesB = normalizeReviewText(b.book_series_name);
   if (!seriesA || !seriesB || seriesA !== seriesB) return false;
 
-  const numberA = normalizeSeriesNumber(a.book_series_number);
-  const numberB = normalizeSeriesNumber(b.book_series_number);
+  const numberA = normalizeDuplicateSeriesNumber(a.book_series_number);
+  const numberB = normalizeDuplicateSeriesNumber(b.book_series_number);
   return Boolean(numberA && numberB && numberA !== numberB);
 }
 
@@ -262,7 +237,7 @@ function dismissedDuplicatePairKeys(): Set<string> {
   return new Set(rows.map((row) => duplicatePairKey(row.book_id_low, row.book_id_high)));
 }
 
-function actionableDuplicateIds(groups: DbBookRow[][], dismissedPairs: Set<string>): Set<number> {
+function actionableDuplicateIds(groups: DuplicateMatchRow[][], dismissedPairs: Set<string>): Set<number> {
   return new Set(groups.flatMap((group) =>
     group
       .filter((candidate) => group.some((other) =>
@@ -274,14 +249,14 @@ function actionableDuplicateIds(groups: DbBookRow[][], dismissedPairs: Set<strin
   ));
 }
 
-function probableDuplicateBookIds(rows: DbBookRow[], dismissedPairs = dismissedDuplicatePairKeys()): Set<number> {
-  const byKey = new Map<string, DbBookRow[]>();
+function probableDuplicateBookIds(rows: DuplicateMatchRow[], dismissedPairs = dismissedDuplicatePairKeys()): Set<number> {
+  const byKey = new Map<string, DuplicateMatchRow[]>();
   for (const group of groupByBook(rows)) {
     const row = group[0]!;
     const title = probableDuplicateTitleKey(row.book_title);
     const author = normalizeReviewText(row.book_author);
     if (!title || !author) continue;
-    const key = `${title}||${author}`;
+    const key = `${title}||${author}||${row.book_media_type}`;
     const candidates = byKey.get(key) ?? [];
     candidates.push(row);
     byKey.set(key, candidates);
@@ -295,7 +270,7 @@ function probableDuplicateBookIds(rows: DbBookRow[], dismissedPairs = dismissedD
   return result;
 }
 
-function probableDuplicateCandidateIds(rows: DbBookRow[], bookId: number, dismissedPairs = dismissedDuplicatePairKeys()): Set<number> {
+function probableDuplicateCandidateIds(rows: DuplicateMatchRow[], bookId: number, dismissedPairs = dismissedDuplicatePairKeys()): Set<number> {
   const current = rows.find((row) => row.book_id === bookId);
   if (!current) return new Set();
 
@@ -307,6 +282,7 @@ function probableDuplicateCandidateIds(rows: DbBookRow[], bookId: number, dismis
   for (const group of groupByBook(rows)) {
     const row = group[0]!;
     if (row.book_id === bookId) continue;
+    if (row.book_media_type !== current.book_media_type) continue;
     if (probableDuplicateTitleKey(row.book_title) !== title) continue;
     if (normalizeReviewText(row.book_author) !== author) continue;
     if (hasDistinctSeriesPosition(current, row)) continue;
@@ -316,7 +292,7 @@ function probableDuplicateCandidateIds(rows: DbBookRow[], bookId: number, dismis
 }
 
 export function isLiveProbableDuplicatePair(
-  rows: DbBookRow[],
+  rows: DuplicateMatchRow[],
   bookId: number,
   duplicateId: number,
   dismissedPairs = dismissedDuplicatePairKeys()
@@ -378,24 +354,6 @@ function dbToDuplicateCandidate(rows: DbBookRow[], mergeEligible: boolean): Book
     seriesNumber: row.book_series_number,
     mergeEligible
   };
-}
-
-// book_sources rows for Grimmory/Hardcover/Goodreads are now scoped per profile
-// instance (see schema v14), so the same book can legitimately carry different
-// cross-reference IDs on different profiles' own servers — that's not a conflict.
-// Evaluate each profile's own rows independently rather than aggregating IDs
-// across every profile sharing this book.
-function hasIdentityReviewConflict(rows: DbBookRow[]): boolean {
-  const byProfile = new Map<number, DbBookRow[]>();
-  for (const row of rows) {
-    const group = byProfile.get(row.profile_id) ?? [];
-    group.push(row);
-    byProfile.set(row.profile_id, group);
-  }
-  return Array.from(byProfile.values()).some((profileRows) =>
-    hasAggregateSourceReviewConflict(profileRows, "goodreads")
-      || hasAggregateSourceReviewConflict(profileRows, "hardcover")
-  );
 }
 
 function hasBookNeedsIdReview(rows: DbBookRow[]): boolean {
@@ -499,8 +457,8 @@ function matchesFilters(row: DbBookRow, opts: {
   return true;
 }
 
-function groupByBook(rows: DbBookRow[]): DbBookRow[][] {
-  const groups = new Map<number, DbBookRow[]>();
+function groupByBook<T extends { book_id: number }>(rows: T[]): T[][] {
+  const groups = new Map<number, T[]>();
   for (const row of rows) {
     const group = groups.get(row.book_id) ?? [];
     group.push(row);
@@ -559,11 +517,7 @@ function dbToSummary(rows: DbBookRow[]): BookSummary {
     title: row.book_title,
     author: row.book_author,
     coverUrl: row.book_cover_cache_path ?? null,
-    mediaType: aggregateMediaType(rows.flatMap((candidate) => [
-      candidate.hardcover_media_type,
-      candidate.grimmory_media_type,
-      candidate.chaptarr_media_type
-    ])),
+    mediaType: coerceMediaType(row.book_media_type) ?? "unknown",
     userCount: profileIds.length,
     profileIds,
     grimmoryBookId: first(rows, (candidate) => candidate.grimmory_book_id),
@@ -719,12 +673,20 @@ function bestRelationshipRowsByProfile(rows: DbBookRow[]): DbBookRow[] {
   return Array.from(byProfile.values()).sort((a, b) => a.profile_name.localeCompare(b.profile_name));
 }
 
-function fetchRows(): DbBookRow[] {
+// bookIds, when given, scopes the CROSS JOIN with profiles to just those books
+// instead of the whole catalog — used by callers that already know which
+// book(s) they need (e.g. a single detail view plus its duplicate candidates)
+// rather than the full book listing.
+function fetchRows(bookIds?: number[]): DbBookRow[] {
+  const bookIdFilter = bookIds && bookIds.length > 0
+    ? `AND book_id IN (${bookIds.map(() => "?").join(",")})`
+    : "";
   return getDb().prepare(`
     WITH all_books AS (
       SELECT DISTINCT book_id FROM book_sources
       WHERE book_id IS NOT NULL
         AND source_type IN ('grimmory', 'hardcover', 'goodreads')
+        ${bookIdFilter}
     ),
     book_profile AS (
       SELECT ab.book_id, p.id AS profile_id
@@ -847,7 +809,13 @@ function fetchRows(): DbBookRow[] {
     LEFT JOIN book_sources gr_src   ON gr_src.book_id   = bp.book_id AND gr_src.source_type   = 'goodreads' AND gr_src.source_instance_id = bp.profile_id
     LEFT JOIN book_sources grim_src ON grim_src.book_id = bp.book_id AND grim_src.source_type = 'grimmory' AND grim_src.source_instance_id = bp.profile_id
     LEFT JOIN book_sources chap_src ON chap_src.book_id = bp.book_id AND chap_src.source_type = 'chaptarr'
-    LEFT JOIN chaptarr_id_mismatch_dismissals chap_dismiss ON chap_dismiss.chaptarr_external_id = chap_src.external_id
+    -- A dismissal only suppresses the specific mismatch it was raised against:
+    -- if Chaptarr's reported upstream ids have since changed, the signature no
+    -- longer matches and the row re-arms as an active mismatch.
+    LEFT JOIN chaptarr_id_mismatch_dismissals chap_dismiss
+      ON chap_dismiss.chaptarr_external_id = chap_src.external_id
+      AND chap_dismiss.dismissed_hardcover_book_id IS chap_src.source_hardcover_book_id
+      AND chap_dismiss.dismissed_goodreads_book_id IS chap_src.source_goodreads_book_id
     LEFT JOIN book_sources abs_src  ON abs_src.book_id  = bp.book_id AND abs_src.source_type  = 'audiobookshelf' AND abs_src.source_instance_id = bp.profile_id
     LEFT JOIN user_book_states hc_ubs   ON hc_ubs.book_id   = bp.book_id AND hc_ubs.profile_id   = bp.profile_id AND hc_ubs.source_type   = 'hardcover'
     LEFT JOIN user_book_states gr_ubs   ON gr_ubs.book_id   = bp.book_id AND gr_ubs.profile_id   = bp.profile_id AND gr_ubs.source_type   = 'goodreads'
@@ -856,7 +824,7 @@ function fetchRows(): DbBookRow[] {
     LEFT JOIN grimmory_connections gc  ON gc.profile_id  = bp.profile_id
     LEFT JOIN goodreads_connections grc ON grc.profile_id = bp.profile_id
     ORDER BY b.title ASC, p.display_name ASC
-  `).all() as DbBookRow[];
+  `).all(...(bookIds && bookIds.length > 0 ? bookIds : [])) as DbBookRow[];
 }
 
 function compareSummaries(sortBy: string): (a: BookSummary, b: BookSummary) => number {
@@ -889,7 +857,9 @@ router.get("/", (req, res) => {
     ? "audiobook"
     : req.query["mediaType"] === "all"
       ? "all"
-      : "book";
+      : req.query["mediaType"] === "hidden"
+        ? "hidden"
+        : "book";
   const rawChaptarr = req.query["chaptarr"] as string | undefined;
   const chaptarr: "in" | "out" | null = rawChaptarr === "in" || rawChaptarr === "out" ? rawChaptarr : null;
   const action = typeof req.query["action"] === "string" ? req.query["action"] : null;
@@ -898,7 +868,32 @@ router.get("/", (req, res) => {
   const pageSize = Math.min(100, parseInt(req.query["pageSize"] as string ?? "48", 10));
   const q = typeof req.query["q"] === "string" ? req.query["q"].trim() : "";
 
-  const allRows = fetchRows().filter((row) => mediaType === "all" || row.book_media_type === mediaType);
+  // "hidden" surfaces books whose media type couldn't be classified (see
+  // bookIdentity.ts's rowFormatBucket) — they're otherwise invisible on both the
+  // Books and Audiobooks pages, so this filter exists purely so they can be found
+  // and fixed rather than being silently dropped from every catalog view.
+  const unfilteredRows = fetchRows();
+  // The mediaType-filtered `allRows`/`hardcoverBookIds`-style sets below exclude
+  // "unknown" rows entirely once mediaType isn't "all"/"hidden", so hiddenCount
+  // needs its own source-presence sets built from every row to still honor the
+  // active profile/source filters.
+  const hiddenHardcoverBookIds = new Set(unfilteredRows.filter((r) => r.hardcover_book_id !== null).map((r) => r.book_id));
+  const hiddenGoodreadsBookIds = new Set(unfilteredRows.filter((r) => r.goodreads_book_link !== null).map((r) => r.book_id));
+  const hiddenOnDiskBookIds = new Set(unfilteredRows.filter((r) => r.grimmory_book_id !== null || r.chaptarr_book_id !== null).map((r) => r.book_id));
+  const hiddenCount = countGroups(unfilteredRows.filter((row) =>
+    row.book_media_type === "unknown" &&
+    // Mirrors matchesFilters' profile check below: an included-profile filter
+    // must still require actual user-book activity, not just a passive
+    // cross-joined catalog row, or this count would disagree with what the
+    // "hidden" view itself shows under the same filter.
+    (includedProfileIds.length === 0 || (includedProfileIds.includes(row.profile_id) && Boolean(row.has_any_ubs))) &&
+    !excludedProfileIds.includes(row.profile_id) &&
+    (includedSources.length === 0 || includedSources.some((s) => matchesSource(row, s, hiddenHardcoverBookIds, hiddenGoodreadsBookIds, hiddenOnDiskBookIds))) &&
+    !excludedSources.some((s) => matchesSource(row, s, hiddenHardcoverBookIds, hiddenGoodreadsBookIds, hiddenOnDiskBookIds))
+  ));
+  const allRows = unfilteredRows.filter((row) =>
+    mediaType === "all" ? true : mediaType === "hidden" ? row.book_media_type === "unknown" : row.book_media_type === mediaType
+  );
   const idReviewBookIds = new Set(
     groupByBook(allRows)
       .filter((rows) => hasBookNeedsIdReview(rows))
@@ -994,6 +989,7 @@ router.get("/", (req, res) => {
     idReviewCount,
     probableDuplicateCount,
     absRuntimeMismatchCount: countGroups(profileRows.filter((row) => absRuntimeMismatchBookIds.has(row.book_id))),
+    hiddenCount,
   };
 
   const response: BooksPageResponse = {
@@ -1008,8 +1004,8 @@ router.get("/", (req, res) => {
 // DELETE /api/books/:id
 router.delete("/:id", (req, res) => {
   const db = getDb();
-  const bookId = parseInt(req.params["id"] ?? "0", 10);
-  if (!Number.isFinite(bookId) || bookId <= 0) {
+  const bookId = parsePositiveId(req.params["id"]);
+  if (bookId === null) {
     res.status(400).json({ error: "Invalid book id" });
     return;
   }
@@ -1025,14 +1021,35 @@ router.delete("/:id", (req, res) => {
     return;
   }
 
+  // No reconcile needed after this: book_sources, user_book_states,
+  // book_identity_keys, and book_duplicate_dismissals all reference books(id)
+  // ON DELETE CASCADE, so deleting the book already removes every row that
+  // referenced it. No other book's data is touched by this deletion, so
+  // there is nothing left to re-cluster.
+  const sourceIds = (db.prepare("SELECT id FROM book_sources WHERE book_id = ?").all(bookId) as { id: number }[])
+    .map((row) => row.id);
   const deleteBook = db.prepare("DELETE FROM books WHERE id = ?");
   const transaction = db.transaction(() => {
     deleteBook.run(bookId);
-    reconcileBookIdentities(db);
   });
 
   try {
     transaction();
+    // book_sources rows cascaded away with the book, but their image_cache
+    // rows don't (image_cache keys off book_sources.id via entity_id, not
+    // books.id) — clean those up directly rather than waiting on the next
+    // full reconcile. Scoped to just this book's own source ids rather than
+    // a full-table cleanupOrphanedImageCache scan, since this runs on the
+    // DELETE request's hot path. Isolated in its own try/catch: the deletion
+    // itself has already committed by this point, so a cleanup failure must
+    // not turn a successful deletion into a reported 500 — it's a stale
+    // image_cache row at worst, and the daily full reconcile catches it
+    // regardless.
+    try {
+      cleanupImageCacheForSourceIds(db, sourceIds);
+    } catch (cleanupErr) {
+      logger.warn("Orphaned image-cache cleanup failed after book deletion; the deletion itself still succeeded", { bookId, error: cleanupErr });
+    }
     logger.info("Deleted local canonical book", { bookId, title: existing.title });
     res.json({ ok: true });
   } catch (err) {
@@ -1044,9 +1061,9 @@ router.delete("/:id", (req, res) => {
 // POST /api/books/:bookId/duplicates/:duplicateId/dismiss
 router.post("/:bookId/duplicates/:duplicateId/dismiss", (req, res) => {
   const db = getDb();
-  const bookId = parseInt(req.params["bookId"] ?? "0", 10);
-  const duplicateId = parseInt(req.params["duplicateId"] ?? "0", 10);
-  if (!Number.isFinite(bookId) || !Number.isFinite(duplicateId) || bookId <= 0 || duplicateId <= 0 || bookId === duplicateId) {
+  const bookId = parsePositiveId(req.params["bookId"]);
+  const duplicateId = parsePositiveId(req.params["duplicateId"]);
+  if (bookId === null || duplicateId === null || bookId === duplicateId) {
     res.status(400).json({ error: "Invalid duplicate pair" });
     return;
   }
@@ -1076,12 +1093,12 @@ router.post("/:bookId/duplicates/:duplicateId/dismiss", (req, res) => {
 // POST /api/books/:bookId/duplicates/:duplicateId/merge
 router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
   const db = getDb();
-  const bookId = parseInt(req.params["bookId"] ?? "0", 10);
-  const duplicateId = parseInt(req.params["duplicateId"] ?? "0", 10);
-  if (!Number.isFinite(bookId) || !Number.isFinite(duplicateId) || bookId <= 0 || duplicateId <= 0 || bookId === duplicateId) {
+  const bookId = parsePositiveId(req.params["bookId"]);
+  const duplicateId = parsePositiveId(req.params["duplicateId"]);
+  if (bookId === null || duplicateId === null || bookId === duplicateId) {
     res.status(400).json({ error: "Invalid duplicate pair" }); return;
   }
-  if (!isLiveProbableDuplicatePair(fetchRows(), bookId, duplicateId)) {
+  if (!isLiveProbableDuplicatePair(fetchDuplicateMatchRows(bookId), bookId, duplicateId)) {
     res.status(400).json({ error: "Merge requires a live probable-duplicate pair" }); return;
   }
   const plans = duplicateMergePlans(db, bookId, duplicateId);
@@ -1089,73 +1106,123 @@ router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
     res.status(400).json({ error: "Merge requires an authoritative Goodreads or Hardcover record and a Grimmory record" }); return;
   }
   try {
-    const resolvedPlans: Array<{ plan: typeof plans[number]; baseUrl: string; token: string; grimmoryLocalId: number }> = [];
+    // Each plan writes to a remote Grimmory server first and cannot be rolled
+    // back once that write lands — so a later plan failing (whether during
+    // setup — connection lookup, auth, local-ID validation — or during the
+    // write itself) must not make this endpoint report total failure (502)
+    // for a request that already partly applied. Every plan is set up and
+    // run regardless of an earlier one's outcome, and the response reports
+    // exactly which profiles succeeded and which didn't.
+    const succeededProfileIds: number[] = [];
+    const failures: Array<{ profileId: number; error: string }> = [];
     for (const plan of plans) {
-      const connection = db.prepare("SELECT base_url, username, password FROM grimmory_connections WHERE profile_id = ?").get(plan.profileId) as { base_url: string; username: string; password: string } | undefined;
-      const baseUrl = connection?.base_url?.trim() || getSetting("grimmory.baseUrl", "");
-      const password = connection?.password;
-      if (!baseUrl || !connection?.username || !password) { res.status(400).json({ error: "Grimmory connection is not configured" }); return; }
-      const token = await getGrimmoryToken(baseUrl, connection.username, password);
-      if (!token) { res.status(502).json({ error: "Could not authenticate with Grimmory" }); return; }
-      const grimmoryLocalId = Number(plan.grimmory.external_id);
-      if (!Number.isSafeInteger(grimmoryLocalId) || grimmoryLocalId <= 0) {
-        res.status(400).json({ error: "Grimmory record has a non-numeric local ID" }); return;
+      try {
+        const connection = db.prepare("SELECT base_url, username, password FROM grimmory_connections WHERE profile_id = ?").get(plan.profileId) as { base_url: string; username: string; password: string } | undefined;
+        const baseUrl = connection?.base_url?.trim() || getSetting("grimmory.baseUrl", "");
+        const password = connection?.password;
+        if (!baseUrl || !connection?.username || !password) throw new Error("Grimmory connection is not configured");
+        const token = await getGrimmoryToken(baseUrl, connection.username, password);
+        if (!token) throw new Error("Could not authenticate with Grimmory");
+        const grimmoryLocalId = Number(plan.grimmory.external_id);
+        if (!Number.isSafeInteger(grimmoryLocalId) || grimmoryLocalId <= 0) {
+          throw new Error("Grimmory record has a non-numeric local ID");
+        }
+
+        const hardcoverId = plan.hardcover?.hardcover_slug?.trim() || plan.grimmory.grimmory_hardcover_id?.trim() || undefined;
+        await writeAndPersistDuplicateMergePlan(db, {
+          bookId: plan.grimmoryBookId, profileId: plan.profileId,
+          goodreadsId: plan.goodreads?.external_id ?? null, hardcoverBookId: plan.hardcover?.external_id ?? null,
+          hardcoverId: hardcoverId ?? null
+        }, async () => {
+          await writeGrimmoryExternalIds(baseUrl, token, grimmoryLocalId, {
+            ...(plan.goodreads?.external_id ? { goodreadsId: plan.goodreads.external_id } : {}),
+            ...(plan.hardcover?.external_id ? { hardcoverBookId: plan.hardcover.external_id, hardcoverId } : {})
+          });
+        });
+        succeededProfileIds.push(plan.profileId);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn("Duplicate merge plan failed for one profile; continuing with the rest", { bookId, duplicateId, profileId: plan.profileId, error: err });
+        failures.push({ profileId: plan.profileId, error: message });
       }
-      resolvedPlans.push({ plan, baseUrl, token, grimmoryLocalId });
     }
 
-    for (const { plan, baseUrl, token, grimmoryLocalId } of resolvedPlans) {
-      const hardcoverId = plan.hardcover?.hardcover_slug?.trim() || plan.grimmory.grimmory_hardcover_id?.trim() || undefined;
-      await writeAndPersistDuplicateMergePlan(db, {
-        bookId: plan.grimmoryBookId, profileId: plan.profileId,
-        goodreadsId: plan.goodreads?.external_id ?? null, hardcoverBookId: plan.hardcover?.external_id ?? null,
-        hardcoverId: hardcoverId ?? null
-      }, async () => {
-        await writeGrimmoryExternalIds(baseUrl, token, grimmoryLocalId, {
-          ...(plan.goodreads?.external_id ? { goodreadsId: plan.goodreads.external_id } : {}),
-          ...(plan.hardcover?.external_id ? { hardcoverBookId: plan.hardcover.external_id, hardcoverId } : {})
-        });
-      });
+    if (succeededProfileIds.length === 0) {
+      res.status(502).json({ error: "Merge failed for every profile", failures });
+      return;
     }
-    db.transaction(() => {
-      reconcileBookIdentities(db);
-    })();
-    const reconciled = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(plans[0]!.grimmory.id) as { book_id: number } | undefined;
-    if (!reconciled) throw new Error("Reconciled Grimmory record could not be found");
-    logger.info("Merged duplicate by repairing Grimmory authoritative IDs", { bookId, duplicateId, plans: plans.map((plan) => ({ authoritativeBookId: plan.authoritativeBookId, grimmoryBookId: plan.grimmoryBookId, profileId: plan.profileId, goodreads: Boolean(plan.goodreads), hardcover: Boolean(plan.hardcover) })) });
-    res.json({ ok: true, bookId: reconciled.book_id });
+
+    // Reconcile/lookup runs after remote writes have already landed for
+    // succeededProfileIds, so a failure here must not report a blank 502 that
+    // erases the fact those writes succeeded — same reasoning as the per-plan
+    // handling above, just one step later in the flow.
+    let reconciled: { book_id: number } | undefined;
+    try {
+      await runExclusiveOfSyncs(async () => {
+        db.transaction(() => {
+          const touchedSourceIds = (db.prepare("SELECT id FROM book_sources WHERE book_id IN (?, ?)").all(bookId, duplicateId) as { id: number }[]).map((row) => row.id);
+          reconcileBookIdentities(db, { sourceIds: touchedSourceIds });
+        })();
+      });
+      // plans[0] is not necessarily one of the plans that actually succeeded —
+      // only a succeeded plan's Grimmory row was written with the new external
+      // IDs, so it's the only one guaranteed to have merged into the right book.
+      const succeededPlan = plans.find((plan) => succeededProfileIds.includes(plan.profileId));
+      if (!succeededPlan) throw new Error("No succeeded merge plan available to resolve the reconciled book");
+      reconciled = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(succeededPlan.grimmory.id) as { book_id: number } | undefined;
+      if (!reconciled) throw new Error("Reconciled Grimmory record could not be found");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn("Duplicate merge finalization failed after partial success", { bookId, duplicateId, succeededProfileIds, failures, error: err });
+      res.status(207).json({ ok: true, bookId: null, succeededProfileIds, failures, finalizationError: message });
+      return;
+    }
+
+    logger.info("Merged duplicate by repairing Grimmory authoritative IDs", { bookId, duplicateId, succeededProfileIds, failures, plans: plans.map((plan) => ({ authoritativeBookId: plan.authoritativeBookId, grimmoryBookId: plan.grimmoryBookId, profileId: plan.profileId, goodreads: Boolean(plan.goodreads), hardcover: Boolean(plan.hardcover) })) });
+    if (failures.length > 0) {
+      res.status(207).json({ ok: true, bookId: reconciled.book_id, succeededProfileIds, failures });
+    } else {
+      res.json({ ok: true, bookId: reconciled.book_id });
+    }
   } catch (err) { logger.warn("Failed duplicate merge", { bookId, duplicateId, error: err }); res.status(502).json({ error: err instanceof Error ? err.message : String(err) }); }
 });
 
 // POST /api/books/:bookId/chaptarr-id-mismatch/dismiss
 router.post("/:bookId/chaptarr-id-mismatch/dismiss", (req, res) => {
   const db = getDb();
-  const bookId = parseInt(req.params["bookId"] ?? "0", 10);
-  if (!Number.isFinite(bookId) || bookId <= 0) {
+  const bookId = parsePositiveId(req.params["bookId"]);
+  if (bookId === null) {
     res.status(400).json({ error: "Invalid book id" });
     return;
   }
 
   const rows = db.prepare(`
-    SELECT external_id
+    SELECT external_id, source_hardcover_book_id, source_goodreads_book_id
     FROM book_sources
     WHERE book_id = ?
       AND source_type = 'chaptarr'
       AND COALESCE(chaptarr_id_mismatch, 0) = 1
-  `).all(bookId) as { external_id: string }[];
+  `).all(bookId) as { external_id: string; source_hardcover_book_id: string | null; source_goodreads_book_id: string | null }[];
 
   if (rows.length === 0) {
     res.status(404).json({ error: "No Chaptarr ID mismatch is active for this book" });
     return;
   }
 
+  // Record what was actually mismatched (Chaptarr's currently-reported upstream
+  // ids), so this dismissal only suppresses that specific mismatch — if a later
+  // sync changes what Chaptarr reports, the row re-arms instead of staying
+  // silently dismissed against a mismatch that no longer applies.
   const insert = db.prepare(`
-    INSERT INTO chaptarr_id_mismatch_dismissals (chaptarr_external_id)
-    VALUES (?)
-    ON CONFLICT(chaptarr_external_id) DO UPDATE SET dismissed_at = datetime('now')
+    INSERT INTO chaptarr_id_mismatch_dismissals (chaptarr_external_id, dismissed_hardcover_book_id, dismissed_goodreads_book_id)
+    VALUES (?, ?, ?)
+    ON CONFLICT(chaptarr_external_id) DO UPDATE SET
+      dismissed_at = datetime('now'),
+      dismissed_hardcover_book_id = excluded.dismissed_hardcover_book_id,
+      dismissed_goodreads_book_id = excluded.dismissed_goodreads_book_id
   `);
   const transaction = db.transaction(() => {
-    for (const row of rows) insert.run(row.external_id);
+    for (const row of rows) insert.run(row.external_id, row.source_hardcover_book_id, row.source_goodreads_book_id);
   });
   transaction();
 
@@ -1170,13 +1237,18 @@ router.post("/:bookId/chaptarr-id-mismatch/dismiss", (req, res) => {
 // :profileId corresponds to BookRelationship.id (which equals profile_id in the new schema)
 router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, res) => {
   const db = getDb();
-  const bookId = parseInt(req.params["bookId"] ?? "0", 10);
-  const profileId = parseInt(req.params["profileId"] ?? "0", 10);
-  const { source } = req.body as { source?: "goodreads" | "hardcover" };
-  if (source !== "goodreads" && source !== "hardcover") {
-    res.status(400).json({ error: "source must be goodreads or hardcover" });
+  const bookId = parsePositiveId(req.params["bookId"]);
+  const profileId = parsePositiveId(req.params["profileId"]);
+  if (bookId === null || profileId === null) {
+    res.status(400).json({ error: "Invalid book or profile id" });
     return;
   }
+  const parsed = writeGrimmoryIdSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(validationErrorResponse(parsed.error));
+    return;
+  }
+  const { source } = parsed.data;
 
   // Grimmory local id/metadata is instance-specific — scope to this profile's own
   // Grimmory connection so the write below targets the correct server/book.
@@ -1249,7 +1321,10 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
       logger.info("Wrote Hardcover ID to Grimmory metadata", { bookId, profileId, grimmoryBookId, hardcoverBookId, hardcoverId });
     }
 
-    reconcileBookIdentities(db);
+    await runExclusiveOfSyncs(async () => {
+      const touchedSourceIds = (db.prepare("SELECT id FROM book_sources WHERE book_id = ?").all(bookId) as { id: number }[]).map((row) => row.id);
+      reconcileBookIdentities(db, { sourceIds: touchedSourceIds });
+    });
     res.json({ ok: true });
   } catch (err) {
     logger.warn("Failed to write external ID to Grimmory", { bookId, profileId, source, error: err });
@@ -1259,12 +1334,17 @@ router.post("/:bookId/relationships/:profileId/write-grimmory-id", async (req, r
 
 // GET /api/books/:id
 router.get("/:id", (req, res) => {
-  const id = parseInt(req.params["id"] ?? "0", 10);
-  const allRows = fetchRows();
+  const id = parsePositiveId(req.params["id"]);
+  if (id === null) { res.status(400).json({ error: "Invalid book id" }); return; }
+  // Duplicate matching only needs title/author/series, so candidates are looked
+  // up via the indexed duplicate_title_key/duplicate_author_key columns instead
+  // of scanning the whole `books` table; the heavier fetchRows() join is then
+  // scoped to just this book and its candidates.
+  const duplicateIds = probableDuplicateCandidateIds(fetchDuplicateMatchRows(id), id);
+  const allRows = fetchRows([id, ...duplicateIds]);
   const rows = allRows.filter((row) => row.book_id === id);
   if (rows.length === 0) { res.status(404).json({ error: "Not found" }); return; }
   const activeRelationshipRows = rows.filter((row) => row.has_any_ubs);
-  const duplicateIds = probableDuplicateCandidateIds(allRows, id);
   const duplicateCandidates = groupByBook(allRows)
     .filter((group) => duplicateIds.has(group[0]!.book_id))
     .map((group) => dbToDuplicateCandidate(group, duplicateMergePlans(getDb(), id, group[0]!.book_id).length > 0))

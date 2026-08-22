@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { getDb } from "../db/index.js";
-import type { DashboardResponse, BookSummary, SyncRun, ReadStatus, SyncHealth, MatchConfidence, MediaType } from "../../shared/types.js";
-import { normalizeExternalId } from "../identifiers.js";
+import type { DashboardResponse, DashboardMediaStats, BookSummary, SyncRun, ReadStatus, SyncHealth, MatchConfidence, MediaType } from "../../shared/types.js";
+import { hasIdentityReviewConflict } from "../sync/identity-review.js";
 
 const router = Router();
 
@@ -28,6 +28,7 @@ router.get("/", (_req, res) => {
       b.cover_cache_path AS book_cover_cache_path,
       b.last_modified_at AS book_last_modified_at,
       b.last_sync_at     AS book_last_sync_at,
+      b.media_type       AS book_media_type,
       CAST(grim_src.external_id AS INTEGER) AS grimmory_book_id,
       grim_src.source_media_type AS grimmory_media_type,
       grim_src.grimmory_hardcover_book_id,
@@ -39,6 +40,8 @@ router.get("/", (_req, res) => {
       gr_src.goodreads_book_link,
       CAST(chap_src.external_id AS INTEGER) AS chaptarr_book_id,
       chap_src.source_media_type AS chaptarr_media_type,
+      chap_src.chaptarr_monitored,
+      chap_src.chaptarr_has_file,
       grim_ubs.status  AS grimmory_status,
       grim_ubs.rating  AS grimmory_rating,
       hc_ubs.hardcover_status_id,
@@ -62,10 +65,21 @@ router.get("/", (_req, res) => {
   `).all() as DbBook[];
 
   const grouped = groupByBook(allRows);
-  const totalBooks = grouped.length;
-  const missingInGrimmory = grouped.filter((rows) => rows.every((row) => row.grimmory_book_id === null)).length;
-  const needsReview = grouped.filter((rows) => hasBookNeedsIdReview(rows)).length;
-  const pendingDownload = grouped.filter((rows) => rows.some((row) => row.sync_health === "pending_download")).length;
+
+  const mediaStats = (mediaType: "book" | "audiobook"): DashboardMediaStats => {
+    const groups = grouped.filter((rows) => rows[0]!.book_media_type === mediaType);
+    return {
+      totalBooks: groups.length,
+      notInChaptarr: groups.filter((rows) =>
+        rows.some((row) => row.hardcover_book_id !== null || row.goodreads_book_link !== null)
+        && rows.every((row) => !row.chaptarr_monitored && !row.chaptarr_has_file)
+      ).length,
+      grabInChaptarr: groups.filter((rows) =>
+        rows.some((row) => row.chaptarr_monitored) && rows.every((row) => !row.chaptarr_has_file)
+      ).length,
+      needsReview: groups.filter((rows) => hasBookNeedsIdReview(rows)).length
+    };
+  };
 
   const recentlyAdded: BookSummary[] = grouped
     .map(dbToSummary)
@@ -82,7 +96,7 @@ router.get("/", (_req, res) => {
   const recentActivity: SyncRun[] = recentRuns.map(dbToSyncRun);
 
   const response: DashboardResponse = {
-    stats: { totalBooks, missingInGrimmory, needsReview, pendingDownload },
+    stats: { book: mediaStats("book"), audiobook: mediaStats("audiobook") },
     recentlyAdded,
     recentActivity
   };
@@ -98,6 +112,7 @@ interface DbBook {
   book_cover_cache_path: string | null;
   book_last_modified_at: string;
   book_last_sync_at: string | null;
+  book_media_type: string | null;
   grimmory_book_id: number | null;
   grimmory_media_type: string | null;
   grimmory_hardcover_book_id: string | null;
@@ -108,6 +123,8 @@ interface DbBook {
   goodreads_book_link: string | null;
   chaptarr_book_id: number | null;
   chaptarr_media_type: string | null;
+  chaptarr_monitored: number | null;
+  chaptarr_has_file: number | null;
   grimmory_status: string | null;
   grimmory_rating: number | null;
   hardcover_status_id: number | null;
@@ -170,18 +187,6 @@ function coerceMediaType(value: string | null | undefined): Exclude<MediaType, "
   return null;
 }
 
-function aggregateMediaType(values: Array<string | null | undefined>): MediaType {
-  const set = new Set(
-    values
-      .map(coerceMediaType)
-      .filter((value): value is Exclude<MediaType, "mixed" | "unknown"> => value !== null)
-      .map((value) => value === "physical" || value === "ebook" ? "book" : value)
-  );
-  if (set.size === 0) return "unknown";
-  if (set.size === 1) return Array.from(set)[0]!;
-  return "mixed";
-}
-
 function dbToSummary(rows: DbBook[]): BookSummary {
   const row = rows[0]!;
   const profileIds = Array.from(new Set(rows.filter((r) => r.has_any_ubs).map((candidate) => candidate.profile_id))).sort((a, b) => a - b);
@@ -190,11 +195,7 @@ function dbToSummary(rows: DbBook[]): BookSummary {
     title: row.book_title,
     author: row.book_author,
     coverUrl: row.book_cover_cache_path,
-    mediaType: aggregateMediaType(rows.flatMap((candidate) => [
-      candidate.hardcover_media_type,
-      candidate.grimmory_media_type,
-      candidate.chaptarr_media_type
-    ])),
+    mediaType: coerceMediaType(row.book_media_type) ?? "unknown",
     userCount: profileIds.length,
     profileIds,
     grimmoryBookId: first(rows, (candidate) => candidate.grimmory_book_id),
@@ -215,66 +216,6 @@ function dbToSummary(rows: DbBook[]): BookSummary {
     hasSuperseded: rows.some((candidate) => Boolean(candidate.has_superseded)),
     needsIdReview: hasBookNeedsIdReview(rows)
   };
-}
-
-function distinctClean(values: Array<string | number | null | undefined>): string[] {
-  return Array.from(new Set(
-    values
-      .map((value) => normalizeExternalId(value))
-      .filter((value): value is string => Boolean(value))
-  ));
-}
-
-function distinctComparableIds(
-  rows: Array<Pick<DbBook, "goodreads_book_id" | "grimmory_goodreads_id" | "hardcover_book_id" | "grimmory_hardcover_book_id">>,
-  source: "goodreads" | "hardcover"
-): string[] {
-  if (source === "goodreads") {
-    const comparableRows = rows.filter((row) => normalizeExternalId(row.goodreads_book_id) !== null);
-    return distinctClean(comparableRows.flatMap((row) => [row.goodreads_book_id, row.grimmory_goodreads_id]));
-  }
-
-  // Only compare Grimmory's stored Hardcover ID when we also have a ShelfBridge
-  // Hardcover source row for the canonical book. Grimmory can legitimately carry
-  // a Hardcover cross-reference for books that never came from Hardcover.
-  const comparableRows = rows.filter((row) => row.hardcover_book_id !== null);
-  return distinctClean(comparableRows.flatMap((row) => [row.hardcover_book_id, row.grimmory_hardcover_book_id]));
-}
-
-function hasAggregateSourceReviewConflict(
-  rows: Array<Pick<DbBook, "goodreads_book_id" | "grimmory_goodreads_id" | "hardcover_book_id" | "grimmory_hardcover_book_id">>,
-  source: "goodreads" | "hardcover"
-): boolean {
-  const sourceIds = distinctComparableIds(rows, source);
-  const grimmoryIds = source === "goodreads"
-    ? distinctClean(rows.map((row) => row.grimmory_goodreads_id))
-    : distinctClean(rows.map((row) => row.grimmory_hardcover_book_id));
-
-  // If Grimmory doesn't carry an ID for this source, there is nothing actionable
-  // to review here beyond the canonical merge itself.
-  if (grimmoryIds.length === 0) return false;
-  if (grimmoryIds.length > 1) return true;
-
-  const [grimmoryId] = grimmoryIds;
-  return grimmoryId !== undefined && sourceIds.length > 0 && !sourceIds.includes(grimmoryId);
-}
-
-// book_sources rows for Grimmory/Hardcover/Goodreads are now scoped per profile
-// instance (see schema v14), so the same book can legitimately carry different
-// cross-reference IDs on different profiles' own servers — that's not a conflict.
-// Evaluate each profile's own rows independently rather than aggregating IDs
-// across every profile sharing this book.
-function hasIdentityReviewConflict(rows: DbBook[]): boolean {
-  const byProfile = new Map<number, DbBook[]>();
-  for (const row of rows) {
-    const group = byProfile.get(row.profile_id) ?? [];
-    group.push(row);
-    byProfile.set(row.profile_id, group);
-  }
-  return Array.from(byProfile.values()).some((profileRows) =>
-    hasAggregateSourceReviewConflict(profileRows, "goodreads")
-      || hasAggregateSourceReviewConflict(profileRows, "hardcover")
-  );
 }
 
 function hasBookNeedsIdReview(rows: DbBook[]): boolean {

@@ -5,6 +5,10 @@ import type { GrimmoryBook } from "./grimmory.js";
 import { normalizeExternalId } from "../identifiers.js";
 import type { getDb } from "../db/index.js";
 import type { SourceSnapshotStatus } from "./pruning.js";
+import { mapWithConcurrency } from "./concurrency.js";
+import { resolveSharedHardcoverOwnership, type SharedHardcoverOwnership } from "./hardcover-ownership.js";
+
+const GRIMMORY_PROGRESS_FETCH_CONCURRENCY = 8;
 
 type Db = ReturnType<typeof getDb>;
 export type SnapshotContext = {
@@ -34,6 +38,7 @@ export interface SourceSnapshots {
   grimmoryToken: string | null;
   absOwnedBookIds: Set<number>;
   absOwnedHardcoverBookIds: Set<string>;
+  sharedHardcoverOwnership: SharedHardcoverOwnership;
   grimmoryProgressById: Map<number, { readProgress: number | null; lastReadTime: string | null; readStatus: string | null }>;
 }
 
@@ -79,13 +84,37 @@ if (hasHardcover) {
     listsForListOnlyBooks = [selectedList];
   }
 
+  const ownedImportEnabled = !!(profile["hardcover_owned_import_enabled"] as number | null);
   const libraryBookIds = new Set(hcBooks.map((b) => b.book.id));
-  const listOnlyBooksById = new Map<number, { book: HardcoverUserBook["book"]; editionId: number | null; edition: HardcoverEdition | null }>();
+  const listOnlyBooksById = new Map<number, { book: HardcoverUserBook["book"]; editionId: number | null; edition: HardcoverEdition | null; statusId: number | null }>();
+
+  // Owned-list-only books get checked first, ahead of the generic "any list"
+  // fallback below: a book that only exists via the Owned list is one the
+  // profile specifically flagged as owned in some format — normally the
+  // equivalent of marking it "want to read", except the user can't actually
+  // do that through Hardcover's own status for an audiobook-only case without
+  // Chaptarr grabbing the wrong (book) format. So it gets Hardcover's real
+  // "want to read" status_id (1 — see matcher.ts's HARDCOVER_TO_GRIMMORY)
+  // here, rather than the generic fallback's null, letting it surface with a
+  // real status like any other tracked book.
+  if (ownedImportEnabled) {
+    const ownedList = hcLists.find((list) => list.slug === "owned");
+    for (const entry of ownedList?.entries ?? []) {
+      const book = entry.book;
+      if (!libraryBookIds.has(book.id) && !listOnlyBooksById.has(book.id)) {
+        listOnlyBooksById.set(book.id, { ...entry, statusId: 1 });
+      }
+    }
+  }
+
+  // Fallback: any other list (or a specifically-selected sync list) not
+  // already covered by the Owned-list check above keeps today's behavior —
+  // list membership alone isn't a strong enough signal to claim a status.
   for (const list of listsForListOnlyBooks) {
     for (const entry of list.entries) {
       const book = entry.book;
       if (!libraryBookIds.has(book.id) && !listOnlyBooksById.has(book.id)) {
-        listOnlyBooksById.set(book.id, entry);
+        listOnlyBooksById.set(book.id, { ...entry, statusId: null });
       }
     }
   }
@@ -94,7 +123,7 @@ if (hasHardcover) {
     const stubs: HardcoverUserBook[] = Array.from(listOnlyBooksById.values()).map((entry) => ({
       id: 0,
       edition_id: entry.editionId,
-      status_id: null,
+      status_id: entry.statusId,
       rating: null,
       updated_at: null,
       first_started_reading_date: null,
@@ -172,20 +201,36 @@ if (hasGrimmory) {
 // Fetch Grimmory progress (needed for Phase B Grimmory user state)
 const grimmoryProgressById = new Map<number, { readProgress: number | null; lastReadTime: string | null; readStatus: string | null }>();
 if (grimmoryAvailable && grimmoryToken && profile["sync_progress_enabled"] !== 0) {
-  for (const grBook of grimmoryBooks) {
+  await mapWithConcurrency(grimmoryBooks, GRIMMORY_PROGRESS_FETCH_CONCURRENCY, async (grBook) => {
     try {
       const progress = await adapters.fetchGrimmoryProgress(baseUrl, grimmoryToken, grBook.id);
       grimmoryProgressById.set(grBook.id, progress);
       grBook.readProgress = progress.readProgress;
       grBook.lastReadTime = progress.lastReadTime ?? grBook.lastReadTime ?? null;
+      // The bulk library fetch's readStatus can lag behind this per-book
+      // endpoint (e.g. a book just marked READING before the library list
+      // was cached) — apply it here too so ownership resolution and every
+      // other consumer of grBook.readStatus see the freshest value.
+      grBook.readStatus = progress.readStatus ?? grBook.readStatus ?? null;
     } catch (err) {
       logger.warn("Failed to fetch Grimmory progress", { profileId, grimmoryBookId: grBook.id, error: err });
     }
-  }
+  });
 }
 
-// Books with a runtime-validated Audiobookshelf link are ABS-owned: ABS is
-// the source of truth for their listening progress and status (Phase N).
+// Books with a runtime-validated Audiobookshelf link AND at least some
+// ABS-reported listening activity are ABS-owned: ABS is the source of truth
+// for their listening progress and status (Phase N). A runtime-validated
+// match only means the file was correctly identified — it says nothing
+// about whether the user has ever opened it, so ownership additionally
+// requires a persisted 'audiobookshelf' user_book_states row with an actual
+// positive progress/current-time value. Phase N upserts that row whenever
+// ABS returns a progress entry for the item at all, including one sitting
+// at 0% (e.g. added to a shelf but never opened) — row existence alone
+// isn't proof of listening activity. Without the positive-value check, an
+// unstarted audiobook a user merely owns a file for would silently block a
+// finished/in-progress ebook sibling from ever syncing status to their
+// shared Hardcover record.
 // Computed from the DB as it stood at the end of the previous run — a
 // stable snapshot — rather than anything derived from Hardcover's data
 // this run, because Hardcover's "current edition" on a shared book can
@@ -194,10 +239,18 @@ if (grimmoryAvailable && grimmoryToken && profile["sync_progress_enabled"] !== 0
 // audiobook and print from one sync to the next.
 const absOwnedBookIds = new Set(
   (db.prepare(`
-    SELECT DISTINCT book_id FROM book_sources
-    WHERE source_type = 'audiobookshelf' AND source_instance_id = ?
-      AND book_id IS NOT NULL AND audiobookshelf_runtime_validated = 1
-  `).all(profileId) as { book_id: number }[]).map((row) => row.book_id)
+    SELECT DISTINCT bs.book_id FROM book_sources bs
+    WHERE bs.source_type = 'audiobookshelf' AND bs.source_instance_id = ?
+      AND bs.book_id IS NOT NULL AND bs.audiobookshelf_runtime_validated = 1
+      AND EXISTS (
+        SELECT 1 FROM user_book_states ubs
+        WHERE ubs.book_id = bs.book_id AND ubs.profile_id = ? AND ubs.source_type = 'audiobookshelf'
+          AND (
+            (ubs.progress IS NOT NULL AND ubs.progress > 0)
+            OR (ubs.audiobookshelf_current_time IS NOT NULL AND ubs.audiobookshelf_current_time > 0)
+          )
+      )
+  `).all(profileId, profileId) as { book_id: number }[]).map((row) => row.book_id)
 );
 
 // The Hardcover book ID shared by an ABS-owned audiobook, anchored via
@@ -234,5 +287,11 @@ if (absOwnedBookIds.size > 0) {
   }
 }
 
-  return { hcBooks, hcEditions, hcLists, hardcoverSnapshotStatus, grimmoryBooks, grimmoryAvailable, grimmorySnapshotStatus, grimmoryToken, absOwnedBookIds, absOwnedHardcoverBookIds, grimmoryProgressById };
+  // Resolved once here — after the Grimmory/ABS-activity snapshots are both
+  // known — so every later phase agrees on who owns a shared Hardcover
+  // record instead of each re-deriving its own answer from a different
+  // subset of this same data.
+  const sharedHardcoverOwnership = resolveSharedHardcoverOwnership(grimmoryBooks, absOwnedHardcoverBookIds);
+
+  return { hcBooks, hcEditions, hcLists, hardcoverSnapshotStatus, grimmoryBooks, grimmoryAvailable, grimmorySnapshotStatus, grimmoryToken, absOwnedBookIds, absOwnedHardcoverBookIds, sharedHardcoverOwnership, grimmoryProgressById };
 }

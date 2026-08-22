@@ -25,19 +25,23 @@ export interface AudiobookshelfLibraryContext {
 export async function syncAudiobookshelfLibrary(context: AudiobookshelfLibraryContext): Promise<void> {
   const { db, profileId, runId, hasAbs, absBaseUrl, absApiKey, adapters, counters, recordEvent } = context;
 // ── Phase M: Audiobookshelf library sync ─────────────────────────────────
-if (hasAbs) {
+if (hasAbs && !absApiKey) {
+  logger.warn("Skipping Audiobookshelf library sync: no API key configured despite hasAbs being set", { profileId });
+}
+if (hasAbs && absApiKey) {
   try {
     logger.info("Fetching Audiobookshelf libraries", { profileId });
-    const absLibraries = await adapters.fetchAudiobookshelfLibraries(absBaseUrl, absApiKey!);
+    const absLibraries = await adapters.fetchAudiobookshelfLibraries(absBaseUrl, absApiKey);
     const bookLibraries = absLibraries.filter((lib) => lib.mediaType === "book");
     const liveAbsIds = new Set<string>();
+    const touchedSourceIds: number[] = [];
     let absSnapshotComplete = true;
     logger.info("Audiobookshelf libraries fetched", { profileId, total: absLibraries.length, bookLibraries: bookLibraries.length });
 
     for (const library of bookLibraries) {
       let items: Awaited<ReturnType<SyncAdapters["fetchAudiobookshelfLibraryItems"]>>;
       try {
-        items = await adapters.fetchAudiobookshelfLibraryItems(absBaseUrl, absApiKey!, library.id);
+        items = await adapters.fetchAudiobookshelfLibraryItems(absBaseUrl, absApiKey, library.id);
       } catch (libraryErr) {
         absSnapshotComplete = false;
         counters.sourceFailures++;
@@ -152,7 +156,7 @@ if (hasAbs) {
           absFields["book_id"] = linkedBookId;
         }
 
-        upsertBookSource(db, "audiobookshelf", profileId, item.id, absFields);
+        touchedSourceIds.push(upsertBookSource(db, "audiobookshelf", profileId, item.id, absFields));
       }
     }
 
@@ -181,7 +185,9 @@ if (hasAbs) {
           AND audiobookshelf_item_id IS NOT NULL
       `).run(profileId);
     }
-    reconcileBookIdentities(db);
+    if (touchedSourceIds.length > 0) {
+      reconcileBookIdentities(db, { sourceIds: touchedSourceIds });
+    }
   } catch (err) {
     logger.warn("Audiobookshelf library sync failed; skipping ABS phase", { profileId, error: String(err) });
     recordEvent(db, runId, profileId, "Audiobookshelf", "api_failure", "audiobookshelf", "source_unavailable", { error: String(err) });

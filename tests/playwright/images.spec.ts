@@ -9,11 +9,21 @@ import { test, expect, type Page } from "@playwright/test";
  * render a fallback placeholder rather than an <img>, so they are naturally
  * excluded from load-failure checks.
  *
- * Images use loading="lazy", so we wait for network idle before checking.
+ * Images use loading="lazy". Rather than waiting for network idle (which
+ * doesn't reliably signal that lazy images have settled, and can resolve
+ * before an in-viewport image finishes decoding), wait deterministically
+ * until every image currently in the DOM is either loaded or is below the
+ * fold (and therefore expected to still be lazy-pending).
  */
 
 async function checkCovers(page: Page, context: string) {
-  await page.waitForLoadState("networkidle");
+  await page.waitForFunction(() => {
+    const imgs = Array.from(document.querySelectorAll<HTMLImageElement>("img.object-cover[src*='/images/']"));
+    return imgs.every((img) => img.complete || img.getBoundingClientRect().top > window.innerHeight);
+  }, { timeout: 10_000 }).catch(() => {
+    // Best-effort: fall through and let the failure check below report
+    // exactly which in-viewport images never finished loading.
+  });
 
   const results = await page.evaluate(() =>
     Array.from(document.querySelectorAll("img.object-cover[src*='/images/']")).map((el) => {

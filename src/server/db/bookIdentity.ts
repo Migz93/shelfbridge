@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { cleanupOrphanedImageCache } from "./imageCacheMaintenance.js";
 import { logger } from "../logger.js";
 import { normalizeExternalId, normalizeIsbn } from "../identifiers.js";
+import { probableDuplicateTitleKey, probableDuplicateAuthorKey } from "./duplicateKeys.js";
 
 interface BookSourceRow {
   id: number;
@@ -41,7 +42,7 @@ interface BookSourceRow {
   created_at: string | null;
 }
 
-interface UserBookStateMoveRow {
+export interface UserBookStateMoveRow {
   id: number;
   book_id: number;
   profile_id: number;
@@ -89,7 +90,9 @@ function normalizeTitle(value: string | null | undefined): string | null {
   const text = clean(value)
     ?.toLowerCase()
     .replace(/\s*\(.*?\)\s*/g, " ")
-    .replace(/[^a-z0-9\s]/g, " ")
+    // Unicode-aware: an ASCII-only character class would strip a non-Latin
+    // title down to nothing, defeating title-based matching for it entirely.
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim() ?? null;
   return text && text.length > 0 ? text : null;
@@ -167,14 +170,32 @@ function inferEditionFormatBucket(format: string | null | undefined): FormatBuck
   return "unknown";
 }
 
+// Collapses a resolved media type string into the two buckets that matter
+// for comparing whether two editions/siblings are "the same format" or
+// genuinely different: physical and ebook (or the generic "book") are both
+// "book", audiobook stays "audiobook", anything else is unresolved. Shared
+// with sync-utils.ts's formatBucket (which narrows the input type further)
+// so the two can't silently drift apart into disagreeing about what counts
+// as which bucket.
+export function resolvedMediaTypeBucket(mediaType: string | null): "book" | "audiobook" | null {
+  if (mediaType === "audiobook") return "audiobook";
+  if (mediaType === "ebook" || mediaType === "physical" || mediaType === "book") return "book";
+  return null;
+}
+
 function rowFormatBucket(row: Pick<BookSourceRow,
   "source_type" | "source_media_type" | "source_edition_format" | "source_narrator" | "grimmory_primary_file_path" | "chaptarr_primary_file_path"
 >): FormatBucket {
   const editionBucket = inferEditionFormatBucket(row.source_edition_format);
-  if (row.source_type === "hardcover" && editionBucket !== "unknown") return editionBucket;
 
-  if (row.source_media_type === "audiobook") return "audiobook";
-  if (row.source_media_type === "ebook" || row.source_media_type === "physical" || row.source_media_type === "book") return "book";
+  // source_media_type is now trusted first for every source type, including
+  // Hardcover: it's derived from Hardcover's structured reading_format_id
+  // (see inferHardcoverMediaType in sync-utils.ts), which is far more
+  // reliable than the free-text edition_format this function otherwise
+  // parses — that field is user-submitted and can be blank, absent, or
+  // mislabeled relative to the edition's actual reading_format.
+  const resolvedBucket = resolvedMediaTypeBucket(row.source_media_type);
+  if (resolvedBucket) return resolvedBucket;
 
   if (editionBucket !== "unknown") return editionBucket;
 
@@ -249,8 +270,15 @@ function highIdentityKeys(row: BookSourceRow): IdentityKey[] {
   ));
 }
 
+// Deliberately NOT bucket-prefixed like highIdentityKeys/filePathIdentityKeys: an
+// ISBN identifies a specific edition regardless of the format bucket a row happens
+// to resolve to, and a row's bucket is often unresolved ("unknown") for reasons
+// that have nothing to do with the book's actual format (e.g. a Hardcover source
+// with no edition data yet — see rowFormatBucket). Prefixing here would silently
+// block an exact-ISBN match between such a row and its already-canonicalized
+// counterpart. The merge loop below still guards this with highKeyConflict(), so
+// a shared ISBN alone can never override a genuinely conflicting authoritative ID.
 function isbnIdentityKeys(row: BookSourceRow): IdentityKey[] {
-  const bucket = rowFormatBucket(row);
   const pairs: Array<[string, string | null]> = [
     ["isbn13", normalizeIsbn(row.isbn13)],
     ["isbn10", normalizeIsbn(row.isbn10)],
@@ -259,7 +287,7 @@ function isbnIdentityKeys(row: BookSourceRow): IdentityKey[] {
   return Array.from(new Set(
     pairs
       .filter((pair): pair is [string, string] => pair[1] !== null)
-      .map(([type, value]) => `${bucket}.${type}:${value}` as IdentityKey)
+      .map(([type, value]) => `${type}:${value}` as IdentityKey)
   ));
 }
 
@@ -337,6 +365,11 @@ interface RootIndexEntry {
   titleAuthorKeys: Set<IdentityKey>;
   seriesNames: Set<string>;
   seriesNumbers: Set<string>;
+  /** Known ("book"/"audiobook", never "unknown") format buckets seen among this
+   * root's rows — used to block an ISBN match from merging two clusters that
+   * are on opposite sides of the book/audiobook split (see the ISBN-merge loop
+   * below). */
+  formatBuckets: Set<"book" | "audiobook">;
 }
 
 // Absorbs the smaller set into the larger one and returns it (mutating), so a long
@@ -356,7 +389,8 @@ function mergeRootEntries(a: RootIndexEntry | undefined, b: RootIndexEntry | und
     highKeys: mergeSets(a?.highKeys, b?.highKeys),
     titleAuthorKeys: mergeSets(a?.titleAuthorKeys, b?.titleAuthorKeys),
     seriesNames: mergeSets(a?.seriesNames, b?.seriesNames),
-    seriesNumbers: mergeSets(a?.seriesNumbers, b?.seriesNumbers)
+    seriesNumbers: mergeSets(a?.seriesNumbers, b?.seriesNumbers),
+    formatBuckets: mergeSets(a?.formatBuckets, b?.formatBuckets)
   };
 }
 
@@ -438,22 +472,172 @@ function stateHasProgress(row: Pick<UserBookStateMoveRow, "progress" | "progress
     || (row.progress !== null && Math.abs(row.progress) > 0.001);
 }
 
-function shouldMoveState(source: UserBookStateMoveRow, existing: UserBookStateMoveRow): boolean {
+// Also used by hardcover-legacy-cleanup.ts, so a stranded state being migrated
+// off a legacy row resolves a conflict with the live row's own state the same
+// way a book merge would — preferring meaningful progress, then the newer
+// timestamp — rather than a cleanup-specific rule that could discard the more
+// current side.
+export function shouldMoveState(source: UserBookStateMoveRow, existing: UserBookStateMoveRow): boolean {
   const sourceHasProgress = stateHasProgress(source);
   const existingHasProgress = stateHasProgress(existing);
   if (sourceHasProgress !== existingHasProgress) return sourceHasProgress;
   return (source.last_modified_at ?? "") >= (existing.last_modified_at ?? "");
 }
 
-export function reconcileBookIdentities(db: Database.Database): void {
-  const rows = db.prepare(`SELECT * FROM book_sources ORDER BY id`).all() as BookSourceRow[];
+export interface ReconcileScope {
+  /** book_sources.id values that just changed and need identity resolution. */
+  sourceIds: number[];
+}
+
+const SCOPE_EXPANSION_ROW_CAP = 20000;
+const SCOPE_EXPANSION_ITERATION_CAP = 6;
+
+function chunk<T>(values: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < values.length; i += size) chunks.push(values.slice(i, i + size));
+  return chunks;
+}
+
+// The identity-key values a row could be found by during scoped expansion —
+// every key type the merge passes below can act on (high-confidence IDs, ISBN,
+// file path, title+author). Deliberately over-inclusive: a value collision
+// across unrelated key *types* just pulls in a harmless extra candidate, which
+// the real merge passes below will correctly decline to merge — only a missed
+// value would be dangerous.
+function expansionKeyValues(row: BookSourceRow): string[] {
+  const keys: IdentityKey[] = [...highIdentityKeys(row), ...isbnIdentityKeys(row), ...filePathIdentityKeys(row)];
+  const titleKey = titleAuthorKey(row);
+  if (titleKey) keys.push(titleKey);
+  return Array.from(new Set(keys.map((key) => key.slice(key.indexOf(":") + 1))));
+}
+
+// Expands a set of just-changed book_sources ids into the full row set a
+// correct reconcile pass needs: every row belonging to any book that could
+// possibly merge with a touched row. This is a closure, not a heuristic — a
+// multi-hop chain (row A shares an ISBN with book B, book B shares a
+// title/author with book C) is still found, because candidate books discovered
+// on one iteration have their own rows re-scanned for further candidates on
+// the next, until a fixed point is reached.
+//
+// Known gap: the "corroborated Chaptarr->Goodreads bridge" merge pass further
+// below keys off a Chaptarr row's own (possibly stale) source_goodreads_edition_id
+// field, which is never persisted to book_identity_keys — Chaptarr's IDs aren't
+// trusted as identity keys. A brand-new row that could *only* reach its match
+// through that specific bridge, with no shared ISBN/high-key/file-path/title-
+// author to ride along on, will not be discovered here. That bridge is already
+// a narrow fallback for stale/conflicting data, and the daily full-reconcile
+// maintenance job (scheduler.ts) closes any such gap within 24 hours.
+//
+// Returns null if the closure grows past a safety cap — the caller should fall
+// back to a full reconcile in that case rather than silently truncate it.
+// `caps` defaults to the module constants; it's only overridable so tests can
+// exercise the cap-hit paths cheaply, without needing tens of thousands of
+// rows or a genuinely 7-hop chain to prove the fallback triggers correctly.
+export function expandScopeToRows(
+  db: Database.Database,
+  initialSourceIds: number[],
+  caps: { rowCap?: number; iterationCap?: number } = {}
+): BookSourceRow[] | null {
+  const rowCap = caps.rowCap ?? SCOPE_EXPANSION_ROW_CAP;
+  const iterationCap = caps.iterationCap ?? SCOPE_EXPANSION_ITERATION_CAP;
+  const rowsById = new Map<number, BookSourceRow>();
+  const visitedBookIds = new Set<number>();
+  const processedKeyValues = new Set<string>();
+
+  const fetchByIds = (column: "id" | "book_id", ids: number[]): BookSourceRow[] => {
+    const unique = Array.from(new Set(ids));
+    if (unique.length === 0) return [];
+    const results: BookSourceRow[] = [];
+    for (const batch of chunk(unique, 500)) {
+      const placeholders = batch.map(() => "?").join(",");
+      results.push(...(db.prepare(`SELECT * FROM book_sources WHERE ${column} IN (${placeholders})`).all(...batch) as BookSourceRow[]));
+    }
+    return results;
+  };
+
+  const candidateBookIdsForKeys = (values: string[]): number[] => {
+    const results = new Set<number>();
+    for (const batch of chunk(values, 500)) {
+      const placeholders = batch.map(() => "?").join(",");
+      for (const row of db.prepare(`SELECT DISTINCT book_id FROM book_identity_keys WHERE key_value IN (${placeholders})`).all(...batch) as { book_id: number }[]) {
+        results.add(row.book_id);
+      }
+    }
+    return Array.from(results);
+  };
+
+  // Adds rows and checks the row cap immediately, at every point rows are
+  // added — not just once per iteration — so no fetch (including the very
+  // last one before the iteration cap would trip) can push the closure past
+  // the cap undetected.
+  const addRows = (rows: BookSourceRow[]): boolean => {
+    for (const row of rows) rowsById.set(row.id, row);
+    return rowsById.size > rowCap;
+  };
+
+  if (addRows(fetchByIds("id", initialSourceIds))) return null;
+
+  for (let iteration = 0; iteration < iterationCap; iteration++) {
+    const newBookIds = Array.from(new Set(
+      Array.from(rowsById.values())
+        .map((row) => row.book_id)
+        .filter((id): id is number => id !== null && !visitedBookIds.has(id))
+    ));
+    for (const id of newBookIds) visitedBookIds.add(id);
+    if (addRows(fetchByIds("book_id", newBookIds))) return null;
+
+    const keyValues = Array.from(new Set(Array.from(rowsById.values()).flatMap(expansionKeyValues)))
+      .filter((value) => !processedKeyValues.has(value));
+    // Fixed point: nothing new to expand from. This is the only path that
+    // returns a result — every other exit (including exhausting the
+    // iteration cap below) means the closure might still be incomplete, so
+    // it must return null and let the caller fall back to a full reconcile
+    // rather than silently return a partial scope.
+    if (keyValues.length === 0) return Array.from(rowsById.values()).sort((a, b) => a.id - b.id);
+    for (const value of keyValues) processedKeyValues.add(value);
+
+    const newCandidateBookIds = candidateBookIdsForKeys(keyValues).filter((id) => !visitedBookIds.has(id));
+    if (newCandidateBookIds.length === 0) return Array.from(rowsById.values()).sort((a, b) => a.id - b.id);
+
+    if (addRows(fetchByIds("book_id", newCandidateBookIds))) return null;
+  }
+
+  return null;
+}
+
+export type ReconcileProgressPhase = "rows_loaded" | "groups_computed" | "transaction_committed" | "image_cache_cleaned";
+export type ReconcileProgressCallback = (phase: ReconcileProgressPhase, details: Record<string, unknown>) => void;
+
+export function reconcileBookIdentities(db: Database.Database, scope?: ReconcileScope, onProgress?: ReconcileProgressCallback): void {
+  if (scope && scope.sourceIds.length === 0) return;
+
+  let rows: BookSourceRow[];
+  if (scope) {
+    const expanded = expandScopeToRows(db, scope.sourceIds);
+    if (expanded === null) {
+      logger.warn("Scoped reconcile exceeded expansion cap; falling back to a full reconcile", {
+        sourceIdCount: scope.sourceIds.length
+      });
+      reconcileBookIdentities(db, undefined, onProgress);
+      return;
+    }
+    rows = expanded;
+  } else {
+    rows = db.prepare(`SELECT * FROM book_sources ORDER BY id`).all() as BookSourceRow[];
+  }
+  onProgress?.("rows_loaded", { rowCount: rows.length, scoped: Boolean(scope) });
+
   if (rows.length === 0) {
-    cleanupOrphanedImageCache(db);
+    if (!scope) cleanupOrphanedImageCache(db);
     return;
   }
   const rowsById = new Map(rows.map((row) => [row.id, row]));
+  // A book_sources row's book_id is FK-enforced (foreign_keys=ON, ON DELETE CASCADE),
+  // so every non-null book_id appearing in `rows` is guaranteed to reference a book
+  // that currently exists — no need for a separate `SELECT id FROM books` query, and
+  // this stays correct whether `rows` is the full catalog or a scoped expansion.
   const validBookIds = new Set(
-    (db.prepare("SELECT id FROM books").all() as { id: number }[]).map((row) => row.id)
+    rows.map((row) => row.book_id).filter((id): id is number => id !== null)
   );
 
   // Books that have at least one non-Chaptarr source are "canonical" — they were
@@ -509,11 +693,13 @@ export function reconcileBookIdentities(db: Database.Database): void {
     const titleKey = titleAuthorKey(row);
     const seriesName = normalizeTitle(row.series_name);
     const seriesNumber = normalizeSeriesNumber(row.series_number);
+    const rowBucket = rowFormatBucket(row);
     rootIndex.set(row.id, {
       highKeys: new Set(highKeys),
       titleAuthorKeys: new Set(titleKey ? [titleKey] : []),
       seriesNames: new Set(seriesName ? [seriesName] : []),
-      seriesNumbers: new Set(seriesNumber ? [seriesNumber] : [])
+      seriesNumbers: new Set(seriesNumber ? [seriesNumber] : []),
+      formatBuckets: new Set(rowBucket === "unknown" ? [] : [rowBucket])
     });
 
     for (const key of highKeys) {
@@ -556,6 +742,22 @@ export function reconcileBookIdentities(db: Database.Database): void {
       const rootA = uf.find(ids[0]!);
       const rootB = uf.find(id);
       if (rootA === rootB) continue;
+      // An audiobook edition can genuinely report the same ISBN as its print/
+      // ebook counterpart (a real Grimmory/Hardcover metadata quirk) — that's
+      // not evidence they're the same canonical book. Book vs. audiobook are
+      // deliberately different canonicals everywhere else in this codebase
+      // (rowFormatBucket, the bucket-prefixed high keys above, the Hardcover
+      // Owned-list/shared-sibling dual-row mechanism), so a cross-bucket ISBN
+      // match must never be allowed to silently re-merge them. Skip only when
+      // both sides have a *known* bucket and they disagree — an unknown
+      // bucket carries no contradicting signal and must not block a
+      // legitimate same-format merge just because format wasn't classified.
+      const bucketsA = rootIndex.get(rootA)?.formatBuckets ?? new Set();
+      const bucketsB = rootIndex.get(rootB)?.formatBuckets ?? new Set();
+      if (bucketsA.size > 0 && bucketsB.size > 0 && ![...bucketsA].some((b) => bucketsB.has(b))) {
+        logger.debug("Skipped ISBN-based book merge: opposite format buckets", { rootA, rootB });
+        continue;
+      }
       const keysA = rootIndex.get(rootA)?.highKeys ?? new Set<IdentityKey>();
       const keysB = rootIndex.get(rootB)?.highKeys ?? new Set<IdentityKey>();
       // A shared ISBN is strong corroborating evidence, but a conflicting authoritative
@@ -571,7 +773,18 @@ export function reconcileBookIdentities(db: Database.Database): void {
           && normalizeTitle(goodreadsRow.title) === normalizeTitle(grimmoryRow.title));
         const corroboratedPath = Boolean(grimmoryRow && filePathIdentityKeys(grimmoryRow)
           .some((key) => corroboratedGrimmoryChaptarrFilePaths.has(key)));
-        if (sameTitle && corroboratedPath) {
+        // sameTitle/corroboratedPath only vouch for firstRow and secondRow
+        // specifically. unionRoots below merges their whole clusters, so
+        // confirm the conflict is actually confined to these two rows —
+        // otherwise an unrelated conflicting member already in one of the
+        // clusters would get pulled into the merge on this pair's coattails.
+        const residualKeysA = new Set([...keysA].filter((key) => !new Set(highIdentityKeys(firstRow!)).has(key)));
+        const residualKeysB = new Set([...keysB].filter((key) => !new Set(highIdentityKeys(secondRow!)).has(key)));
+        const conflictConfinedToThisPair = sameTitle && corroboratedPath
+          && !highKeyConflict(residualKeysA, residualKeysB)
+          && !highKeyConflict(residualKeysA, new Set(highIdentityKeys(secondRow!)))
+          && !highKeyConflict(new Set(highIdentityKeys(firstRow!)), residualKeysB);
+        if (conflictConfinedToThisPair) {
           unionRoots(rootA, rootB);
           logger.info("Merged ISBN match despite stale Grimmory identifier", {
             goodreadsSourceId: goodreadsRow!.id,
@@ -611,10 +824,11 @@ export function reconcileBookIdentities(db: Database.Database): void {
       const rowB = rowsById.get(id);
       const isChaptarrGrimmoryPair = (rowA?.source_type === "chaptarr" && rowB?.source_type === "grimmory")
         || (rowA?.source_type === "grimmory" && rowB?.source_type === "chaptarr");
-      if (isChaptarrGrimmoryPair && canBridgeChaptarrToGrimmory) {
-        unionRoots(rootA, rootB);
-        continue;
-      }
+      // A bridgeable pair was already unioned above (rootA would equal rootB
+      // and the loop would have continued at the top), so reaching here with
+      // isChaptarrGrimmoryPair true only happens when the pair could NOT be
+      // bridged (ambiguous Grimmory instance) — skip it rather than falling
+      // through to the high-key conflict check below.
       if (isChaptarrGrimmoryPair) continue;
       const keysA = rootIndex.get(rootA)?.highKeys ?? new Set<IdentityKey>();
       const keysB = rootIndex.get(rootB)?.highKeys ?? new Set<IdentityKey>();
@@ -737,17 +951,20 @@ export function reconcileBookIdentities(db: Database.Database): void {
     group.push(row);
     groups.set(root, group);
   }
+  onProgress?.("groups_computed", { groupCount: groups.size });
 
   const insertBook = db.prepare(`
     INSERT INTO books (
       media_type, title, author, cover_url, cover_cache_path, isbn13, isbn10,
-      series_name, series_number, last_sync_at, last_modified_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))
+      series_name, series_number, duplicate_title_key, duplicate_author_key,
+      last_sync_at, last_modified_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))
   `);
   const updateBook = db.prepare(`
     UPDATE books SET
       media_type = ?, title = ?, author = ?, cover_url = ?, cover_cache_path = ?,
       isbn13 = ?, isbn10 = ?, series_name = ?, series_number = ?,
+      duplicate_title_key = ?, duplicate_author_key = ?,
       last_sync_at = ?, last_modified_at = COALESCE(?, datetime('now'))
     WHERE id = ?
   `);
@@ -763,7 +980,9 @@ export function reconcileBookIdentities(db: Database.Database): void {
     WHERE book_id = ? AND profile_id = ? AND source_type = ?
   `);
   const clearKeys = db.prepare("DELETE FROM book_identity_keys");
+  const clearKeysForBook = db.prepare("DELETE FROM book_identity_keys WHERE book_id = ?");
   const insertKey = db.prepare("INSERT OR IGNORE INTO book_identity_keys (book_id, key_type, key_value) VALUES (?, ?, ?)");
+  const selectHasUserState = db.prepare("SELECT 1 FROM user_book_states WHERE book_id = ? LIMIT 1");
 
   const moveUserStates = (targetBookId: number, sourceBookId: number): void => {
     const states = selectUserStatesForBook.all(sourceBookId) as UserBookStateMoveRow[];
@@ -780,8 +999,24 @@ export function reconcileBookIdentities(db: Database.Database): void {
       if (shouldMoveState(state, conflict)) {
         deleteUserState.run(conflict.id);
         updateUserStateBook.run(targetBookId, state.id);
+        logger.warn("Replaced conflicting user state while moving books into a merged canonical", {
+          keptId: state.id,
+          discardedId: conflict.id,
+          profileId: state.profile_id,
+          sourceBookId,
+          targetBookId,
+          sourceType: state.source_type
+        });
       } else {
         deleteUserState.run(state.id);
+        logger.warn("Discarded stale user state while moving books into a merged canonical", {
+          keptId: conflict.id,
+          discardedId: state.id,
+          profileId: state.profile_id,
+          sourceBookId,
+          targetBookId,
+          sourceType: state.source_type
+        });
       }
     }
   };
@@ -825,9 +1060,17 @@ export function reconcileBookIdentities(db: Database.Database): void {
     }
   };
 
-  const repairAudiobookshelfStates = (): void => {
+  // scopeBookIds, when given, restricts the repair to book_sources rows whose
+  // (already-reassigned-above) book_id is one this pass touched — a new mismatch
+  // can only appear against a book_id this pass just wrote, so this is a
+  // sufficient scope, not a heuristic. Any pre-existing mismatch elsewhere in
+  // the catalog is left for the next full reconcile (see the daily maintenance
+  // job in scheduler.ts).
+  const repairAudiobookshelfStates = (scopeBookIds?: number[]): void => {
+    if (scopeBookIds && scopeBookIds.length === 0) return;
     // Matched by (external_id AND instance) — a colliding local item id on a
     // different profile's ABS server must not move this profile's user state.
+    const scopeClause = scopeBookIds ? `AND bs.book_id IN (${scopeBookIds.map(() => "?").join(",")})` : "";
     const rows = db.prepare(`
       SELECT ubs.*, bs.book_id AS source_book_id
       FROM user_book_states ubs
@@ -839,16 +1082,19 @@ export function reconcileBookIdentities(db: Database.Database): void {
         AND ubs.audiobookshelf_item_id IS NOT NULL
         AND bs.book_id IS NOT NULL
         AND ubs.book_id != bs.book_id
-    `).all() as Array<UserBookStateMoveRow & { source_book_id: number }>;
+        ${scopeClause}
+    `).all(...(scopeBookIds ?? [])) as Array<UserBookStateMoveRow & { source_book_id: number }>;
 
     for (const row of rows) {
       repairLinkedState(row, "Audiobookshelf");
     }
   };
 
-  const repairGrimmoryStates = (): void => {
+  const repairGrimmoryStates = (scopeBookIds?: number[]): void => {
+    if (scopeBookIds && scopeBookIds.length === 0) return;
     // Matched by (external_id AND instance) — a colliding local book id on a
     // different profile's Grimmory server must not move this profile's user state.
+    const scopeClause = scopeBookIds ? `AND bs.book_id IN (${scopeBookIds.map(() => "?").join(",")})` : "";
     const rows = db.prepare(`
       SELECT ubs.*, bs.book_id AS source_book_id
       FROM user_book_states ubs
@@ -860,7 +1106,8 @@ export function reconcileBookIdentities(db: Database.Database): void {
         AND ubs.grimmory_book_id IS NOT NULL
         AND bs.book_id IS NOT NULL
         AND ubs.book_id != bs.book_id
-    `).all() as Array<UserBookStateMoveRow & { source_book_id: number }>;
+        ${scopeClause}
+    `).all(...(scopeBookIds ?? [])) as Array<UserBookStateMoveRow & { source_book_id: number }>;
 
     for (const row of rows) {
       repairLinkedState(row, "Grimmory");
@@ -871,6 +1118,19 @@ export function reconcileBookIdentities(db: Database.Database): void {
   let created = 0;
   let reassigned = 0;
   let merged = 0;
+  let skippedCrossProfileGroups = 0;
+  const CROSS_PROFILE_SAMPLE_LIMIT = 5;
+  const skippedCrossProfileSample: Array<{ path: string; instanceIds: Array<number | null> }> = [];
+  const trackSkippedCrossProfileGroup = (crossingKeys: IdentityKey[]): void => {
+    skippedCrossProfileGroups++;
+    if (skippedCrossProfileSample.length >= CROSS_PROFILE_SAMPLE_LIMIT) return;
+    for (const key of crossingKeys) {
+      if (skippedCrossProfileSample.length >= CROSS_PROFILE_SAMPLE_LIMIT) break;
+      const path = key.slice(key.indexOf(".file_path:") + ".file_path:".length);
+      const instanceIds = Array.from(scopedInstancesByCanonicalFilePath.get(key) ?? []);
+      skippedCrossProfileSample.push({ path, instanceIds });
+    }
+  };
   const chaptarrOrphanReassignments = new Map<number, Set<number>>();
   const trackChaptarrOrphanReassignment = (oldBookId: number | null, targetBookId: number): void => {
     if (oldBookId === null || oldBookId === targetBookId) return;
@@ -880,7 +1140,17 @@ export function reconcileBookIdentities(db: Database.Database): void {
   };
 
   const transaction = db.transaction(() => {
-    clearKeys.run();
+    // Unscoped: this pass reprocesses every row, so it's safe (and simplest) to
+    // wipe and fully repopulate the whole table. Scoped: only the books whose
+    // rows are in this pass's closure are being reprocessed, so only their keys
+    // are cleared — an unconditional full wipe here would erase identity keys
+    // for every book *outside* the scope, breaking the next scoped call's
+    // candidate expansion.
+    if (!scope) {
+      clearKeys.run();
+    } else {
+      for (const bookId of validBookIds) clearKeysForBook.run(bookId);
+    }
 
     for (const group of groups.values()) {
       const isChaptarrOnly = group.every((r) => r.source_type === "chaptarr");
@@ -892,18 +1162,30 @@ export function reconcileBookIdentities(db: Database.Database): void {
         // proven canonical record without collapsing the ebook and audiobook
         // records into each other.
         const groupFilePathKeys = group.flatMap((row) => filePathIdentityKeys(row));
-        const crossesScopedProfiles = groupFilePathKeys.some(
-          (key) => (scopedInstancesByCanonicalFilePath.get(key)?.size ?? 0) > 1
-        );
+        const crossingFilePathKeys = Array.from(new Set(
+          groupFilePathKeys.filter(
+            (key) => (scopedInstancesByCanonicalFilePath.get(key)?.size ?? 0) > 1
+          )
+        ));
+        const crossesScopedProfiles = crossingFilePathKeys.length > 0;
+        const unassignedCandidateIds = crossesScopedProfiles ? [] : Array.from(new Set(
+          group
+            .flatMap((row) => filePathIdentityKeys(row))
+            .flatMap((key) => canonicalBookIdsByFilePath.get(key) ?? [])
+            .filter((id) => !group.some((row) => row.book_id === id))
+        ));
+        if (unassignedCandidateIds.length > 1) {
+          logger.warn("Ambiguous same-format file path matches multiple canonical books; picking one arbitrarily", {
+            candidateBookIds: unassignedCandidateIds,
+            sourceExternalIds: group.map((row) => row.external_id)
+          });
+        }
         const filePathCanonicalId = crossesScopedProfiles ? undefined : groupFilePathKeys
           .flatMap((key) => canonicalBookIdsByFilePath.get(key) ?? [])
           .find((id) => group.some((row) => row.book_id === id))
-          ?? group
-            .flatMap((row) => filePathIdentityKeys(row))
-            .flatMap((key) => canonicalBookIdsByFilePath.get(key) ?? [])
-            .find((id) => !group.some((row) => row.book_id === id));
+          ?? unassignedCandidateIds[0];
         if (crossesScopedProfiles) {
-          logger.warn("Skipped Chaptarr file-path reassignment across scoped source profiles", { sourceCount: group.length });
+          trackSkippedCrossProfileGroup(crossingFilePathKeys);
         }
         if (filePathCanonicalId !== undefined) {
           for (const row of group) {
@@ -948,6 +1230,7 @@ export function reconcileBookIdentities(db: Database.Database): void {
         const result = insertBook.run(
           values.mediaType, values.title, values.author, values.coverUrl, values.coverCachePath,
           values.isbn13, values.isbn10, values.seriesName, values.seriesNumber,
+          probableDuplicateTitleKey(values.title), probableDuplicateAuthorKey(values.author),
           values.lastSyncAt, values.lastModifiedAt
         );
         bookId = Number(result.lastInsertRowid);
@@ -969,6 +1252,7 @@ export function reconcileBookIdentities(db: Database.Database): void {
         updateBook.run(
           values.mediaType, values.title, values.author, values.coverUrl, values.coverCachePath,
           values.isbn13, values.isbn10, values.seriesName, values.seriesNumber,
+          probableDuplicateTitleKey(values.title), probableDuplicateAuthorKey(values.author),
           values.lastSyncAt, values.lastModifiedAt, bookId
         );
       }
@@ -1004,7 +1288,10 @@ export function reconcileBookIdentities(db: Database.Database): void {
         updateSource.run(bookId, row.id);
       }
 
-      for (const key of new Set(group.flatMap((row) => [...highIdentityKeys(row), ...isbnIdentityKeys(row), ...filePathIdentityKeys(row)]))) {
+      for (const key of new Set(group.flatMap((row) => {
+        const titleKey = titleAuthorKey(row);
+        return [...highIdentityKeys(row), ...isbnIdentityKeys(row), ...filePathIdentityKeys(row), ...(titleKey ? [titleKey] : [])];
+      }))) {
         const [keyType, ...rest] = key.split(":");
         insertKey.run(bookId, keyType, rest.join(":"));
       }
@@ -1020,21 +1307,39 @@ export function reconcileBookIdentities(db: Database.Database): void {
       }
     }
 
-    // Clean up books that have no source rows
-    const staleBooks = db.prepare(`
-      SELECT b.id FROM books b
-      LEFT JOIN book_sources bs ON bs.book_id = b.id
-      WHERE bs.id IS NULL
-        AND NOT EXISTS (SELECT 1 FROM user_book_states ubs WHERE ubs.book_id = b.id)
-    `).all() as { id: number }[];
-    for (const stale of staleBooks) deleteBook.run(stale.id);
+    // Clean up books that have no source rows. Scoped to the books this pass
+    // touched — an unscoped LEFT JOIN here would scan the whole `books` table
+    // on every scoped call, undoing the point of scoping.
+    const staleBookIds = scope
+      ? Array.from(validBookIds).filter((id) => !(selectRemainingSources.get(id)))
+      : (db.prepare(`
+          SELECT b.id FROM books b
+          LEFT JOIN book_sources bs ON bs.book_id = b.id
+          WHERE bs.id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM user_book_states ubs WHERE ubs.book_id = b.id)
+        `).all() as { id: number }[]).map((row) => row.id);
+    for (const staleId of staleBookIds) {
+      if (scope && selectHasUserState.get(staleId)) continue;
+      deleteBook.run(staleId);
+    }
 
-    repairAudiobookshelfStates();
-    repairGrimmoryStates();
+    repairAudiobookshelfStates(scope ? Array.from(validBookIds) : undefined);
+    repairGrimmoryStates(scope ? Array.from(validBookIds) : undefined);
   });
 
   transaction();
-  cleanupOrphanedImageCache(db);
+  onProgress?.("transaction_committed", { created, reassigned, merged });
+  if (!scope) {
+    cleanupOrphanedImageCache(db);
+    onProgress?.("image_cache_cleaned", {});
+  }
+
+  if (skippedCrossProfileGroups > 0) {
+    logger.warn("Skipped Chaptarr file-path reassignment across scoped source profiles", {
+      skippedGroups: skippedCrossProfileGroups,
+      sample: skippedCrossProfileSample
+    });
+  }
 
   if (created > 0 || reassigned > 0 || merged > 0) {
     logger.info("Reconciled ShelfBridge book identities", { created, reassigned, merged, groups: groups.size });

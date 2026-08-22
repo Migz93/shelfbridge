@@ -26,22 +26,25 @@ Most tests should use `createTestDatabase()` from `test-db.ts`, which spins up a
 fresh temp-dir SQLite database with the current schema applied — no shared state
 between tests.
 
-`sync-engine.test.ts`, `auth.test.ts`, and `settings.test.ts` are the exceptions:
-each operates on the `db/index.ts` singleton rather than an injected database,
-so each points `DATA_DIR` at its own private temp dir (via a dynamic `import()`
-of the singleton after setting the env var — a static `import` would evaluate
-the singleton too early, since ESM hoists imports ahead of the rest of the
+`sync-engine.test.ts`, `auth.test.ts`, `settings.test.ts`, `covers-reconcile.test.ts`,
+`chaptarr-orphan-cleanup.test.ts`, `covers-refresh-isolation.test.ts`,
+`image-cache-refresh-propagation.test.ts`, and `profiles-hardcover-disable.test.ts`
+are the exceptions: each operates on the
+`db/index.ts` singleton rather than an injected database, so each points
+`DATA_DIR` at its own private temp dir (via a dynamic `import()` of the
+singleton after setting the env var — a static `import` would evaluate the
+singleton too early, since ESM hoists imports ahead of the rest of the
 importing module) instead of sharing `./.test-data` with each other. Node's test
 runner runs each file in its own process, so two files racing to initialize the
 same fresh `./.test-data/shelfbridge.db` — both seeing no pending migrations, both
 running migration 1's non-`IF NOT EXISTS` `CREATE TABLE` statements — could
 otherwise intermittently fail with `table already exists`; isolating each of
-these three files removes the shared state the race depends on. `sync-engine.test.ts`
+these files removes the shared state the race depends on. `sync-engine.test.ts`
 additionally seeds its own profile per test and scopes assertions to that
 profile's id, since it shares one database across many tests within the file.
-Each of the three waits for the logger to flush (`logger.end()` + `"finish"`
-event) before deleting its temp dir in `test.after`, since the logger also
-writes into `DATA_DIR`.
+Each of these eight files waits for the logger to flush (`logger.end()` +
+`"finish"` event) before deleting its temp dir in `test.after`, since the
+logger also writes into `DATA_DIR`.
 
 ## Playwright End-To-End Tests
 
@@ -165,6 +168,8 @@ so all tests start already authenticated.
 | Test | What it checks |
 |---|---|
 | ISBN13 match | Two sources sharing an ISBN13 merge into one canonical book |
+| ISBN match despite an unresolved format bucket | A Hardcover row with no resolvable edition_format/media_type still merges with a canonical book via a shared ISBN |
+| ISBN match blocked across a known format-bucket mismatch | A book/ebook row and an audiobook row that happen to share the exact same ISBN (a real Grimmory/Hardcover data quirk) stay separate canonicals — a shared ISBN never overrides a known book-vs-audiobook bucket disagreement |
 | Conflicting Hardcover book id | Two sources with the same title but different authoritative Hardcover ids stay separate books |
 | Idempotency | Running `reconcileBookIdentities` twice doesn't duplicate books |
 | Orphan cleanup | A book left with zero `book_sources` rows is deleted on the next reconcile pass |
@@ -176,6 +181,42 @@ so all tests start already authenticated.
 | Cross-profile Chaptarr reassignment isolation | A global Chaptarr path cannot reassign to a canonical record when multiple Grimmory instances share that path |
 | Cross-profile ABS reassignment isolation | A global Chaptarr path cannot reassign to a canonical record when multiple Audiobookshelf profiles share that path |
 | Chaptarr reassignment state preservation | User state is retained when a cross-profile Chaptarr path makes reassignment unsafe |
+| Scoped merge via shared ISBN | A scoped reconcile discovers an existing, unrelated-looking book through a shared ISBN and merges the new source into it |
+| Scoped bridge across two existing books | A single new source that shares a key with each of two previously-separate existing books merges all three into one |
+| Scoped isolation | A scoped reconcile touching one book does not merge or modify an unrelated existing book outside its scope |
+| Empty scope no-op | `reconcileBookIdentities` with an empty `sourceIds` array makes no changes |
+| Shared identity key, two owners | Two existing books that legitimately share an identity key (e.g. same title/author, kept separate by design) are each still discoverable — a scoped third row merges with the correct one, not the one that happened to claim the key first |
+| Iteration-cap fallback | `expandScopeToRows` returns `null` (never a partial closure) when a chain of merges needs more hops than its iteration cap allows |
+| Row-cap fallback | `expandScopeToRows` returns `null` when the final candidate-book fetch of a scoped expansion would exceed its row cap, even on the cap's very last allowed iteration |
+
+### `tests/server/hardcover-legacy-cleanup.test.ts` — Legacy Hardcover source cleanup
+
+| Test | What it checks |
+|---|---|
+| Deletes once a live counterpart exists | An instance-less `hardcover` row is deleted once a profile-scoped row with the same external id exists |
+| Deletes even after already splitting into its own book | Still deleted when the instance-less row and its live counterpart have already drifted onto separate books |
+| No live counterpart yet | An instance-less row with no live counterpart is left alone |
+| Never touches the live row | A live, profile-scoped row is never deleted |
+| Migrates state already stranded on the orphan | A profile's `user_book_states` row already sitting on the legacy row's own orphan book (from before this cleanup existed) is moved onto the live row's book, not left behind when the legacy row is deleted |
+| Drops a stranded duplicate when the live state is more current | When the live row's own state was modified more recently, a conflicting stranded duplicate on the orphan is dropped rather than overwriting it |
+| Keeps the stranded state when it is more current | Applies the same conflict rule the identity reconciler uses (meaningful progress, then newer timestamp — see `shouldMoveState`): a stranded state with more recent progress wins over a stale live-row state instead of always being discarded |
+| Leaves the row alone when only some profiles are matched | A legacy row with state from two profiles on its orphan book, only one of which has a live counterpart, is left entirely undeleted — the unmatched profile's state is never stranded |
+| Leaves the row alone when a non-Hardcover state is present | A Grimmory or Goodreads state on the orphan book is never stranded — this cleanup only knows how to migrate Hardcover state, so it defers deletion entirely rather than guess a target for a state type it can't migrate |
+| Leaves the row alone when the matched counterpart has no book_id yet | A live counterpart that exists but hasn't been reconciled yet (book_id still NULL) doesn't count as a migration target — the legacy row is left alone rather than deleted with nowhere for its state to go |
+| Reconciling without cleanup first strands the merge | Documents the underlying bug: a legacy row left in place when a book's live row needs to merge into its Grimmory canonical leaves the merge stranded — book_sources reassigned, but the book row and its user_book_states left behind |
+| Cleaning up before reconciling merges cleanly | Verifies the fix: running the cleanup immediately before reconciling (what `engine.ts` now does on every Hardcover sync, not just the daily job) avoids the conflict entirely — sources and state both end up on the single surviving book |
+| Ghost book removed immediately via `cleanupAfterSourceRemoval` | A book left with no sources and no state right after the legacy cleanup is removed in the same pass (what `engine.ts` now wires up), rather than lingering until the next daily full reconcile |
+
+### `tests/server/hardcover-media-type.test.ts` — Hardcover media-type classification
+
+| Test | What it checks |
+|---|---|
+| Resolves via `reading_format_id` | A blank/uninformative `edition_format` string doesn't block classification when `reading_format_id` is populated |
+| Trusts `reading_format_id` over a mislabeled `edition_format` | `reading_format_id` wins when the two disagree |
+| Format id mapping | `reading_format_id` 2 → audiobook, 4 → ebook |
+| Dual-format ("Both") fallback | A `reading_format_id` of 3 falls through to the `default_*_edition_id` pointers instead of guessing |
+| No edition data | Returns `null` when there's no edition and no matching default pointer |
+| Never falls back to `edition_format` | Even with `reading_format_id` simply absent (not just disagreeing), a populated `edition_format` is still never trusted |
 
 ### `tests/server/settings.test.ts` — App settings
 
@@ -195,6 +236,19 @@ so all tests start already authenticated.
 |---|---|
 | URL validation | HTTP/HTTPS LAN URLs work; relative URLs, non-HTTP schemes, and embedded credentials are rejected |
 | Redirect handling | Integration requests disable automatic redirects |
+| Empty URL rejection | A blank configured URL cannot reach `fetch` |
+
+### `tests/server/validation.test.ts` — Request validation and atomic replacements
+
+| Test | What it checks |
+|---|---|
+| Settings, profiles, and sync request schemas | Invalid booleans, retention values, conflict strategies, malformed connections, and profile IDs are rejected before a route can access the database |
+| Connection tests, job controls, and book actions | Malformed test payloads, schedule intervals, and external-ID write sources are rejected |
+| Mutating route IDs | Book-action IDs must be complete positive integers, not permissive `parseInt` prefixes |
+| Route validation contract | A malformed settings mutation returns the documented structured 400 response before database access |
+| Mapping request schemas | Malformed Goodreads and Hardcover mappings are rejected before replacement |
+| Failed mapping replacement | A failing insert rolls back the delete-and-reinsert transaction, retaining the prior mappings |
+| Failed multi-setting update | A later settings write failure rolls back all earlier writes in the same patch |
 
 ### `tests/server/sync-decision.test.ts` — Sync decision table
 
@@ -204,9 +258,25 @@ Table-driven coverage of `computeSyncDecision` for every `conflict_strategy` (`l
 
 Each `prune*UserStatesMissingFromFetch` / `prune*SourcesMissingFromFetch` helper, checked for: only pruning the calling profile's own rows (never another profile's), preserving state while a book still has another live source row, never pruning a source with live user state, pruning a complete empty snapshot, and preserving all rows for partial or failed snapshots.
 
+Also covers `cleanupAfterSourceRemoval` (shared with Chaptarr's own source removal in `chaptarr.ts`): a book left with zero sources and zero user state after pruning is deleted rather than left as a ghost canonical; a book that still has another source is left alone; pruning a preferred source (e.g. Hardcover) reconciles the surviving source so the canonical title is recomputed rather than left stale; and a pruned source's own orphaned `image_cache` row (which doesn't cascade away with the source, since it's keyed by `book_sources.id`) is cleaned up too, scoped to just the deleted source ids rather than a full-table scan.
+
 ### `tests/server/normalization.test.ts` — Title/date helpers
 
-`normalizeTitle`, `normalizeSeriesNumber`, strict ISBN-10/ISBN-13 normalization, `newerSource`, selected-read Hardcover progress calculation, `shouldGoodreadsOverwriteGrimmory`.
+`normalizeTitle`, `normalizeSeriesNumber`, strict ISBN-10/ISBN-13 normalization, `newerSource`, selected-read Hardcover progress calculation (including duplicate blank reads), shared Hardcover book/audiobook precedence (including preventing inactive siblings from overwriting the active record without affecting ordinary books), cross-media Hardcover identity validation, `shouldGoodreadsOverwriteGrimmory`.
+
+### `tests/server/repository.test.ts` — Source persistence
+
+| Test | What it checks |
+|---|---|
+| Source upsert timestamps | An unchanged source refreshes `last_sync_at` without changing `last_modified_at`; a changed source advances both. |
+
+### `tests/server/audiobookshelf-progress.test.ts` — Audiobookshelf progress propagation
+
+| Test | What it checks |
+|---|---|
+| Blank live Hardcover read | Audiobookshelf repairs a selected live Hardcover read at 0% even when the cached Hardcover progress is non-zero. |
+| Chaptarr-only shared work | A Chaptarr shared Hardcover ID lets an audiobook create its Hardcover user book and read without a direct Hardcover or Grimmory source row. |
+| Resolved audio edition ids returned | `syncAudiobookshelfProgress` returns the `book_sources.id` of every Hardcover row it resolved an audio edition for, so the caller can reconcile it — verified against the actual persisted `source_media_type`/`source_edition_id`. |
 
 ### `tests/server/concurrency.test.ts` — Bounded work queues
 
@@ -226,6 +296,7 @@ Each `prune*UserStatesMissingFromFetch` / `prune*SourcesMissingFromFetch` helper
 | Test | What it checks |
 |---|---|
 | Oversized machine log | Only the recent bounded tail is parsed, malformed lines are skipped, and the requested newest entries are returned. |
+| Missing machine log file | A missing machine log file falls back to the in-memory ring buffer instead of throwing. |
 
 ### `tests/server/shelves.test.ts` — Shelf synchronization
 
@@ -241,11 +312,26 @@ Runs `runSyncImpl` end-to-end against a real (isolated) SQLite database with fak
 |---|---|
 | No connections configured | Completes successfully, writes nothing, never calls an adapter |
 | Hardcover fetch failure | Skips book and library-data writes, records a `source_unavailable` sync event, and marks the run `error` |
-| Hardcover-only sync | Writes `book_sources` + `user_book_states`; re-running with the same fetched data is idempotent (no duplicate rows) |
+| Hardcover-only sync | Writes `book_sources` + `user_book_states`; re-running with the same fetched data is idempotent (no duplicate rows or modification-time bump) |
 | Dry run | Computes and caches the resolved decision locally but never calls the Grimmory write adapter |
 | Real run | Calls the Grimmory write adapter with the resolved status once conflict resolution picks a winner |
 | Two profiles | Each profile's `book_sources` stay scoped to its own `source_instance_id` — no cross-profile leakage |
 | Negative edition cache | An unchanged Hardcover page count with no matching edition only fetches editions once across syncs. |
+| Queue ordering | `runExclusiveOfSyncs` (used by the daily full-reconcile job and cover-cache reconciliation) never runs concurrently with a queued sync — it deterministically waits for the sync ahead of it in the shared queue to settle first, proven by promise-chaining order rather than real timing. |
+| Owned-list import off by default | With `owned_import_enabled = 0`, a disagreeing Owned-list edition is ignored — only the primary `book_sources` row is written. |
+| Owned-list import creates a second row | With the setting on, an Owned-list edition whose format disagrees with the current edition writes a second `book_sources` row (`source_bucket = 'owned'`) that reconciles into its own canonical book (opposite `media_type` from the primary); the primary canonical keeps its normal Hardcover-sourced state, and the owned canonical gets its own local-only state (`owned_list_local_only`, never write-back-eligible, no live Hardcover read id). |
+| Owned-list import removes a stale row | Once a previously-written `'owned'` row is no longer justified (entry removed or formats now agree), it's deleted and the primary row is unaffected; if that was the canonical's only source, the canonical itself is deleted too rather than surviving as a ghost book. |
+| A legacy instance-less row's stranded state survives an unrelated ghost-canonical cleanup | The ghost-canonical cleanup's prune is scoped to just the books affected by this run's owned/shared row removals — a profile-wide sweep at that point would also delete state stranded on an unrelated legacy (`source_instance_id IS NULL`) Hardcover row before `cleanupLegacyHardcoverSources` gets its own, later chance to migrate it safely. |
+| The ghost-canonical prune is a no-op when a legacy row shares the same canonical as the removed owned row | Even when the just-deleted owned row's book still has a legacy (`source_instance_id IS NULL`) Hardcover row on it, the book isn't actually orphaned (a real `book_sources` row remains) — the early prune requires zero `book_sources` rows of any kind before touching a book's state, so it never interferes here. |
+| Genuinely shared book gives the non-owning sibling local presence | A Hardcover book with real Grimmory book and audiobook siblings (no Owned-list involvement) — the actively-reading sibling keeps the normal primary write-back row; the non-owning sibling gets its own `'shared'`-bucket `book_sources` row (reconciled onto its own canonical) and a local-only state (`shared_sibling_local_only`) with no live Hardcover read id. |
+| Owned-list-only book with no real Hardcover library entry still gets a real status | A book present only via the Owned list (no `fetchHardcoverLibrary` entry) enters as a normal primary `book_sources` row (not a synthetic secondary bucket), gets Hardcover's "want to read" `status_id` instead of the generic list-only stub's `null`, and — since nothing on the Grimmory side has a status either — that status_id flows into the displayed status and gets written back to the matching Grimmory record. |
+| A non-owning sibling with its own real Grimmory status is not overwritten | When the non-owning sibling of a genuinely shared book has its own real, differing Grimmory status (e.g. finished the audiobook while still partway through the print book), its local-only Hardcover state leaves `status`/`rating` `null` rather than mirroring the owning sibling's status — its own Grimmory-sourced state stands alone, unaffected. |
+| A non-owning sibling with no activity of its own defaults to UNREAD, never the owning sibling's status | A real Grimmory sibling nobody's opened/listened to yet (e.g. a book finished in print, audiobook never started) shows as `UNREAD` on its own local-only Hardcover state — never mirrors the actively-reading/finished status of the *other* format. |
+| Two finished siblings with no active owner never both attempt to write Hardcover | When both siblings of a shared Hardcover book are finished (neither actively reading, so there's no active write-back owner), the unmatched sibling still defers to the matched one rather than reaching the Grimmory-only-book-into-Hardcover fallback — `insertHardcoverUserBook`/`updateHardcoverUserBook` calls are recorded and asserted empty, and the run's `sync_runs.status` is asserted `'success'`, since `runSyncImpl` catches and swallows adapter errors rather than rethrowing them (an unstubbed-adapter throw alone would NOT fail the test). |
+| A duplicate untouched sibling must not mask a different sibling's real activity | With two ebook entries sharing one Hardcover book (one untouched, one genuinely finished) plus a finished audiobook sibling, the no-active-owner write-suppression check looks at every ebook sibling's activity, not just the deterministic tie-break representative — which in this setup lands on the untouched one — so the finished audiobook's competing write is still correctly suppressed (`tests/server/hardcover-ownership.test.ts`). |
+| A `'shared'` row survives a Grimmory outage | When a run's Grimmory fetch fails, `grimmoryBooks` (and so the shared-ownership map) is empty for that entire run — a previously-written `'shared'` row must not be treated as "its sibling is gone" and deleted just because this run has no Grimmory data to confirm it with; it's left untouched, to be re-evaluated once Grimmory data is actually available again. |
+| A Grimmory outage defers Owned-list handling only when a `'shared'` row is being preserved | With a preserved `'shared'` row in play, a Grimmory outage that also surfaces a would-be-justified Owned-list entry must not create a competing `'owned'` row alongside it (primary + shared + owned all at once) — Owned-list handling is deferred for that book until Grimmory data is trustworthy again. A profile with no Grimmory connection at all is unaffected, since it never has a `'shared'` row to defer around. |
+| A Grimmory outage does not flip an already-deferred local-only state back to UNREAD | `upsertLocalOnlyHardcoverState`'s `hasOwnActivity` is forced `false` for the whole run whenever Grimmory is unreachable, which is indistinguishable from "genuinely no activity" — without a direct `grimmoryAvailable` check, a finished sibling correctly showing `status = null` (deferring to its own real Grimmory activity) would get flipped to `UNREAD` on every transient outage. An existing state is now left untouched during an outage instead. |
 
 Adapters not relevant to a given test are left unimplemented via `createFakeAdapters` (`test-helpers.ts`), which makes any unexpected call throw immediately instead of failing confusingly deep inside `runSyncImpl`.
 
@@ -264,11 +350,57 @@ Adapters not relevant to a given test are left unimplemented via `createFakeAdap
 | Test | What it checks |
 |---|---|
 | Changed Goodreads shelf | A changed Goodreads shelf writes its mapped status to the matched Grimmory book and persists local state. |
+| Matched-book ISBN update reconciled | A matched Goodreads book's newly-reported ISBN — not just newly-created sources — is reconciled, merging it with the existing book that now shares that ISBN. |
+
+### `tests/server/chaptarr-orphan-cleanup.test.ts` — Chaptarr source removal cleanup
+
+| Test | What it checks |
+|---|---|
+| Orphan deletion | A book left with no sources after its only Chaptarr row disappears upstream is deleted, not left as a ghost canonical. |
+| Survivor preserved | A book with a surviving Hardcover source is not deleted just because its Chaptarr row went away; the stale Chaptarr source itself is still removed. |
+| Survivor reconciled | Removing a Chaptarr row that was the only audiobook-format signal reconciles the surviving Hardcover source, updating the book's canonical `media_type` rather than leaving it stale. |
+| Orphaned image cache cleaned up | A removed Chaptarr source's `image_cache` row is cleaned up, not left referencing a deleted `book_sources` id. |
+
+### `tests/server/covers-reconcile.test.ts` — Cover-cache reconciliation
+
+| Test | What it checks |
+|---|---|
+| Delayed cache propagation | A cover that finishes caching (via `cacheSourceCover`, the same path a background cover-cache task uses) after a book's own reconcile has already run still updates the canonical `books.cover_cache_path`, instead of only `book_sources.cover_cache_path`. |
+
+### `tests/server/covers-refresh-isolation.test.ts` — Scheduled Grimmory cover refresh
+
+| Test | What it checks |
+|---|---|
+| Per-source failure isolation | A failure updating one stale Grimmory cover's `book_sources` row does not abort the rest of that instance's refresh batch — later sources still get refreshed and reconciled, and the failing source is left uncached rather than silently skipping its siblings. |
+
+### `tests/server/image-cache-refresh-propagation.test.ts` — Background public-cover refresh
+
+| Test | What it checks |
+|---|---|
+| Refreshed path propagation | `ensureCoverCached` returns a cover's existing (old) local path immediately and refreshes a stale one in the background; once that background refresh completes and deletes the old file, `book_sources.cover_cache_path` and the canonical `books.cover_cache_path` are updated to the new path too, not left pointing at the now-deleted file. |
+
+### `tests/server/books-detail-route.test.ts` — Book detail/merge/delete routes
+
+| Test | What it checks |
+|---|---|
+| Scoped duplicate lookup | `GET /api/books/:id` scopes `fetchRows` to the requested book and its duplicate candidates, not the whole catalog. |
+| Merge validation | The merge endpoint rejects a pair that isn't a live probable-duplicate match. |
+| Scoped delete cleanup | `DELETE /api/books/:id` cleans up only the deleted book's own `image_cache` rows (via `cleanupImageCacheForSourceIds`), leaving unrelated orphaned rows for the daily full reconcile rather than scanning the whole cache table on the request's hot path. |
+
+### `tests/server/profiles-hardcover-disable.test.ts` — Hardcover connection disable
+
+| Test | What it checks |
+|---|---|
+| Batched detach, scoped correctly | `PATCH /api/profiles/:id` with `hardcover.enabled: false` deletes the profile's Hardcover state and marks exactly its previously-matched Grimmory rows `sync_health: 'missing'` — verified across 1200 matched books (forcing the detach `UPDATE` over multiple 500-row batches, since SQLite's bound-parameter limit made an earlier unbatched version fail on large libraries), leaves a Grimmory-only (never Hardcover-matched) book untouched, and leaves a different profile's Hardcover and Grimmory state completely unaffected. |
+
+### `tests/server/bookIdentity.bench.test.ts` — Reconciliation benchmarks
+
+Informational timing at small/medium/large synthetic library sizes (documents reconciliation cost, not a hard pass/fail gate), plus one scaling assertion: a scoped reconcile against a large pre-reconciled catalog completes well under the cost of a full reconcile of that catalog, with a generous margin to avoid flaking on a slow runner.
 
 ### Known gaps
 
 - No coverage yet for Goodreads/Chaptarr/Audiobookshelf sync paths or shelf/list syncing.
-- The Grimmory cover-caching path (`cacheGrimmoryCover` in `engine.ts`) makes a real `fetch()` call outside the adapter seam — `sync-engine.test.ts` stubs `globalThis.fetch` globally so it never hits the network, but the cover-caching logic itself has no dedicated test coverage.
+- The Grimmory cover-caching path (`cacheGrimmoryCover` in `covers.ts`) makes a real `fetch()` call outside the adapter seam — `sync-engine.test.ts` stubs `globalThis.fetch` globally so it never hits the network. `covers-reconcile.test.ts` covers the reconcile-on-cache-completion behavior directly (via the cache-hit path, no network involved), and `covers-refresh-isolation.test.ts` covers `refreshStaleGrimmoryCovers`'s network fetch/store path (via a local Express server standing in for Grimmory) — but `cacheGrimmoryCover`'s own live network path still has no dedicated test.
 - No forced mid-transaction failure test for `reconcileBookIdentities`'s rollback behaviour.
 - No expired-session cleanup or expiry-boundary coverage.
 

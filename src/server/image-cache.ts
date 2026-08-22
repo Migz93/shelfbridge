@@ -3,7 +3,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { getDb } from "./db/index.js";
 import { logger } from "./logger.js";
-import { fetchIntegration } from "./security/outbound.js";
+import { fetchCoverImage } from "./security/outbound.js";
+import { reconcileBookIdentities } from "./db/bookIdentity.js";
+import { runExclusiveOfSyncs } from "./sync/sync-queue.js";
 
 const DATA_DIR = process.env["DATA_DIR"] ?? "./data";
 const CACHE_DIR = path.join(DATA_DIR, "image-cache");
@@ -104,7 +106,7 @@ async function fetchImageBuffer(sourceUrl: string): Promise<Buffer | null> {
   try {
     return await Promise.race([
       (async () => {
-        const res = await fetchIntegration(sourceUrl, {
+        const res = await fetchCoverImage(sourceUrl, {
           headers: { "User-Agent": "ShelfBridge/0.1 (book sync app)" },
           signal: controller.signal
         });
@@ -190,7 +192,7 @@ async function fetchAndStore(cacheKey: string, entityId: string, sourceUrl: stri
   return webPath;
 }
 
-async function refreshInBackground(cacheKey: string, _entityId: string, sourceUrl: string, oldFilePath: string | null): Promise<void> {
+async function refreshInBackground(cacheKey: string, entityId: string, sourceUrl: string, oldFilePath: string | null): Promise<void> {
   const now = new Date().toISOString();
   getDb().prepare("UPDATE image_cache SET last_attempted_at = ? WHERE cache_key = ?").run(now, cacheKey);
 
@@ -217,11 +219,6 @@ async function refreshInBackground(cacheKey: string, _entityId: string, sourceUr
     return;
   }
 
-  // Delete old file only after new one is safely written
-  if (oldFilePath && oldFilePath !== newFilePath) {
-    try { fs.unlinkSync(oldFilePath); } catch { /* best-effort */ }
-  }
-
   const refreshAfter = computeRefreshAfter();
   getDb().prepare(`
     UPDATE image_cache SET
@@ -231,6 +228,47 @@ async function refreshInBackground(cacheKey: string, _entityId: string, sourceUr
   `).run(sourceUrl, newFilePath, newWebPath, new Date().toISOString(), refreshAfter, cacheKey);
 
   logger.info("ImageCache: cover refreshed", { cacheKey, webPath: newWebPath });
+
+  // entityId is always a book_sources.id (see the cacheKey convention in
+  // fetchAndStore/storeFetchedCover). ensureCoverCached returns the OLD path
+  // immediately when it schedules this refresh, so book_sources.cover_cache_path
+  // (written from that stale return value) and the canonical
+  // books.cover_cache_path would otherwise keep pointing at a file this
+  // function is about to delete below, until some unrelated later write
+  // happens to re-cache this same source. Propagate the new path now instead.
+  // Isolated in its own try/catch: the refresh itself already succeeded and
+  // committed above, so a propagation failure here must not abort
+  // refreshStaleCachedCovers's loop over the rest of its batch.
+  // Only true once book_sources (if applicable) durably points at newFilePath
+  // — false leaves oldFilePath as the last surviving reference, so it must
+  // not be deleted below.
+  let propagated = false;
+  try {
+    const sourceId = Number.parseInt(entityId, 10);
+    if (Number.isFinite(sourceId)) {
+      const db = getDb();
+      await runExclusiveOfSyncs(async () => {
+        db.transaction(() => {
+          db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(newWebPath, sourceId);
+          reconcileBookIdentities(db, { sourceIds: [sourceId] });
+        })();
+      });
+    }
+    propagated = true;
+  } catch (err) {
+    logger.warn("ImageCache: failed to propagate refreshed cover path to book_sources", {
+      cacheKey, error: err instanceof Error ? err.message : String(err)
+    });
+  }
+
+  // Delete the old file only once every row that could still reference it
+  // (image_cache, already updated above, and book_sources when propagation
+  // ran) durably points at the new one instead — otherwise a propagation
+  // failure would roll back book_sources.cover_cache_path to a path this
+  // function just deleted.
+  if (propagated && oldFilePath && oldFilePath !== newFilePath) {
+    try { fs.unlinkSync(oldFilePath); } catch { /* best-effort */ }
+  }
 }
 
 /**

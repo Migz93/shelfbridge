@@ -11,10 +11,34 @@ export interface UserStateSnapshot {
 
 type Db = ReturnType<typeof getDb>;
 
-export function getBookSource(db: Db, sourceType: string, instanceId: number, externalId: string | number): { id: number; book_id: number | null; source_media_type: string | null; source_edition_id: string | null } | undefined {
+export interface BookSourceLookup {
+  id: number;
+  book_id: number | null;
+  source_media_type: string | null;
+  source_edition_id: string | null;
+  source_bucket: string;
+}
+
+/**
+ * `bucket` defaults to `"primary"` — every source except Hardcover only ever
+ * writes that bucket, so every existing caller is unaffected. Hardcover can
+ * also have a second row for the same (profile, external id): `"owned"` when
+ * the user's Owned-list edition disagrees with their current edition's
+ * format, or `"shared"` when a real Grimmory sibling of the opposite format
+ * already exists (see hardcover-sources.ts) — pass the bucket explicitly to
+ * look one of those up.
+ */
+export function getBookSource(db: Db, sourceType: string, instanceId: number, externalId: string | number, bucket = "primary"): BookSourceLookup | undefined {
   return db.prepare(
-    "SELECT id, book_id, source_media_type, source_edition_id FROM book_sources WHERE source_type = ? AND source_instance_id = ? AND external_id = ?"
-  ).get(sourceType, instanceId, String(externalId)) as { id: number; book_id: number | null; source_media_type: string | null; source_edition_id: string | null } | undefined;
+    "SELECT id, book_id, source_media_type, source_edition_id, source_bucket FROM book_sources WHERE source_type = ? AND source_instance_id = ? AND external_id = ? AND source_bucket = ?"
+  ).get(sourceType, instanceId, String(externalId), bucket) as BookSourceLookup | undefined;
+}
+
+/** Every bucket row for a (source_type, instance, external_id) key — at most two for Hardcover ('primary' plus either 'owned' or 'shared'), always exactly one (or zero) for every other source. */
+export function getBookSources(db: Db, sourceType: string, instanceId: number, externalId: string | number): BookSourceLookup[] {
+  return db.prepare(
+    "SELECT id, book_id, source_media_type, source_edition_id, source_bucket FROM book_sources WHERE source_type = ? AND source_instance_id = ? AND external_id = ?"
+  ).all(sourceType, instanceId, String(externalId)) as BookSourceLookup[];
 }
 
 /** Look up a user_book_states row by (book_id, profile_id, source_type) */
@@ -45,19 +69,51 @@ export function localGrimmoryBookForBookId(db: Db, profileId: number, bookId: nu
   return null;
 }
 
-/** Upsert a book_sources row, scoped to (source_type, source_instance_id, external_id). Returns the row id. */
-export function upsertBookSource(db: Db, sourceType: string, instanceId: number, externalId: string | number, fields: Record<string, unknown>): number {
-  const existing = getBookSource(db, sourceType, instanceId, externalId);
+const bookSourceColumnsCache = new WeakMap<Db, Set<string>>();
+
+/** The live column set, not a hardcoded list, so it can't drift from the schema. */
+function bookSourceColumns(db: Db): Set<string> {
+  let columns = bookSourceColumnsCache.get(db);
+  if (!columns) {
+    columns = new Set((db.prepare("PRAGMA table_info(book_sources)").all() as { name: string }[]).map((c) => c.name));
+    bookSourceColumnsCache.set(db, columns);
+  }
+  return columns;
+}
+
+/**
+ * Upsert a book_sources row, scoped to (source_type, source_instance_id,
+ * external_id, bucket). `bucket` defaults to `"primary"` — see getBookSource's
+ * doc comment. Returns the row id.
+ */
+export function upsertBookSource(db: Db, sourceType: string, instanceId: number, externalId: string | number, fields: Record<string, unknown>, bucket = "primary"): number {
+  // fields keys become raw SQL identifiers below; callers only ever pass fixed
+  // literal keys, but validating against the real schema is cheap
+  // defense-in-depth against a future caller building keys dynamically.
+  const validColumns = bookSourceColumns(db);
+  for (const key of Object.keys(fields)) {
+    if (!validColumns.has(key)) throw new Error(`upsertBookSource: "${key}" is not a book_sources column`);
+  }
+
+  const existing = getBookSource(db, sourceType, instanceId, externalId, bucket);
   if (existing) {
     const setClauses = Object.keys(fields).map((k) => `${k} = ?`).join(", ");
-    db.prepare(`UPDATE book_sources SET ${setClauses}, last_modified_at = datetime('now') WHERE id = ?`)
-      .run(...Object.values(fields), existing.id);
+    const modifiedFields = Object.entries(fields)
+      .filter(([key]) => key !== "last_sync_at" && key !== "last_sync_decision");
+    const hasMeaningfulChange = modifiedFields.length > 0
+      ? modifiedFields.map(([key]) => `${key} IS NOT ?`).join(" OR ")
+      : "0";
+    db.prepare(`
+      UPDATE book_sources SET ${setClauses},
+        last_modified_at = CASE WHEN ${hasMeaningfulChange} THEN datetime('now') ELSE last_modified_at END
+      WHERE id = ?
+    `).run(...Object.values(fields), ...modifiedFields.map(([, value]) => value), existing.id);
     return existing.id;
   } else {
-    const cols = ["source_type", "source_instance_id", "external_id", ...Object.keys(fields)].join(", ");
-    const placeholders = Array(Object.keys(fields).length + 3).fill("?").join(", ");
+    const cols = ["source_type", "source_instance_id", "external_id", "source_bucket", ...Object.keys(fields)].join(", ");
+    const placeholders = Array(Object.keys(fields).length + 4).fill("?").join(", ");
     const result = db.prepare(`INSERT INTO book_sources (${cols}) VALUES (${placeholders})`)
-      .run(sourceType, instanceId, String(externalId), ...Object.values(fields));
+      .run(sourceType, instanceId, String(externalId), bucket, ...Object.values(fields));
     return Number(result.lastInsertRowid);
   }
 }

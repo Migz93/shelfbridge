@@ -43,6 +43,27 @@ Deletes the current server-side session and clears the browser cookie.
 
 ---
 
+## Request validation
+
+Mutating API routes validate request bodies before they access the database or
+call an integration. Invalid requests return `400` with this shape:
+
+```json
+{
+  "error": "Invalid request",
+  "fieldErrors": {
+    "sync": ["Invalid option: expected one of \"latest_wins\"|\"grimmory_wins\"|\"hardcover_wins\""]
+  },
+  "formErrors": []
+}
+```
+
+`fieldErrors` maps request fields to one or more messages; `formErrors` holds
+request-level problems such as unsupported fields. Profile mutation and mapping
+replacement routes return `404` when the referenced profile does not exist.
+
+---
+
 ## Settings
 
 ### `GET /api/settings`
@@ -259,9 +280,11 @@ Includes nested `grimmory`, `hardcover`, `goodreads`, and `syncSettings` objects
 Each connection object includes `status`, `lastTestedAt`, `lastSuccessAt`.
 Hardcover connections also include `hardcoverUsername` when it has been resolved
 by a successful token test, plus optional `syncListId` and `syncListName` fields
-when the profile is scoped to a single Hardcover list. Goodreads connections
-include `goodreadsUserId`, `goodreadsUsername`, and optional `syncShelfName`; the
-username is parsed from the public RSS channel when available.
+when the profile is scoped to a single Hardcover list, and `ownedImportEnabled`
+(default `false`) — see [docs/sync.md](sync.md)'s "Hardcover Owned-List Import"
+section. Goodreads connections include `goodreadsUserId`, `goodreadsUsername`,
+and optional `syncShelfName`; the username is parsed from the public RSS
+channel when available.
 
 `syncSettings.syncWriteTagEnabled` controls the Grimmory-tab `Write Tag` setting.
 When true, matched books from the profile's scoped Hardcover and/or Goodreads
@@ -280,7 +303,7 @@ Hardcover fetches and writes during sync.
   "displayName": "string",
   "enabled": true,
   "grimmory": { "username": "string", "password": "string", "baseUrl": "string (optional)" },
-  "hardcover": { "apiToken": "string", "syncListId": 123, "syncListName": "Want to Read" },
+  "hardcover": { "apiToken": "string", "syncListId": 123, "syncListName": "Want to Read", "ownedImportEnabled": false },
   "goodreads": { "goodreadsUserId": "string", "enabled": true, "syncShelfName": "want-on-kindle" },
   "syncSettings": {
     "syncStatusEnabled": true,
@@ -462,7 +485,7 @@ matching the selected criteria.
 | `excludeSource` | comma-separated strings | — | Exclude sources: `hardcover`, `goodreads`, `on-disk` |
 | `chaptarr` | string | — | Chaptarr presence filter: `in` or `out` |
 | `action` | string | — | Shortcut filter: `add-to-chaptarr`, `grab-in-chaptarr`, `review-in-grimmory`, `fix-chaptarr-id`, `id-review`, `possible-duplicates`, `abs-runtime-mismatch` |
-| `mediaType` | string | `book` | Canonical media bucket: `book`, `audiobook`, or `all` |
+| `mediaType` | string | `book` | Canonical media bucket: `book`, `audiobook`, `all`, or `hidden` (books whose media type could not be classified — see `hiddenCount` below) |
 | `q` | string | — | Free-text search: case-insensitive substring match against `title` and `author` |
 | `sortBy` | string | `updated-desc` | Sort order: `updated-desc`, `updated-asc`, `title-asc`, `title-desc` |
 
@@ -488,7 +511,8 @@ matching the selected criteria.
     "fixChaptarrIdCount": 0,
     "idReviewCount": 3,
     "probableDuplicateCount": 1,
-    "absRuntimeMismatchCount": 0
+    "absRuntimeMismatchCount": 0,
+    "hiddenCount": 2
   }
 }
 ```
@@ -503,6 +527,11 @@ audiobooks from its totals and the Audiobooks page excludes non-audiobook books.
 Profile facet counts also use actual per-user relationships only; passive
 catalog presence from shared sources like Grimmory and Chaptarr does not count
 toward a user's chip total.
+
+`hiddenCount` is always computed against the full unfiltered catalog (independent
+of the current `mediaType`) so the UI can show a "Needs Fix" filter chip on either
+page whenever unclassified books exist. Passing `mediaType=hidden` switches the
+result set to just those books instead of applying the book/audiobook split.
 
 ### `GET /api/books/:id`
 
@@ -543,7 +572,7 @@ Each `BookRelationship` includes:
 | `grimmoryPrimaryFilePath` | Grimmory `primaryFile.filePath`, used for file-path audiobook matching |
 | `grimmoryMediaType` | Grimmory format inferred from metadata and/or the primary file path |
 | `grimmoryBaseUrl` | Resolved Grimmory base URL (profile override → global setting) |
-| `hardcoverMediaType` | Hardcover format inferred from the user's selected `edition_id` and edition metadata; explicit `edition_format` wins when Hardcover's default edition pointers disagree |
+| `hardcoverMediaType` | Hardcover format inferred from the user's selected `edition_id` and edition metadata; the edition's structured `reading_format_id` is trusted over the free-text `edition_format` field and over Hardcover's default edition pointers |
 | `hardcoverEditionId` | Hardcover `user_books.edition_id` when available |
 | `hardcoverEditionFormat` | Hardcover edition-format text for the selected edition when available |
 | `chaptarrBookId` | Matched Chaptarr book ID for this canonical book |
@@ -632,16 +661,30 @@ Returns everything needed to render the dashboard in a single request.
 ```json
 {
   "stats": {
-    "linkedProfiles": 2,
-    "totalBooks": 150,
-    "missingInGrimmory": 5,
-    "needsReview": 3
+    "book": {
+      "totalBooks": 150,
+      "notInChaptarr": 5,
+      "grabInChaptarr": 2,
+      "needsReview": 3
+    },
+    "audiobook": {
+      "totalBooks": 12,
+      "notInChaptarr": 0,
+      "grabInChaptarr": 1,
+      "needsReview": 0
+    }
   },
   "recentlyAdded": [ /* BookSummary[] — up to 20 */ ],
-  "recentActivity": [ /* SyncRun[] — up to 10 */ ],
-  "profileSummaries": [ /* ProfileSummary[] */ ]
+  "recentActivity": [ /* SyncRun[] — up to 5 */ ]
 }
 ```
+
+Stats are split by `books.media_type` (`book` vs `audiobook`); books whose media
+type hasn't been resolved yet (`unknown`) aren't counted in either bucket.
+`notInChaptarr` mirrors the `add-to-chaptarr` action filter (tracked via
+Hardcover/Goodreads but absent from Chaptarr entirely); `grabInChaptarr` mirrors
+`grab-in-chaptarr` (monitored in Chaptarr but no file yet) — see the Books
+endpoint's `action` filter below for the exact semantics.
 
 ---
 

@@ -1,12 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fetchSourceSnapshots } from "../../src/server/sync/source-snapshots.js";
+import { fetchSourceSnapshots, type SnapshotContext } from "../../src/server/sync/source-snapshots.js";
 import { syncAudiobookshelfLibrary } from "../../src/server/sync/audiobookshelf-phase.js";
 import { createTestDatabase } from "./test-db.js";
-import { seedProfile } from "./test-helpers.js";
+import { createFakeAdapters, seedProfile } from "./test-helpers.js";
+import type { SyncAdapters } from "../../src/server/sync/adapters.js";
 
-function context(db: ReturnType<typeof createTestDatabase>["db"], profileId: number, overrides: Record<string, unknown> = {}) {
-  return { db, profileId, runId: 1, profile: {}, adapters: {}, counters: { sourceFailures: 0 }, recordEvent: () => {}, hasHardcover: false, hardcoverToken: "", baseUrl: "", username: null, password: null, hasGrimmory: false, ...overrides };
+function context(
+  db: ReturnType<typeof createTestDatabase>["db"],
+  profileId: number,
+  overrides: Partial<Omit<SnapshotContext, "adapters">> & { adapters?: Partial<SnapshotContext["adapters"]> } = {}
+): SnapshotContext {
+  const { adapters, ...rest } = overrides;
+  return {
+    db, profileId, runId: 1, profile: {}, counters: { sourceFailures: 0 }, recordEvent: () => {},
+    hasHardcover: false, hardcoverToken: "", baseUrl: "", username: null, password: null, hasGrimmory: false,
+    ...rest,
+    adapters: createFakeAdapters(adapters ?? {})
+  };
 }
 
 test("ABS ownership snapshots are scoped to the current profile", async () => {
@@ -18,10 +29,61 @@ test("ABS ownership snapshots are scoped to the current profile", async () => {
     for (const [bookId, profileId, externalId, hardcoverId] of [[firstBook, first, "first", "101"], [secondBook, second, "second", "202"]] as const) {
       db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, audiobookshelf_runtime_validated) VALUES (?, 'audiobookshelf', ?, ?, 1)").run(bookId, profileId, externalId);
       db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, source_media_type, grimmory_hardcover_book_id) VALUES (?, 'grimmory', ?, ?, 'audiobook', ?)").run(bookId, profileId, `g-${externalId}`, hardcoverId);
+      db.prepare("INSERT INTO user_book_states (book_id, profile_id, source_type, progress) VALUES (?, ?, 'audiobookshelf', 10)").run(bookId, profileId);
     }
-    const result = await fetchSourceSnapshots(context(db, first) as any);
+    const result = await fetchSourceSnapshots(context(db, first));
     assert.deepEqual([...result.absOwnedBookIds], [firstBook]);
     assert.deepEqual([...result.absOwnedHardcoverBookIds], ["101"]);
+  } finally { cleanup(); }
+});
+
+test("a runtime-validated ABS link with no listening activity does not claim ownership", async () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const bookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Unstarted audio')").run().lastInsertRowid);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, audiobookshelf_runtime_validated) VALUES (?, 'audiobookshelf', ?, 'abs-1', 1)").run(bookId, profileId);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, source_media_type, grimmory_hardcover_book_id) VALUES (?, 'grimmory', ?, 'g-1', 'audiobook', '303')").run(bookId, profileId);
+    const result = await fetchSourceSnapshots(context(db, profileId));
+    assert.deepEqual([...result.absOwnedBookIds], []);
+    assert.deepEqual([...result.absOwnedHardcoverBookIds], []);
+  } finally { cleanup(); }
+});
+
+test("a zero-progress ABS state row does not claim ownership either", async () => {
+  // ABS can upsert a user_book_states row for an item that's merely on a
+  // shelf but sitting at 0% — row existence alone isn't proof of listening
+  // activity, so ownership additionally requires a positive progress or
+  // current-time value.
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const bookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Zero-progress audio')").run().lastInsertRowid);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, audiobookshelf_runtime_validated) VALUES (?, 'audiobookshelf', ?, 'abs-1', 1)").run(bookId, profileId);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, source_media_type, grimmory_hardcover_book_id) VALUES (?, 'grimmory', ?, 'g-1', 'audiobook', '303')").run(bookId, profileId);
+    db.prepare("INSERT INTO user_book_states (book_id, profile_id, source_type, progress, audiobookshelf_current_time) VALUES (?, ?, 'audiobookshelf', 0, 0)").run(bookId, profileId);
+    const result = await fetchSourceSnapshots(context(db, profileId));
+    assert.deepEqual([...result.absOwnedBookIds], []);
+    assert.deepEqual([...result.absOwnedHardcoverBookIds], []);
+  } finally { cleanup(); }
+});
+
+test("the per-book Grimmory progress fetch refreshes a stale readStatus from the bulk library fetch", async () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const adapters: Partial<SyncAdapters> = {
+      testGrimmoryLogin: async () => ({ ok: true, accessToken: "token" }),
+      fetchGrimmoryBooks: async () => [{
+        id: 1, title: "Stale Status Book", hardcoverBookId: "42", mediaType: "ebook", readStatus: "UNREAD"
+      }],
+      fetchGrimmoryProgress: async () => ({ readProgress: 40, lastReadTime: "2026-01-01T00:00:00Z", readStatus: "READING" })
+    };
+    const result = await fetchSourceSnapshots(context(db, profileId, {
+      hasGrimmory: true, baseUrl: "https://grimmory.example.com", username: "user", password: "pass",
+      profile: { sync_progress_enabled: 1 }, adapters
+    }));
+    assert.equal(result.grimmoryBooks[0]?.readStatus, "READING");
   } finally { cleanup(); }
 });
 
@@ -34,7 +96,7 @@ test("Hardcover detail fetch preserves list-only edition metadata", async () => 
     const fetchedEdition = { ...listEdition, id: 20, pages: 200 };
     const libraryBook = { id: 1, edition_id: 20, status_id: null, rating: null, updated_at: null, first_started_reading_date: null, last_read_date: null, book: book(1, "Library"), user_book_reads: null };
     const adapters = { fetchHardcoverUserId: async () => 1, fetchHardcoverLibrary: async () => [libraryBook], fetchHardcoverLists: async () => [{ id: 1, name: "List", slug: null, bookIds: [2], books: [book(2, "List only")], entries: [{ book: book(2, "List only"), editionId: 10, edition: listEdition }] }], fetchHardcoverEditions: async () => new Map([[20, fetchedEdition]]) };
-    const result = await fetchSourceSnapshots(context(db, profileId, { hasHardcover: true, hardcoverToken: "token", adapters }) as any);
+    const result = await fetchSourceSnapshots(context(db, profileId, { hasHardcover: true, hardcoverToken: "token", adapters }));
     assert.equal(result.hcEditions.get(10)?.pages, 100);
     assert.equal(result.hcEditions.get(20)?.pages, 200);
   } finally { cleanup(); }
@@ -55,7 +117,7 @@ test("a selected Hardcover list produces a partial snapshot", async () => {
     const result = await fetchSourceSnapshots(context(db, profileId, {
       profile: { hardcover_sync_list_id: "7", hardcover_sync_list_name: "Selected" },
       hasHardcover: true, hardcoverToken: "token", adapters
-    }) as any);
+    }));
     assert.equal(result.hardcoverSnapshotStatus, "partial");
   } finally { cleanup(); }
 });
@@ -69,11 +131,12 @@ test("ABS ownership snapshot batches a large audiobook library", async () => {
         const bookId = Number(db.prepare("INSERT INTO books (title) VALUES (?)").run(`Audio ${id}`).lastInsertRowid);
         db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, audiobookshelf_runtime_validated) VALUES (?, 'audiobookshelf', ?, ?, 1)").run(bookId, profileId, `abs-${id}`);
         db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, source_media_type, grimmory_hardcover_book_id) VALUES (?, 'grimmory', ?, ?, 'audiobook', ?)").run(bookId, profileId, `grim-${id}`, String(id));
+        db.prepare("INSERT INTO user_book_states (book_id, profile_id, source_type, progress) VALUES (?, ?, 'audiobookshelf', 10)").run(bookId, profileId);
       }
     });
     insert();
 
-    const result = await fetchSourceSnapshots(context(db, profileId) as any);
+    const result = await fetchSourceSnapshots(context(db, profileId));
     assert.equal(result.absOwnedHardcoverBookIds.size, 500);
   } finally { cleanup(); }
 });
@@ -84,14 +147,14 @@ test("an ABS item linked to Grimmory is runtime-validated without Hardcover", as
     const profileId = seedProfile(db);
     const bookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Audio')").run().lastInsertRowid);
     db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, source_media_type, grimmory_primary_file_path) VALUES (?, 'grimmory', ?, 'grim-1', 'audiobook', '/library/audio.m4b')").run(bookId, profileId);
-    const adapters = {
+    const adapters: Partial<SyncAdapters> = {
       fetchAudiobookshelfLibraries: async () => [{ id: "library", name: "Books", mediaType: "book" }],
       fetchAudiobookshelfLibraryItems: async () => [{
         id: "abs-1", ino: "1", libraryId: "library", mediaType: "book", path: "/library/audio.m4b",
         media: { metadata: { title: "Audio", authorName: null, seriesName: null, asin: null, isbn: null, duration: 3600 }, duration: 3600 }
       }]
     };
-    await syncAudiobookshelfLibrary({ db, profileId, runId: 1, hasAbs: true, absBaseUrl: "https://abs.example", absApiKey: "key", adapters: adapters as any, counters: { sourceFailures: 0 }, recordEvent: () => {} });
+    await syncAudiobookshelfLibrary({ db, profileId, runId: 1, hasAbs: true, absBaseUrl: "https://abs.example", absApiKey: "key", adapters: createFakeAdapters(adapters), counters: { sourceFailures: 0 }, recordEvent: () => {} });
     const row = db.prepare("SELECT book_id, audiobookshelf_runtime_validated FROM book_sources WHERE source_type = 'audiobookshelf' AND source_instance_id = ?").get(profileId) as { book_id: number; audiobookshelf_runtime_validated: number };
     assert.equal(row.book_id, bookId);
     assert.equal(row.audiobookshelf_runtime_validated, 1);

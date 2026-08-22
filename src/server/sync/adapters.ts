@@ -17,6 +17,7 @@ import {
   updateGrimmoryStatus,
   updateGrimmoryRating,
   fetchGrimmoryShelfBookIds,
+  fetchGrimmoryShelfList,
   ensureGrimmoryShelf,
   addBooksToGrimmoryShelf,
   fetchGrimmoryProgress,
@@ -54,6 +55,7 @@ export interface SyncAdapters {
   updateGrimmoryStatus: typeof updateGrimmoryStatus;
   updateGrimmoryRating: typeof updateGrimmoryRating;
   fetchGrimmoryShelfBookIds: typeof fetchGrimmoryShelfBookIds;
+  fetchGrimmoryShelfList: typeof fetchGrimmoryShelfList;
   ensureGrimmoryShelf: typeof ensureGrimmoryShelf;
   addBooksToGrimmoryShelf: typeof addBooksToGrimmoryShelf;
   fetchGrimmoryProgress: typeof fetchGrimmoryProgress;
@@ -74,7 +76,7 @@ export const defaultAdapters: SyncAdapters = {
   insertHardcoverUserBook, addBookToHardcoverList, insertHardcoverUserBookRead,
   updateHardcoverUserBookRead, deleteHardcoverUserBookRead, testGrimmoryLogin,
   fetchGrimmoryBooks, updateGrimmoryStatus, updateGrimmoryRating,
-  fetchGrimmoryShelfBookIds, ensureGrimmoryShelf, addBooksToGrimmoryShelf,
+  fetchGrimmoryShelfBookIds, fetchGrimmoryShelfList, ensureGrimmoryShelf, addBooksToGrimmoryShelf,
   fetchGrimmoryProgress, updateGrimmoryProgress, clearGrimmoryProgress,
   addGrimmoryTag, fetchAllGoodreadsBooks, fetchShelfPage, syncChaptarrStatus,
   fetchAudiobookshelfLibraries, fetchAudiobookshelfLibraryItems,

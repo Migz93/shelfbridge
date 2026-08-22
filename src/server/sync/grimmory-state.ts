@@ -1,12 +1,51 @@
 import { logger } from "../logger.js";
-import { grimmoryRating } from "./grimmory.js";
-import { normalizeExternalId } from "../identifiers.js";
-import { getBookSource } from "./repository.js";
-export async function syncGrimmoryState(context: any): Promise<void> {
+import { grimmoryRating, type GrimmoryBook } from "./grimmory.js";
+import { getBookSource, getUserState } from "./repository.js";
+import type { getDb } from "../db/index.js";
+import type { SyncAdapters } from "./adapters.js";
+import type {
+  grimmoryToHardcoverRating,
+  hardcoverFieldsFromGrimmory,
+  hasGrimmoryUserActivity,
+  hasMeaningfulGrChange,
+  SyncCounters
+} from "./sync-utils.js";
+import { isOwnedBySomeoneElse, sharedHardcoverRecordFor, type SharedHardcoverOwnership } from "./hardcover-ownership.js";
+import type { pruneGrimmorySourcesMissingFromFetch, pruneGrimmoryUserStatesMissingFromFetch, SourceSnapshotStatus } from "./pruning.js";
+
+type Db = ReturnType<typeof getDb>;
+type RecordEvent = (db: Db, runId: number, profileId: number, bookTitle: string, eventType: string, direction: string | null, decision: string, details: Record<string, unknown>) => void;
+
+export interface GrimmoryStateContext {
+  db: Db;
+  profileId: number;
+  runId: number;
+  grimmoryBooks: GrimmoryBook[];
+  grimmoryAvailable: boolean;
+  counters: SyncCounters;
+  recordEvent: RecordEvent;
+  getUserState: typeof getUserState;
+  hasMeaningfulGrChange: typeof hasMeaningfulGrChange;
+  dryRun: boolean;
+  hasGrimmoryUserActivity: typeof hasGrimmoryUserActivity;
+  matchedGrimmoryIds: Set<number>;
+  hardcoverFieldsFromGrimmory: typeof hardcoverFieldsFromGrimmory;
+  grimmoryToHardcoverRating: typeof grimmoryToHardcoverRating;
+  sharedHardcoverOwnership: SharedHardcoverOwnership;
+  hasHardcover: boolean;
+  profile: Record<string, unknown>;
+  adapters: SyncAdapters;
+  hardcoverToken: string;
+  pruneGrimmoryUserStatesMissingFromFetch: typeof pruneGrimmoryUserStatesMissingFromFetch;
+  pruneGrimmorySourcesMissingFromFetch: typeof pruneGrimmorySourcesMissingFromFetch;
+  grimmorySnapshotStatus: SourceSnapshotStatus;
+}
+
+export async function syncGrimmoryState(context: GrimmoryStateContext): Promise<void> {
   const { db, profileId, runId, grimmoryBooks, grimmoryAvailable, counters, recordEvent,
     getUserState, hasMeaningfulGrChange, dryRun, hasGrimmoryUserActivity,
     matchedGrimmoryIds, hardcoverFieldsFromGrimmory, grimmoryToHardcoverRating,
-    shouldBookProgressOwnSharedHardcover, absOwnedHardcoverBookIds, hasHardcover,
+    sharedHardcoverOwnership, hasHardcover,
     profile, adapters, hardcoverToken, pruneGrimmoryUserStatesMissingFromFetch,
     pruneGrimmorySourcesMissingFromFetch, grimmorySnapshotStatus } = context;
 // ── Phase G: Grimmory user states ────────────────────────────────────────
@@ -88,31 +127,30 @@ if (grimmoryAvailable) {
       const hardcoverBookId = grBook.hardcoverBookId ? Number.parseInt(grBook.hardcoverBookId, 10) : NaN;
       const hardcoverFields = hardcoverFieldsFromGrimmory(grBook);
       const hardcoverRat = grimmoryToHardcoverRating(grimmoryRating(grBook));
-      const bookOwnsSharedHardcover = grBook.mediaType === "audiobook"
-        && shouldBookProgressOwnSharedHardcover(grimmoryBooks, grBook.hardcoverBookId);
-      // Print/ebook siblings of an ABS-owned audiobook must never push their
-      // own status into the Hardcover book they share — that book's status
-      // is owned entirely by Phase N's ABS-derived writes. Without this,
-      // this print sibling (unmatched via the main HC loop because the
-      // shared Hardcover book was routed to its audiobook sibling instead)
-      // would insert/overwrite the shared user_book with the print's status,
-      // fighting Phase N's audiobook progress on every run.
-      const audiobookSiblingOwnsSharedHardcover = grBook.mediaType !== "audiobook"
-        && absOwnedHardcoverBookIds.has(normalizeExternalId(grBook.hardcoverBookId) ?? "");
-      if (bookOwnsSharedHardcover || audiobookSiblingOwnsSharedHardcover) {
-        logger.info("Skipped Grimmory-to-Hardcover status write because a sibling edition owns shared Hardcover progress", {
+      // Only worth checking (and reporting on) ownership once a write here
+      // would otherwise actually be attempted — evaluating it unconditionally
+      // records a misleading "skipped because of shared ownership" event and
+      // inflates the skip counter even when Hardcover isn't configured, status
+      // sync is off, or there's simply nothing to write.
+      const writeEligible = hasHardcover && profile["sync_status_enabled"] !== 0
+        && Number.isInteger(hardcoverBookId) && !!hardcoverFields?.status_id;
+      if (writeEligible && isOwnedBySomeoneElse(sharedHardcoverOwnership, grBook)) {
+        const ownerReason = sharedHardcoverRecordFor(sharedHardcoverOwnership, grBook.hardcoverBookId)?.owner.reason ?? "no_active_owner";
+        logger.info("Skipped Grimmory-to-Hardcover status write because another sibling owns the shared Hardcover record", {
           profileId,
           grimmoryBookId: grBook.id,
-          hardcoverBookId: Number.isInteger(hardcoverBookId) ? hardcoverBookId : null
+          hardcoverBookId: Number.isInteger(hardcoverBookId) ? hardcoverBookId : null,
+          reason: ownerReason
         });
-        recordEvent(db, runId, profileId, grBook.title ?? "", "skipped_no_change", "grimmory_to_hardcover", "book_progress_wins_shared_hardcover", {
+        recordEvent(db, runId, profileId, grBook.title ?? "", "skipped_no_change", "grimmory_to_hardcover", "shared_hardcover_owned_by_sibling", {
           grimmoryBookId: grBook.id,
-          hardcoverBookId: Number.isInteger(hardcoverBookId) ? hardcoverBookId : null
+          hardcoverBookId: Number.isInteger(hardcoverBookId) ? hardcoverBookId : null,
+          reason: ownerReason
         });
         counters.skipped++;
         continue;
       }
-      if (hasHardcover && profile["sync_status_enabled"] !== 0 && Number.isInteger(hardcoverBookId) && hardcoverFields?.status_id) {
+      if (writeEligible) {
         const title = grBook.title ?? "";
         if (dryRun) {
           recordEvent(db, runId, profileId, title, "written", "grimmory_to_hardcover", "would_insert_hardcover_user_book", {
@@ -145,9 +183,9 @@ if (grimmoryAvailable) {
     }
   }
 
-  pruneGrimmoryUserStatesMissingFromFetch(db, profileId, new Set(grimmoryBooks.map((b: any) => b.id)), grimmorySnapshotStatus);
+  pruneGrimmoryUserStatesMissingFromFetch(db, profileId, new Set(grimmoryBooks.map((b) => b.id)), grimmorySnapshotStatus);
   // Source pruning preserves rows with a live state, so it must run second.
-  pruneGrimmorySourcesMissingFromFetch(db, profileId, new Set(grimmoryBooks.map((b: any) => b.id)), grimmorySnapshotStatus);
+  pruneGrimmorySourcesMissingFromFetch(db, profileId, new Set(grimmoryBooks.map((b) => b.id)), grimmorySnapshotStatus);
   logger.info("Grimmory user_book_states written", { profileId, count: grimmoryBooks.length });
 }
 

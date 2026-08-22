@@ -4,18 +4,59 @@
 
 ## Current Housekeeping Responsibilities
 
-ShelfBridge runs two scheduled housekeeping jobs, both registered in
+ShelfBridge runs three scheduled housekeeping jobs, all registered in
 `src/server/scheduler.ts`:
 
 | Job | Schedule | What it does |
 |---|---|---|
 | `maintenance` | Daily at 03:00 | Prunes `sync_runs` rows older than the retention window |
 | `image-cache-refresh` | Daily at 02:00 | Re-fetches stale cover images, including authenticated Grimmory covers that need a live token |
+| `full-reconcile` | Daily at 04:00 | First runs `cleanupLegacyHardcoverSources()` (`sync/hardcover-legacy-cleanup.ts`), then a full, unscoped `reconcileBookIdentities()` pass over the whole catalog, with progress logged at each phase. Serialized against every profile sync via `runExclusiveOfSyncs` in `engine.ts` — it never runs while a sync is mid-flight, since a sync yields to the event loop between remote I/O calls and an unserialized reconcile could merge/reassign a book_id it's mid-write against |
 
-A third cleanup is not scheduled but runs inline: `cleanupOrphanedImageCache()`
-in `src/server/db/imageCacheMaintenance.ts` is called from
-`reconcileBookIdentities` in `bookIdentity.ts`, so orphaned cache rows are
-removed whenever book identity is reconciled rather than on a timer.
+`cleanupLegacyHardcoverSources()` (`sync/hardcover-legacy-cleanup.ts`) deletes
+instance-less (`source_instance_id IS NULL`) `hardcover` `book_sources` rows —
+a pre-per-profile-scoping artifact that no sync path writes anymore, but that
+a fresh install migrated forward as a duplicate of every currently-tracked
+Hardcover book.
+
+| Condition on the legacy row's book | Result |
+|---|---|
+| No live, profile-scoped `book_sources` row shares its external id | Left alone |
+| Every profile with Hardcover state on the book has a live counterpart with a resolved `book_id` | Hardcover state migrated onto each live counterpart's book; legacy row deleted |
+| A profile has Hardcover state but its live row has no `book_id` yet (not yet reconciled) | Left alone |
+| A profile has Hardcover state with no live counterpart at all | Left alone |
+| Any non-Hardcover state (Grimmory, Goodreads) is on the book | Left alone — no live counterpart of that source type to migrate it onto |
+
+A state conflict during migration (the live counterpart's book already has its
+own state for that profile) is resolved with the same rule
+`reconcileBookIdentities()` uses: `shouldMoveState()` in `db/bookIdentity.ts`
+(prefer meaningful progress, then the newer `last_modified_at`).
+
+Runs at two points, both before reconciliation. An eligible row is removed
+before the merge pass runs, so it's never present to strand a live row's
+merge; a deferred row (see the table above) remains for a later pass:
+
+1. At the start of every Hardcover sync's own Phase D, in `engine.ts`, before
+   that sync's scoped `reconcileBookIdentities()` call
+2. At the start of the daily `full-reconcile` job, before its full, unscoped
+   `reconcileBookIdentities()` pass
+
+Book identity reconciliation itself is not primarily a scheduled task: every
+sync phase and book-mutating route reconciles just the records it touched, so
+identities stay correct on the fly without scanning the whole catalog on
+every write. The `full-reconcile` job exists as a periodic correction pass
+for the narrow cases on-the-fly reconciliation can miss.
+
+A related cleanup is not scheduled but runs inline, via two paths:
+
+- A full-table scan whenever a full reconciliation runs (startup, and the
+  `full-reconcile` job). It isn't run after every write-triggered scoped
+  reconcile, since scanning the whole `image_cache` table would defeat the
+  point of scoping.
+- A targeted lookup by the specific `book_sources` ids just removed —
+  cheap enough to run inline on every book deletion or source pruning pass
+  (Chaptarr, Hardcover, Grimmory), without waiting for the next full
+  reconciliation.
 
 ## Data Retention
 

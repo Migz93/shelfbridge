@@ -26,8 +26,11 @@ type JobInfo = {
 test.describe("Live refresh — Jobs", () => {
   test.setTimeout(60_000);
 
-  test("Maintenance job runs via Run Now and the Jobs table updates without reload", async ({ page, request }) => {
-    const before = await getJob(request, "maintenance");
+  test("Maintenance job runs via Run Now and the Jobs table updates without reload", async ({ page }) => {
+    // page.request shares page's authenticated browser context. The bare
+    // `request` fixture opens its own context with no storageState/baseURL,
+    // so it never carries the session cookie these endpoints require.
+    const before = await getJob(page.request, "maintenance");
 
     await page.goto("/settings?tab=jobs");
     await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
@@ -39,7 +42,7 @@ test.describe("Live refresh — Jobs", () => {
 
     await row.getByRole("button", { name: /run now/i }).click();
 
-    const completed = await waitForJobCompletion(request, "maintenance", before?.lastRunAt ?? null);
+    const completed = await waitForJobCompletion(page.request, "maintenance", before?.lastRunAt ?? null);
 
     await expect(row.getByRole("button", { name: "Run Now", exact: true })).toBeVisible({ timeout: 30_000 });
     await expect(row).toContainText(completed.lastRunStatus ?? "success", { timeout: 30_000 });
@@ -58,12 +61,14 @@ async function waitForJobCompletion(
   jobId: string,
   previousLastRunAt: string | null
 ): Promise<JobInfo> {
+  // Poll on lastRunAt changing, not lastRunStatus — the server can record a
+  // new lastRunAt slightly before it records lastRunStatus, so polling on
+  // lastRunStatus can time out on a job that has actually already completed.
   await expect.poll(async () => {
     const job = await getJob(request, jobId);
-    if (!job || job.isRunning) return null;
-    if (job.lastRunAt === null || job.lastRunAt === previousLastRunAt) return null;
-    return job.lastRunStatus;
-  }, { timeout: 30_000 }).not.toBeNull();
+    if (!job || job.isRunning) return false;
+    return job.lastRunAt !== null && job.lastRunAt !== previousLastRunAt;
+  }, { timeout: 30_000 }).toBe(true);
 
   const job = await getJob(request, jobId);
   if (!job || job.lastRunAt === null || job.lastRunAt === previousLastRunAt) {

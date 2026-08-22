@@ -51,9 +51,11 @@ setup("authenticate", async ({ request }) => {
     );
   }
 
-  // Verify the provided cookie actually works before saving it
+  // Verify the provided cookie actually works before saving it. The raw
+  // value is sent as-is — URL-encoding it here would corrupt a base64/JWT-like
+  // session value containing "+", "/", or "=" before the server ever sees it.
   const response = await request.get("/api/auth/session", {
-    headers: { Cookie: `shelfbridge_session=${encodeURIComponent(cookie)}` }
+    headers: { Cookie: `shelfbridge_session=${cookie}` }
   });
   const session = await response.json() as { authenticated: boolean };
 
@@ -75,7 +77,7 @@ setup("authenticate", async ({ request }) => {
       cookies: [
         {
           name: "shelfbridge_session",
-          value: encodeURIComponent(cookie),
+          value: cookie,
           domain: url.hostname,
           path: "/",
           expires: -1,

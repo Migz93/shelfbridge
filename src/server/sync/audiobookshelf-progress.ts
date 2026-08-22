@@ -1,27 +1,38 @@
 import { logger } from "../logger.js";
 import { HARDCOVER_TO_GRIMMORY } from "./matcher.js";
 import type { HardcoverReadFields } from "./hardcover.js";
+import { hasActiveOwningBook } from "./hardcover-ownership.js";
 
 /**
  * Runs Audiobookshelf's three-way progress propagation. The explicit context
  * keeps this phase independent from the top-level sync orchestration.
+ *
+ * Returns the ids of every Hardcover book_sources row persistResolvedHardcoverAudioEdition
+ * actually updated below — resolving/writing an audio edition flips that row's
+ * source_media_type to 'audiobook', which changes its identity-key format
+ * bucket and can change the book's canonical media_type, so the caller must
+ * reconcile scoped to these rows too (see engine.ts's Phase L).
  */
-export async function syncAudiobookshelfProgress(context: any): Promise<void> {
+export async function syncAudiobookshelfProgress(context: any): Promise<number[]> {
   const {
     db, profileId, runId, hasAbs, hasHardcover, grimmoryAvailable, adapters,
     absBaseUrl, absApiKey, baseUrl, grimmoryToken, hardcoverToken,
     dryRun, counters, grimmoryBooks, grimmoryProgressById, hcBooks, recordEvent,
     meaningfulProgress, effectiveAbsCurrentTimeSeconds, persistResolvedHardcoverAudioEdition,
-    clampPercent, shouldBookProgressOwnSharedHardcover, todayDate
+    clampPercent, sharedHardcoverOwnership, localGrimmoryBookForBookId, todayDate
   } = context;
+  const resolvedAudioEditionSourceIds: number[] = [];
 // ── Phase N: Audiobookshelf progress sync ────────────────────────────────
 // ABS is the source of truth for audiobook listening progress.
 // When ABS reports progress for a matched audiobook, push that progress
 // outward to Grimmory and Hardcover whenever they differ meaningfully.
-if (hasAbs && (hasHardcover || grimmoryAvailable)) {
+if (hasAbs && !absApiKey) {
+  logger.warn("Skipping Audiobookshelf progress sync: no API key configured despite hasAbs being set", { profileId });
+}
+if (hasAbs && absApiKey && (hasHardcover || grimmoryAvailable)) {
   try {
     logger.info("Fetching Audiobookshelf progress", { profileId });
-        const absProgressList: any[] = await adapters.fetchAudiobookshelfAllProgress(absBaseUrl, absApiKey!);
+        const absProgressList: any[] = await adapters.fetchAudiobookshelfAllProgress(absBaseUrl, absApiKey);
         const absProgressIndex = new Map<string, any>(absProgressList.map((p: any) => [p.libraryItemId, p]));
     logger.info("Audiobookshelf progress fetched", { profileId, count: absProgressList.length });
 
@@ -51,6 +62,10 @@ if (hasAbs && (hasHardcover || grimmoryAvailable)) {
     }
 
     for (const absSource of absSources) {
+      // A single book's local DB write or API call throwing must not abort
+      // every remaining book in this phase, nor get misreported by the outer
+      // catch as a whole-phase Audiobookshelf sync failure.
+      try {
       const absProgress = absProgressIndex.get(absSource.abs_item_id);
 
       // HC user state (if HC configured)
@@ -74,20 +89,28 @@ if (hasAbs && (hasHardcover || grimmoryAvailable)) {
       // away from the edition we're actually tracking progress against). Scoped
       // to this profile's own Hardcover instance — each profile can track a
       // different edition of the same book.
-      const hcAudioSecondsRow = hasHardcover ? db.prepare(`
-        SELECT hardcover_audio_seconds, source_edition_id, external_id FROM book_sources
+      // Selects every hardcover book_sources column this book's iteration needs,
+      // fetched once and reused below instead of re-querying the same row later
+      // in the loop (nothing writes to this profile's hardcover book_sources row
+      // between here and its later use).
+      const hcSourceRow = hasHardcover ? db.prepare(`
+        SELECT external_id, source_edition_id, source_media_type, source_audible_asin, hardcover_audio_seconds
+        FROM book_sources
         WHERE source_type = 'hardcover' AND source_instance_id = ? AND book_id = ?
-      `).get(profileId, absSource.book_id) as { hardcover_audio_seconds: number | null; source_edition_id: string | null; external_id: string } | undefined : undefined;
-      const hcAudioSeconds = hcAudioSecondsRow?.hardcover_audio_seconds ?? null;
-      const persistedAudioEditionId = hcAudioSecondsRow?.source_edition_id != null
-        ? Number.parseInt(hcAudioSecondsRow.source_edition_id, 10)
+      `).get(profileId, absSource.book_id) as {
+        external_id: string;
+        source_edition_id: string | number | null;
+        source_media_type: string | null;
+        source_audible_asin: string | null;
+        hardcover_audio_seconds: number | null;
+      } | undefined : undefined;
+      const hcAudioSeconds = hcSourceRow?.hardcover_audio_seconds ?? null;
+      const persistedAudioEditionId = hcSourceRow?.source_edition_id != null
+        ? Number.parseInt(String(hcSourceRow.source_edition_id), 10)
         : null;
       // Hardcover's own live "current edition" pointer for this book right
       // now — compared against our persisted target below to detect drift
       // even when our local cache still (correctly) remembers audio.
-      const liveHcBookForEdition = hcAudioSecondsRow
-        ? hcBooks.find((b: any) => String(b.book.id) === hcAudioSecondsRow.external_id)
-        : undefined;
       if (absSource.abs_duration && hcAudioSeconds && hcAudioSeconds > 0) {
         const delta = Math.abs(absSource.abs_duration - hcAudioSeconds) / hcAudioSeconds;
         if (delta > 0.05) {
@@ -101,9 +124,32 @@ if (hasAbs && (hasHardcover || grimmoryAvailable)) {
       const grimmoryBookId = grimmoryIdByBookId.get(absSource.book_id) ?? null;
       const grimProgressData = grimmoryBookId !== null ? grimmoryProgressById.get(grimmoryBookId) : undefined;
       const grBook = grimmoryBookId !== null ? grimmoryBooks.find((b: any) => b.id === grimmoryBookId) : undefined;
+      const localIdentityGrBook = grBook ?? localGrimmoryBookForBookId(db, profileId, absSource.book_id, grimmoryBooks);
+      const sharedHardcoverSource = db.prepare(`
+        SELECT source_hardcover_book_id
+        FROM book_sources
+        WHERE book_id = ?
+          AND (source_instance_id = ? OR (source_type = 'chaptarr' AND source_instance_id = 0))
+          AND source_hardcover_book_id IS NOT NULL
+        ORDER BY CASE source_type WHEN 'grimmory' THEN 0 WHEN 'chaptarr' THEN 1 ELSE 2 END
+        LIMIT 1
+      `).get(absSource.book_id, profileId) as { source_hardcover_book_id: string | null } | undefined;
+      // An audiobook canonical may intentionally have no direct Hardcover
+      // source row when it shares the Hardcover work with an ebook/print
+      // canonical. Fall back to Grimmory's shared work ID so live Hardcover
+      // status can still correct a stale local audio state.
+      const liveHardcoverBookId = hcSourceRow?.external_id
+        ?? localIdentityGrBook?.hardcoverBookId
+        ?? sharedHardcoverSource?.source_hardcover_book_id
+        ?? null;
+      const liveHcBookForEdition = liveHardcoverBookId
+        ? hcBooks.find((b: any) => String(b.book.id) === String(liveHardcoverBookId))
+        : undefined;
       const grProgress = meaningfulProgress(grimProgressData?.readProgress ?? null); // 0–100
-      const bookOwnsSharedHardcover = grBook?.mediaType === "audiobook"
-        && shouldBookProgressOwnSharedHardcover(grimmoryBooks, grBook.hardcoverBookId);
+      // An active ebook/print sibling always owns a shared Hardcover work.
+      // This must not depend on Grimmory having caught up with the audiobook:
+      // ABS can otherwise overwrite the book's current progress on first sync.
+      const bookOwnsSharedHardcover = hasActiveOwningBook(sharedHardcoverOwnership, liveHardcoverBookId);
 
       const absDuration = absSource.abs_duration ?? (absProgress?.duration ?? null);
       const hcProgressPct = hcState?.progress_seconds && absDuration && absDuration > 0
@@ -151,9 +197,20 @@ if (hasAbs && (hasHardcover || grimmoryAvailable)) {
             UPDATE user_book_states
             SET progress = ?, audiobookshelf_item_id = ?, audiobookshelf_current_time = ?,
                 audiobookshelf_duration = ?, audiobookshelf_updated_at = ?,
-                last_modified_at = datetime('now'), last_sync_at = datetime('now')
+                last_modified_at = CASE WHEN
+                  progress IS NOT ?
+                  OR audiobookshelf_item_id IS NOT ?
+                  OR audiobookshelf_current_time IS NOT ?
+                  OR audiobookshelf_duration IS NOT ?
+                  OR audiobookshelf_updated_at IS NOT ?
+                THEN datetime('now') ELSE last_modified_at END,
+                last_sync_at = datetime('now')
             WHERE book_id = ? AND profile_id = ? AND source_type = 'audiobookshelf'
           `).run(
+            absProgressPct, absSource.abs_item_id,
+            absCurrentTimeSeconds,
+            absDuration !== null ? Math.round(absDuration) : null,
+            absUpdatedAt,
             absProgressPct, absSource.abs_item_id,
             absCurrentTimeSeconds,
             absDuration !== null ? Math.round(absDuration) : null,
@@ -183,6 +240,22 @@ if (hasAbs && (hasHardcover || grimmoryAvailable)) {
       if (absSourcePct === null) continue;
       const needsWrite = (targetPct: number | null): boolean =>
         targetPct === null ? absSourcePct > 0 : Math.abs(absSourcePct - targetPct) >= 0.1;
+      // The parent user-book can still say READING while its displayed journal
+      // entry has been changed independently. Compare the live tracked read as
+      // well as our persisted cache so ABS repairs that divergence immediately.
+      const liveTrackedRead = liveHcBookForEdition?.user_book_reads?.find((read: any) =>
+        read.id === hcState?.hardcover_read_id
+      ) ?? (hcState?.hardcover_edition_id != null
+        ? liveHcBookForEdition?.user_book_reads?.find((read: any) =>
+            read.edition_id === hcState.hardcover_edition_id && read.finished_at === null
+          )
+        : undefined);
+      const liveReadProgress = liveTrackedRead?.progress != null
+        ? meaningfulProgress(liveTrackedRead.progress)
+        : liveTrackedRead?.progress_seconds && absDuration > 0
+          ? meaningfulProgress((liveTrackedRead.progress_seconds / absDuration) * 100)
+          : null;
+      const hcReadNeedsCorrection = liveTrackedRead !== undefined && needsWrite(liveReadProgress);
       // ABS is the source of truth for audiobook status too — 98%+ counts as
       // finished. This overrides whatever status Hardcover or Grimmory
       // currently have stored, since both can drift (e.g. a stale Hardcover
@@ -250,7 +323,9 @@ if (hasAbs && (hasHardcover || grimmoryAvailable)) {
       // matches within tolerance but Hardcover's status_id is left over from
       // before this book's audiobook/print editions were linked correctly) —
       // otherwise a wrong status can never self-correct once progress settles.
-      const hcStatusNeedsCorrection = hasHardcover && hcState?.hardcover_status_id !== absDesiredStatusId;
+      const hcStatusNeedsCorrection = hasHardcover
+        && (hcState?.hardcover_status_id !== absDesiredStatusId
+          || (liveHcBookForEdition !== undefined && liveHcBookForEdition.status_id !== absDesiredStatusId));
       // Also re-enter when Hardcover's "current edition" pointer for this
       // shared book has drifted off the audio edition (e.g. touching any
       // other read on it flips this) even though progress/status content
@@ -261,18 +336,7 @@ if (hasAbs && (hasHardcover || grimmoryAvailable)) {
         && Number.isFinite(persistedAudioEditionId)
         && liveHcBookForEdition !== undefined
         && liveHcBookForEdition.edition_id !== persistedAudioEditionId;
-      if (needsWrite(effectiveHcProgress) || hcStatusNeedsCorrection || hcEditionNeedsCorrection) {
-        const hcSourceRow = hasHardcover ? db.prepare(`
-          SELECT external_id, source_edition_id, source_media_type, source_audible_asin, hardcover_audio_seconds
-          FROM book_sources
-          WHERE source_type = 'hardcover' AND source_instance_id = ? AND book_id = ?
-        `).get(profileId, absSource.book_id) as {
-          external_id: string;
-          source_edition_id: string | number | null;
-          source_media_type: string | null;
-          source_audible_asin: string | null;
-          hardcover_audio_seconds: number | null;
-        } | undefined : undefined;
+      if (needsWrite(effectiveHcProgress) || hcReadNeedsCorrection || hcStatusNeedsCorrection || hcEditionNeedsCorrection) {
         // Scoped to this profile's own Grimmory/ABS instances — these values feed a
         // Hardcover edition lookup made through this profile's own Hardcover token,
         // so another profile's cross-reference data must not leak in.
@@ -288,11 +352,9 @@ if (hasAbs && (hasHardcover || grimmoryAvailable)) {
           grimmory_audible_asin: string | null;
           audiobookshelf_asin: string | null;
         } | undefined;
-        const parsedHcBookId = hcSourceRow
-          ? parseInt(hcSourceRow.external_id, 10)
-          : (audiobookIdentityRow?.grimmory_hardcover_book_id
-              ? parseInt(audiobookIdentityRow.grimmory_hardcover_book_id, 10)
-              : null);
+        const parsedHcBookId = liveHardcoverBookId !== null
+          ? parseInt(String(liveHardcoverBookId), 10)
+          : null;
         const hcBookId = parsedHcBookId !== null && Number.isFinite(parsedHcBookId) ? parsedHcBookId : null;
         const hcLibraryBook = hcBookId !== null ? hcBooks.find((book: any) => book.book.id === hcBookId) : undefined;
         let preferredEditionId: number | null = null;
@@ -340,7 +402,7 @@ if (hasAbs && (hasHardcover || grimmoryAvailable)) {
           preferredEditionId = hcLibraryBook?.book.default_audio_edition_id ?? null;
         }
 
-        persistResolvedHardcoverAudioEdition(db, profileId, absSource.book_id, preferredEditionId);
+        resolvedAudioEditionSourceIds.push(...persistResolvedHardcoverAudioEdition(db, profileId, absSource.book_id, preferredEditionId));
 
         if (hcState?.hardcover_user_book_id) {
           const progressSeconds = absProgress
@@ -362,8 +424,21 @@ if (hasAbs && (hasHardcover || grimmoryAvailable)) {
               if (preferredEditionId && preferredEditionId !== (liveHcBookForEdition?.edition_id ?? hcState.hardcover_edition_id)) {
                 userBookPatch.edition_id = preferredEditionId;
               }
-              if (hcState.hardcover_status_id !== desiredStatusId) userBookPatch.status_id = desiredStatusId;
+              if (hcState.hardcover_status_id !== desiredStatusId
+                || (liveHcBookForEdition !== undefined && liveHcBookForEdition.status_id !== desiredStatusId)) {
+                userBookPatch.status_id = desiredStatusId;
+              }
               if (Object.keys(userBookPatch).length > 0) {
+                // Hardcover's own website appears to feature whichever read was
+                // edited most recently in its "Currently Reading" widget,
+                // independent of finished_at or this edition_id pointer. A
+                // one-off manual edit to an older finished read (e.g.
+                // correcting its date) can therefore make Hardcover's UI
+                // feature that read instead of the actively-progressing one,
+                // even though all underlying data here is correct. This is a
+                // Hardcover-side display quirk, not something this patch
+                // controls — it resolves itself once the actively-tracked
+                // read is written to again.
                 await adapters.updateHardcoverUserBook(hardcoverToken, hcState.hardcover_user_book_id, userBookPatch);
               }
               // Our cached hardcover_read_id can go stale — e.g. Hardcover
@@ -497,11 +572,27 @@ if (hasAbs && (hasHardcover || grimmoryAvailable)) {
           counters.skipped++;
         }
       }
+      } catch (err) {
+        logger.warn("Failed to process one Audiobookshelf book; continuing with the rest", {
+          profileId, absItemId: absSource.abs_item_id, bookId: absSource.book_id, error: err
+        });
+        // Same reasoning as goodreads-phase.ts's per-book catch: recordEvent
+        // itself can throw for the same DB-level reason that caused this
+        // failure, and that must not escape and be mistaken for a
+        // whole-phase Audiobookshelf outage by the outer catch below.
+        try {
+          recordEvent(db, runId, profileId, "", "api_failure", "audiobookshelf", "book_processing_failed", { error: String(err) });
+        } catch (recordErr) {
+          logger.warn("Failed to record a per-book Audiobookshelf failure event", { profileId, absItemId: absSource.abs_item_id, error: recordErr });
+        }
+      }
     }
   } catch (err) {
     logger.warn("Audiobookshelf progress sync failed", { profileId, error: String(err) });
     recordEvent(db, runId, profileId, "Audiobookshelf", "api_failure", "audiobookshelf", "progress_sync_failed", { error: String(err) });
   }
 }
+
+return resolvedAudioEditionSourceIds;
 
 }

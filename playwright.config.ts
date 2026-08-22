@@ -17,7 +17,8 @@ export default defineConfig({
 
   use: {
     baseURL,
-    trace: "on-first-retry"
+    // retries is 0, so "on-first-retry" would never actually capture a trace.
+    trace: "retain-on-failure"
   },
 
   projects: [

@@ -19,9 +19,13 @@ def repair_entry(name: str, directory_fd: int, node_uid: int, node_gid: int) -> 
             )
     except FileNotFoundError:
         return
-    except PermissionError:
+    except OSError as err:
+        # Broad on purpose: a read-only filesystem (EROFS), a stale/removed
+        # mount, or any other OS-level failure here must not crash the whole
+        # ownership repair — skip this one entry and keep going, the same way
+        # a permission failure already did.
         print(
-            f"warning: unable to repair ownership for {name!r}",
+            f"warning: unable to repair ownership for {name!r}: {err}",
             file=sys.stderr,
         )
 

@@ -24,8 +24,11 @@ export function getSetting(key: string, fallback: string): string {
 }
 
 export function setSetting(key: string, value: string): void {
-  getDb()
+  setSettingForDb(getDb(), key, value);
+}
+
+export function setSettingForDb(db: BetterSqlite3.Database, key: string, value: string): void {
+  db
     .prepare("INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
     .run(key, value);
 }
-

@@ -49,8 +49,8 @@ export function seedSyncSettings(
 }
 
 /** Inserts a Hardcover connection. */
-export function seedHardcoverConnection(db: Database.Database, profileId: number, token = "hc-test-token"): void {
-  db.prepare("INSERT INTO hardcover_connections (profile_id, api_token) VALUES (?, ?)").run(profileId, token);
+export function seedHardcoverConnection(db: Database.Database, profileId: number, token = "hc-test-token", ownedImportEnabled = false): void {
+  db.prepare("INSERT INTO hardcover_connections (profile_id, api_token, owned_import_enabled) VALUES (?, ?, ?)").run(profileId, token, ownedImportEnabled ? 1 : 0);
 }
 
 /** Inserts a Grimmory connection. */
@@ -85,7 +85,7 @@ export function createFakeAdapters(overrides: Partial<SyncAdapters>): SyncAdapte
     "fetchEditionsForBook", "updateHardcoverUserBook", "insertHardcoverUserBook", "addBookToHardcoverList",
     "insertHardcoverUserBookRead", "updateHardcoverUserBookRead", "deleteHardcoverUserBookRead",
     "testGrimmoryLogin", "fetchGrimmoryBooks", "updateGrimmoryStatus", "updateGrimmoryRating",
-    "fetchGrimmoryShelfBookIds", "ensureGrimmoryShelf", "addBooksToGrimmoryShelf", "fetchGrimmoryProgress",
+    "fetchGrimmoryShelfBookIds", "fetchGrimmoryShelfList", "ensureGrimmoryShelf", "addBooksToGrimmoryShelf", "fetchGrimmoryProgress",
     "updateGrimmoryProgress", "clearGrimmoryProgress", "addGrimmoryTag", "fetchAllGoodreadsBooks",
     "fetchShelfPage", "syncChaptarrStatus", "fetchAudiobookshelfLibraries", "fetchAudiobookshelfLibraryItems",
     "fetchAudiobookshelfAllProgress"
@@ -93,9 +93,10 @@ export function createFakeAdapters(overrides: Partial<SyncAdapters>): SyncAdapte
   const stub: Record<string, unknown> = {
     // Chaptarr is a single global connection (not per-profile — see the v14 schema
     // migration comment), so runSyncImpl calls this unconditionally on every sync
-    // regardless of whether Chaptarr is configured. Default it to a no-op so tests
-    // that don't care about Chaptarr don't have to override it every time.
-    syncChaptarrStatus: async () => {}
+    // regardless of whether Chaptarr is configured. Default it to a no-op (no
+    // touched source ids) so tests that don't care about Chaptarr don't have to
+    // override it every time.
+    syncChaptarrStatus: async () => []
   };
   for (const name of names) {
     stub[name] = overrides[name] ?? stub[name] ?? (() => {

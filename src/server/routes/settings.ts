@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { getDb, getSetting, setSetting } from "../db/index.js";
+import { getDb, getSetting, setSetting, setSettingForDb } from "../db/index.js";
+import type Database from "better-sqlite3";
 import { LOG_LEVELS, type AboutInfo, type AppSettings, type JobInfo, type LogsPageResponse } from "../../shared/types.js";
 import { testGrimmoryServer } from "../sync/grimmory.js";
 import { testChaptarrConnection } from "../sync/chaptarr.js";
@@ -8,9 +9,37 @@ import { scheduler } from "../scheduler.js";
 import { getRecentLogs, readRecentMachineLogs } from "../logger.js";
 import { APP_VERSION, BUILD_CHANNEL, BUILD_COMMIT } from "../version.js";
 import { logger } from "../logger.js";
-import { UnsafeIntegrationUrlError, validateIntegrationUrl } from "../security/outbound.js";
+import { validateIntegrationUrl } from "../security/outbound.js";
+import {
+  chaptarrTestSchema,
+  integrationTestSchema,
+  jobIntervalSchema,
+  settingsPatchSchema,
+  validationErrorResponse
+} from "../validation.js";
 
 const router = Router();
+
+export function applySettingsPatch(
+  db: Database.Database,
+  body: ReturnType<typeof settingsPatchSchema.parse>
+): void {
+  db.transaction(() => {
+    if (body.general?.trustProxy !== undefined) setSettingForDb(db, "app.trustProxy", String(body.general.trustProxy));
+    if (body.grimmory?.baseUrl !== undefined) setSettingForDb(db, "grimmory.baseUrl", validateIntegrationUrl(body.grimmory.baseUrl));
+    if (body.grimmory?.addMenuLink !== undefined) setSettingForDb(db, "grimmory.addMenuLink", String(body.grimmory.addMenuLink));
+    if (body.download?.baseUrl !== undefined) setSettingForDb(db, "download.baseUrl", validateIntegrationUrl(body.download.baseUrl));
+    if (body.download?.addMenuLink !== undefined) setSettingForDb(db, "download.addMenuLink", String(body.download.addMenuLink));
+    if (body.sync?.startupSyncEnabled !== undefined) setSettingForDb(db, "sync.startupSyncEnabled", String(body.sync.startupSyncEnabled));
+    if (body.sync?.historyRetentionDays !== undefined) setSettingForDb(db, "sync.historyRetentionDays", String(body.sync.historyRetentionDays));
+    if (body.sync?.conflictStrategy !== undefined) setSettingForDb(db, "sync.conflictStrategy", body.sync.conflictStrategy);
+    if (body.chaptarr?.baseUrl !== undefined) setSettingForDb(db, "chaptarr.baseUrl", validateIntegrationUrl(body.chaptarr.baseUrl));
+    if (body.chaptarr?.apiKey !== undefined) setSettingForDb(db, "chaptarr.apiKey", body.chaptarr.apiKey);
+    if (body.chaptarr?.addMenuLink !== undefined) setSettingForDb(db, "chaptarr.addMenuLink", String(body.chaptarr.addMenuLink));
+    if (body.audiobookshelf?.baseUrl !== undefined) setSettingForDb(db, "audiobookshelf.baseUrl", validateIntegrationUrl(body.audiobookshelf.baseUrl));
+    if (body.audiobookshelf?.addMenuLink !== undefined) setSettingForDb(db, "audiobookshelf.addMenuLink", String(body.audiobookshelf.addMenuLink));
+  })();
+}
 
 function readSettings(): AppSettings {
   return {
@@ -47,71 +76,30 @@ router.get("/", (_req, res) => {
 });
 
 router.patch("/", (req, res) => {
-  const body = req.body as Partial<AppSettings> & {
-    general?: {
-      trustProxy?: boolean;
-    };
-    chaptarr?: {
-      baseUrl?: string;
-      apiKey?: string;
-      addMenuLink?: boolean;
-    };
-    audiobookshelf?: {
-      baseUrl?: string;
-      addMenuLink?: boolean;
-    };
-  };
-
-  try {
-    if (body.grimmory?.baseUrl !== undefined) validateIntegrationUrl(body.grimmory.baseUrl);
-    if (body.download?.baseUrl !== undefined) validateIntegrationUrl(body.download.baseUrl);
-    if (body.chaptarr?.baseUrl !== undefined) validateIntegrationUrl(body.chaptarr.baseUrl);
-    if (body.audiobookshelf?.baseUrl !== undefined) validateIntegrationUrl(body.audiobookshelf.baseUrl);
-  } catch (error) {
-    if (error instanceof UnsafeIntegrationUrlError) {
-      logger.warn("Rejected unsafe integration URL update", { error: error.message });
-      res.status(400).json({ error: error.message });
-      return;
+  const parsed = settingsPatchSchema.safeParse(req.body);
+  if (!parsed.success) {
+    const unsafeUrlIssue = parsed.error.issues.find(
+      (issue) => issue.code === "custom" && issue.path[issue.path.length - 1] === "baseUrl"
+    );
+    if (unsafeUrlIssue) {
+      logger.warn("Rejected unsafe integration URL update", { error: unsafeUrlIssue.message });
     }
-    throw error;
+    res.status(400).json(validationErrorResponse(parsed.error));
+    return;
   }
+  const body = parsed.data;
 
-  if (body.general) {
-    if (body.general.trustProxy !== undefined) setSetting("app.trustProxy", String(body.general.trustProxy));
-  }
-  if (body.grimmory) {
-    if (body.grimmory.baseUrl !== undefined) setSetting("grimmory.baseUrl", validateIntegrationUrl(body.grimmory.baseUrl));
-    if (body.grimmory.addMenuLink !== undefined)
-      setSetting("grimmory.addMenuLink", String(body.grimmory.addMenuLink));
-  }
-  if (body.download) {
-    if (body.download.baseUrl !== undefined) setSetting("download.baseUrl", validateIntegrationUrl(body.download.baseUrl));
-    if (body.download.addMenuLink !== undefined)
-      setSetting("download.addMenuLink", String(body.download.addMenuLink));
-  }
-  if (body.sync) {
-    if (body.sync.startupSyncEnabled !== undefined)
-      setSetting("sync.startupSyncEnabled", String(body.sync.startupSyncEnabled));
-    if (body.sync.historyRetentionDays !== undefined)
-      setSetting("sync.historyRetentionDays", String(body.sync.historyRetentionDays));
-    if (body.sync.conflictStrategy !== undefined) setSetting("sync.conflictStrategy", body.sync.conflictStrategy);
-  }
-  if (body.chaptarr) {
-    if (body.chaptarr.baseUrl !== undefined) setSetting("chaptarr.baseUrl", validateIntegrationUrl(body.chaptarr.baseUrl));
-    if (body.chaptarr.apiKey !== undefined) setSetting("chaptarr.apiKey", body.chaptarr.apiKey);
-    if (body.chaptarr.addMenuLink !== undefined)
-      setSetting("chaptarr.addMenuLink", String(body.chaptarr.addMenuLink));
-  }
-  if (body.audiobookshelf) {
-    if (body.audiobookshelf.baseUrl !== undefined) setSetting("audiobookshelf.baseUrl", validateIntegrationUrl(body.audiobookshelf.baseUrl));
-    if (body.audiobookshelf.addMenuLink !== undefined)
-      setSetting("audiobookshelf.addMenuLink", String(body.audiobookshelf.addMenuLink));
-  }
+  applySettingsPatch(getDb(), body);
   res.json(readSettings());
 });
 
 router.post("/grimmory/test", async (req, res) => {
-  const { baseUrl } = req.body as { baseUrl?: string };
+  const parsed = integrationTestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(validationErrorResponse(parsed.error));
+    return;
+  }
+  const { baseUrl } = parsed.data;
   const url = baseUrl ?? getSetting("grimmory.baseUrl", "");
   if (!url) {
     res.json({ ok: false, message: "No base URL configured" });
@@ -122,7 +110,12 @@ router.post("/grimmory/test", async (req, res) => {
 });
 
 router.post("/chaptarr/test", async (req, res) => {
-  const { baseUrl, apiKey } = req.body as { baseUrl?: string; apiKey?: string };
+  const parsed = chaptarrTestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(validationErrorResponse(parsed.error));
+    return;
+  }
+  const { baseUrl, apiKey } = parsed.data;
   const url = baseUrl ?? getSetting("chaptarr.baseUrl", "");
   const key = apiKey?.trim() ? apiKey : getSetting("chaptarr.apiKey", "");
   if (!url || !key) {
@@ -134,7 +127,12 @@ router.post("/chaptarr/test", async (req, res) => {
 });
 
 router.post("/audiobookshelf/test", async (req, res) => {
-  const { baseUrl } = req.body as { baseUrl?: string };
+  const parsed = integrationTestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(validationErrorResponse(parsed.error));
+    return;
+  }
+  const { baseUrl } = parsed.data;
   const url = (baseUrl ?? getSetting("audiobookshelf.baseUrl", "")).trim();
   if (!url) {
     res.json({ ok: false, message: "No base URL configured" });
@@ -184,6 +182,15 @@ router.get("/jobs", (_req, res) => {
       nextRunAt: scheduler.getNextRunAt("image-cache-refresh"),
       lastRunAt: scheduler.getLastRunAt("image-cache-refresh"),
       lastRunStatus: scheduler.getLastRunStatus("image-cache-refresh")
+    },
+    {
+      id: "full-reconcile",
+      name: "Full Reconciliation",
+      intervalDescription: "Daily at 4:00 AM",
+      isRunning: scheduler.isRunning("full-reconcile"),
+      nextRunAt: scheduler.getNextRunAt("full-reconcile"),
+      lastRunAt: scheduler.getLastRunAt("full-reconcile"),
+      lastRunStatus: scheduler.getLastRunStatus("full-reconcile")
     }
   ];
 
@@ -192,7 +199,7 @@ router.get("/jobs", (_req, res) => {
 
 router.post("/jobs/:id/run", (req, res) => {
   const { id } = req.params;
-  const known = ["profile-sync", "maintenance", "image-cache-refresh"];
+  const known = ["profile-sync", "maintenance", "image-cache-refresh", "full-reconcile"];
   if (!known.includes(id)) {
     res.status(404).json({ error: "Unknown job." });
     return;
@@ -207,9 +214,14 @@ router.post("/jobs/:id/run", (req, res) => {
 
 router.patch("/jobs/:id", (req, res) => {
   const { id } = req.params;
-  const body = req.body as { intervalMinutes?: number };
+  const parsed = jobIntervalSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(validationErrorResponse(parsed.error));
+    return;
+  }
+  const body = parsed.data;
 
-  if (id === "profile-sync" && body.intervalMinutes !== undefined) {
+  if (id === "profile-sync") {
     const minutes = body.intervalMinutes;
     if (!SYNC_PRESETS_MINUTES.includes(minutes)) {
       res.status(400).json({ error: "Invalid interval value." });
@@ -255,9 +267,9 @@ router.get("/logs", async (req, res) => {
   try {
     entries = await readRecentMachineLogs();
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      logger.warn("Failed to read machine log file, falling back to in-memory ring buffer", { error: err });
-    }
+    // readRecentMachineLogs already falls back to the ring buffer for expected open() failures
+    // (missing/unwritable log file); anything reaching here is unexpected.
+    logger.warn("Failed to read machine log file, falling back to in-memory ring buffer", { error: err });
     entries = getRecentLogs(500);
   }
 

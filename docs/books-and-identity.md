@@ -35,11 +35,19 @@ the `book_sources` rows for both sources are linked via the same `books.id`.
 `books` is ShelfBridge's canonical book table. The source data sits in two
 additional tables:
 
-**`book_sources`** — one row per (book, source_type); contains book-level facts
-that do not vary per user: external IDs, ISBNs, slugs, cross-system reference
-IDs, Chaptarr monitored/has_file flags, series data, and the `cover_cache_path`
-used by all profiles for that book. There is exactly one `book_sources` row per
-source type per canonical book.
+**`book_sources`** — uniquely identified by `source_type`, `source_instance_id`,
+`external_id`, and `source_bucket` for a normal row with a populated
+`source_instance_id`; a legacy pre-per-profile-scoping row
+(`source_instance_id IS NULL`) is exempt, since SQLite's `UNIQUE` constraint
+never treats two `NULL`s as equal. `book_id` links each row to its canonical
+book. Contains book-level facts that do not vary per user: external IDs, ISBNs,
+slugs, cross-system reference IDs, Chaptarr monitored/has_file flags, series
+data, and the `cover_cache_path` used by all profiles for that book. A
+canonical book usually has one `book_sources` row per source type, with one
+exception: a Hardcover book can contribute a second row, distinguished by
+`source_bucket` (`'primary'` vs `'owned'` for an Owned-list-derived row, or
+`'shared'` for a row derived from a real dual-Grimmory-sibling book) — see
+"Hardcover Owned-List Import" below.
 
 **`user_book_states`** — one row per (book, profile, source_type); contains
 everything that varies per user: sync health, match confidence, `has_superseded`
@@ -63,19 +71,15 @@ Book identity reconciliation (`src/server/db/bookIdentity.ts`) clusters
   separate book entries
 
 Before those keys are generated, each source row is bucketed into `book`,
-`audiobook`, or `unknown` using source media type, Hardcover edition format,
-Grimmory/Chaptarr file paths, and narrator hints. For Hardcover rows, an
-explicit `edition_format` now takes precedence over conflicting
-`default_*_edition_id` pointers so a clearly-ebook edition is not misbucketed as
-an audiobook when Hardcover exposes inconsistent defaults. Format buckets prefix
-high-confidence identity keys (HC book ID, Grimmory ID, ISBNs) so that, for
-example, separate HC library entries for the physical and audio editions of the
-same work are not incorrectly merged. The **title+author key is format-agnostic**:
-physical, ebook, and audiobook editions of the same work that share no common
-high-confidence identifier are merged by normalised title+author rather than being
-kept in separate canonical records — preventing duplicate `books` rows when a
-user's HC edition points at the physical book but their ABS file was matched via
-the audiobook edition.
+`audiobook`, or `unknown`:
+
+| Rule | Detail |
+|---|---|
+| Bucket inputs | Source media type, Hardcover reading format, Grimmory/Chaptarr file paths, narrator presence |
+| Hardcover precedence | Structured `reading_format_id` (Physical/Audiobook/E-Book/Both) wins over the free-text `edition_format` field and over `default_*_edition_id` pointers — `edition_format` is often blank or inconsistently labeled, and a book can expose the same edition ID as its physical, ebook, and audio default simultaneously |
+| Bucket-prefixed keys | HC book ID, Grimmory ID, and the title+author key (`titleAuthorKey` emits `${bucket}.title_author:…`) — e.g. separate HC library entries for the physical and audio editions of the same work are not incorrectly merged, and a book row and an audiobook row with identical title/author stay in separate canonical records rather than collapsing together |
+| ISBN exception | `isbnIdentityKeys` emits unprefixed `isbn13:`/`isbn10:` keys — an ISBN identifies a specific edition regardless of bucket, and a row's bucket is often "unknown" for reasons unrelated to actual format (e.g. no Hardcover edition data yet); prefixing would block a valid exact-ISBN match |
+| ISBN merges still respect a *known* bucket mismatch | An audiobook edition can genuinely report the same ISBN as its print/ebook counterpart (an observed Grimmory/Hardcover metadata quirk) — that isn't evidence they're the same canonical. A shared ISBN never merges two sides with a known, disagreeing format bucket, independent of the unprefixed-key exception above. An unknown bucket on either side still doesn't block the merge — it carries no contradicting signal |
 
 Key `user_book_states` fields:
 
@@ -163,31 +167,41 @@ library/catalog source. A Chaptarr-only row should never create a blank book car
 instead, Chaptarr fields are left-joined onto canonical books that already have a
 real catalog source.
 
-The Books page has four filter rows:
+The Books page filter bar has six labeled rows (three on the left, three on
+the right):
 
-- **Sources** — **Hardcover**, **Goodreads**, **Audiobookshelf**, and **On Disk** chips cycle through
+- **Sources** — **Hardcover**, **Goodreads**, and **On Disk** chips cycle through
   include (blue) → exclude (red) → off on successive clicks. Source filters are
   evaluated at the book level: a book is "in Hardcover" if it has a `book_sources`
   row with `source_type='hardcover'`; "in Goodreads" if it has a `goodreads_book_link`;
   "On Disk" if it has a `book_sources` row for `grimmory` or `chaptarr`. Include
   and exclude filters therefore apply to the entire book cluster, not just individual rows.
-- **Profile** — narrows to one user's books, but only when that profile has an
+- **Users** — narrows to one profile's books, but only when that profile has an
   actual imported relationship for the canonical book. Shared catalog presence
   from Grimmory or Chaptarr alone is not enough to make a book appear for a
-  user. Profile chip counts follow the same rule and are based on active
-  per-user relationships only.
-- **Presence** — **Chaptarr** chip cycles through three states: include (blue) →
+  user. Chip counts follow the same rule and are based on active per-user
+  relationships only.
+- **Status** — reading state (All / Want to Read / Reading / Read / Did Not Finish)
+- **Presence** — a **Chaptarr** chip cycles through three states: include (blue) →
   exclude (red) → off. Chaptarr "in" means the book is monitored in Chaptarr.
   Presence is evaluated at the book level: a book is "in Chaptarr" if its
   `book_sources(source_type='chaptarr')` row has `chaptarr_monitored = 1`.
-- **Actions** — pre-composed pipeline-gap shortcuts. Each chip answers one step
-  in the download pipeline and tells you what to do next:
+- **Actions** — pipeline-gap shortcuts. Each chip answers one step in the
+  download pipeline and tells you what to do next:
   - **Add to Chaptarr** — in Hardcover/Goodreads but not monitored in Chaptarr
   - **Grab in Chaptarr** — monitored in Chaptarr but file not yet downloaded
   - **Review in Grimmory** — file downloaded in Chaptarr but no Grimmory match (likely a wrong ID)
-  - **ID Review** — ShelfBridge detected conflicting external IDs for this book
-  - **ABS Runtime Mismatch** — ABS item duration does not match the expected Grimmory/Hardcover runtime
-- **Status** — reading state (All / Want to Read / Reading / Read / Did Not Finish)
+- **Review** — chips that surface data-quality issues rather than pipeline gaps:
+  - **Bad Chaptarr ID** — Chaptarr's own upstream ID doesn't match its matched book (only shown when this applies to at least one book)
+  - **ID Review** — ShelfBridge detected conflicting external IDs for this book across sources
+  - **Possible Duplicates** — a loose title/author match that hasn't been confirmed as the same book
+
+One more action value exists but isn't a clickable chip on this page —
+**ABS Runtime Mismatch** (`action=abs-runtime-mismatch` in the URL, reachable
+from a Dashboard link): flags a book whose Audiobookshelf item hasn't been
+runtime-validated yet, or whose duration differs from Hardcover's audio
+edition duration by more than 5%. It only ever compares against Hardcover's
+audio duration, never Grimmory's.
 
 Poster aspect ratio is media-type specific:
 

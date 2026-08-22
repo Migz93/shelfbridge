@@ -339,7 +339,256 @@ const migration1: Migration = {
   }
 };
 
-export const migrations: Migration[] = [migration1];
+// Records what was actually mismatched at dismissal time (Chaptarr's raw
+// upstream Hardcover/Goodreads book ids), so a dismissal only keeps
+// suppressing the mismatch it was raised against — if Chaptarr's reported
+// upstream ids change on a later sync, the row re-arms as an active mismatch
+// instead of staying silently dismissed forever.
+const migration2: Migration = {
+  version: 2,
+  description: "Re-arm Chaptarr ID mismatch dismissals when the observed mismatch changes",
+  up(db: Database.Database): void {
+    db.exec(`
+      ALTER TABLE chaptarr_id_mismatch_dismissals ADD COLUMN dismissed_hardcover_book_id TEXT;
+      ALTER TABLE chaptarr_id_mismatch_dismissals ADD COLUMN dismissed_goodreads_book_id TEXT;
+    `);
+    // The routes/books.ts dismissal join matches on this signature, including
+    // NULL — an existing dismissal left NULL here would stop matching a
+    // Chaptarr row whose current source_hardcover_book_id/source_goodreads_book_id
+    // is non-NULL, silently re-arming every dismissal made before this
+    // migration. Freeze each existing row to its current signature instead,
+    // so an upgrade doesn't resurface already-dismissed mismatches.
+    db.exec(`
+      UPDATE chaptarr_id_mismatch_dismissals
+      SET
+        dismissed_hardcover_book_id = (
+          SELECT source_hardcover_book_id FROM book_sources
+          WHERE source_type = 'chaptarr' AND external_id = chaptarr_id_mismatch_dismissals.chaptarr_external_id
+          LIMIT 1
+        ),
+        dismissed_goodreads_book_id = (
+          SELECT source_goodreads_book_id FROM book_sources
+          WHERE source_type = 'chaptarr' AND external_id = chaptarr_id_mismatch_dismissals.chaptarr_external_id
+          LIMIT 1
+        )
+    `);
+  }
+};
+
+// Backs indexed identity-key lookups so reconciliation can scope its reads to
+// rows sharing a key with the changed set instead of scanning every book_sources
+// row on every call (see reconcileBookIdentities in bookIdentity.ts).
+const migration3: Migration = {
+  version: 3,
+  description: "Indexes for identifier-based reconciliation and duplicate lookups",
+  up(db: Database.Database): void {
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_books_author ON books(author);
+      CREATE INDEX IF NOT EXISTS idx_books_series ON books(series_name, series_number);
+      CREATE INDEX IF NOT EXISTS idx_books_isbn13 ON books(isbn13);
+      CREATE INDEX IF NOT EXISTS idx_books_isbn10 ON books(isbn10);
+      CREATE INDEX IF NOT EXISTS idx_book_sources_isbn13 ON book_sources(isbn13);
+      CREATE INDEX IF NOT EXISTS idx_book_sources_isbn10 ON book_sources(isbn10);
+      CREATE INDEX IF NOT EXISTS idx_book_sources_hardcover_book_id ON book_sources(source_hardcover_book_id);
+      CREATE INDEX IF NOT EXISTS idx_book_sources_goodreads_book_id ON book_sources(source_goodreads_book_id);
+      CREATE INDEX IF NOT EXISTS idx_book_sources_asin ON book_sources(source_asin);
+      CREATE INDEX IF NOT EXISTS idx_book_identity_keys_value ON book_identity_keys(key_value);
+    `);
+  }
+};
+
+// Backs the duplicate-candidate lookup in routes/books.ts so it can do an
+// indexed WHERE match instead of scanning every books row per request. No
+// backfill UPDATE needed here: initSchema() always runs a full, unscoped
+// reconcileBookIdentities(db) right after migrations (schema.ts:30), and that
+// touches every book row via insertBook/updateBook, populating these columns
+// on the same startup this migration applies on.
+const migration4: Migration = {
+  version: 4,
+  description: "Duplicate-detection key columns on books",
+  up(db: Database.Database): void {
+    db.exec(`
+      ALTER TABLE books ADD COLUMN duplicate_title_key TEXT;
+      ALTER TABLE books ADD COLUMN duplicate_author_key TEXT;
+      CREATE INDEX IF NOT EXISTS idx_books_duplicate_key ON books(duplicate_title_key, duplicate_author_key);
+    `);
+  }
+};
+
+// book_identity_keys previously had UNIQUE(key_type, key_value) — a key value
+// legitimately shared by two canonicals that were intentionally kept apart
+// (e.g. same title/author but conflicting hardcover_book_id) could only ever
+// be recorded against whichever book's INSERT OR IGNORE landed first. Scoped
+// reconciliation's candidate expansion (bookIdentity.ts's expandScopeToRows)
+// looks up candidates by key value, so the second canonical was silently
+// undiscoverable by any scoped call — only a full reconcile would find it.
+// Re-keyed to UNIQUE(book_id, key_type, key_value) so every book that legitimately
+// carries a key gets its own row. No backfill needed: this table is a fully
+// derived cache, rebuilt by the unscoped reconcile initSchema() always runs
+// immediately after migrations (schema.ts) — dropping and recreating it here
+// is simpler and just as correct as trying to migrate its (already partially
+// wrong, pre-this-fix) existing contents.
+const migration5: Migration = {
+  version: 5,
+  description: "Allow multiple canonicals to share an identity key in book_identity_keys",
+  up(db: Database.Database): void {
+    db.exec(`
+      DROP TABLE book_identity_keys;
+      CREATE TABLE book_identity_keys (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        book_id   INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+        key_type  TEXT NOT NULL,
+        key_value TEXT NOT NULL,
+        UNIQUE(book_id, key_type, key_value)
+      );
+      CREATE INDEX idx_book_identity_keys_book ON book_identity_keys(book_id);
+      CREATE INDEX idx_book_identity_keys_value ON book_identity_keys(key_value);
+    `);
+  }
+};
+
+// Widens book_sources's uniqueness so a single Hardcover book can contribute
+// up to two local rows for the same profile — one for the user's current
+// reading-status edition ('primary', today's only case) and a second,
+// secondary row for a format the user owns in a different way. That second
+// row is bucket 'owned' when it comes from the user's Hardcover "Owned" list
+// disagreeing with the current edition's format (e.g. reading a physical
+// copy but owning the audiobook too), or bucket 'shared' when a real
+// Grimmory sibling of the opposite format already exists for the same
+// Hardcover book (see docs/sync.md's Hardcover Owned-List Import section).
+// Every existing row keeps 'primary'. The 'owned' path only ever applies
+// once a profile turns on the new "Owned Import" setting; the 'shared' path
+// is not gated by that setting at all — it applies whenever a real opposite-
+// format Grimmory sibling already exists, regardless of the toggle. Either
+// way, behavior for a profile with no such sibling and the setting off is
+// unchanged. SQLite can't ALTER an existing UNIQUE constraint, so this is a table
+// rebuild preserving every row and column exactly, plus the new column and
+// the indexes migration1/migration3 created (dropping the table drops them).
+// Also adds hardcover_connections.owned_import_enabled, the per-profile
+// opt-in for reading a Hardcover user's "Owned" list (a reserved system
+// list, slug "owned") as a second, independent format-ownership signal
+// alongside the current reading-status edition — see hardcover-sources.ts.
+// Off by default: nothing changes for a profile until the user turns it on.
+// Bundled into this same migration rather than a separate one since neither
+// has shipped yet — both are new to this branch's still-open PR.
+const migration6: Migration = {
+  version: 6,
+  description: "Add source_bucket to book_sources and owned_import_enabled to hardcover_connections",
+  up(db: Database.Database): void {
+    // Column list read live rather than hardcoded (same reasoning as
+    // repository.ts's bookSourceColumns()): a database that reached this point
+    // via the legacy pre-v14 handover chain isn't guaranteed to carry every
+    // column the "flattened v14 shape" baseline lists — columns not present on
+    // the existing table are simply skipped in the copy and land on their
+    // default/NULL in the rebuilt table, same as they'd have been before.
+    const existingColumns = new Set(
+      (db.prepare("PRAGMA table_info(book_sources)").all() as { name: string }[]).map((c) => c.name)
+    );
+    const copyColumns = [
+      "id", "book_id", "source_type", "source_instance_id", "external_id", "title", "author",
+      "cover_url", "cover_cache_path", "isbn13", "isbn10", "series_name", "series_number",
+      "source_hardcover_book_id", "source_hardcover_slug", "source_goodreads_book_id",
+      "source_goodreads_work_id", "source_goodreads_edition_id", "source_edition_id",
+      "source_edition_format", "source_media_type", "source_narrator", "source_asin",
+      "source_audible_asin", "hardcover_slug", "hardcover_audio_seconds",
+      "grimmory_hardcover_book_id", "grimmory_goodreads_id", "grimmory_hardcover_id",
+      "grimmory_primary_file_path", "goodreads_book_link", "chaptarr_monitored",
+      "chaptarr_has_file", "chaptarr_id_mismatch", "chaptarr_primary_file_path",
+      "audiobookshelf_duration", "audiobookshelf_file_path", "audiobookshelf_asin",
+      "audiobookshelf_runtime_validated", "audiobookshelf_runtime_delta",
+      "last_sync_at", "last_sync_decision", "last_modified_at", "created_at"
+    ];
+    const droppedColumns = [...existingColumns].filter((column) => !copyColumns.includes(column));
+    if (droppedColumns.length > 0) {
+      // Not necessarily a bug — this rebuild's target shape is the flattened
+      // v14 baseline, so an old column genuinely retired since then is
+      // expected to be dropped here. But an unrecognized column could also
+      // mean copyColumns is stale relative to a newer schema, so surface it
+      // rather than silently discarding whatever data it held.
+      logger.warn("Migration 6: dropping book_sources column(s) not in the target schema", { columns: droppedColumns });
+    }
+    const columnList = copyColumns.filter((column) => existingColumns.has(column)).join(", ");
+
+    db.exec(`
+      CREATE TABLE book_sources_new (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        book_id          INTEGER REFERENCES books(id) ON DELETE CASCADE,
+        source_type      TEXT NOT NULL,
+        source_instance_id INTEGER,
+        external_id      TEXT NOT NULL,
+        title            TEXT,
+        author           TEXT,
+        cover_url        TEXT,
+        cover_cache_path TEXT,
+        isbn13           TEXT,
+        isbn10           TEXT,
+        series_name      TEXT,
+        series_number    TEXT,
+        source_hardcover_book_id   TEXT,
+        source_hardcover_slug      TEXT,
+        source_goodreads_book_id   TEXT,
+        source_goodreads_work_id   TEXT,
+        source_goodreads_edition_id TEXT,
+        source_edition_id          TEXT,
+        source_edition_format      TEXT,
+        source_media_type          TEXT,
+        source_narrator           TEXT,
+        source_asin                TEXT,
+        source_audible_asin        TEXT,
+        hardcover_slug   TEXT,
+        hardcover_audio_seconds INTEGER,
+        grimmory_hardcover_book_id   TEXT,
+        grimmory_goodreads_id        TEXT,
+        grimmory_hardcover_id        TEXT,
+        grimmory_primary_file_path   TEXT,
+        goodreads_book_link TEXT,
+        chaptarr_monitored         INTEGER,
+        chaptarr_has_file          INTEGER,
+        chaptarr_id_mismatch       INTEGER,
+        chaptarr_primary_file_path TEXT,
+        audiobookshelf_duration          INTEGER,
+        audiobookshelf_file_path         TEXT,
+        audiobookshelf_asin              TEXT,
+        audiobookshelf_runtime_validated INTEGER,
+        audiobookshelf_runtime_delta     INTEGER,
+        last_sync_at     TEXT,
+        last_sync_decision TEXT,
+        last_modified_at TEXT NOT NULL DEFAULT (datetime('now')),
+        created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+        -- 'primary' for every existing row and every non-Hardcover source;
+        -- 'owned' or 'shared' only for a second Hardcover row (see the
+        -- migration comment above).
+        source_bucket    TEXT NOT NULL DEFAULT 'primary',
+        UNIQUE(source_type, source_instance_id, external_id, source_bucket)
+      );
+
+      INSERT INTO book_sources_new (${columnList}, source_bucket)
+      SELECT ${columnList}, 'primary'
+      FROM book_sources;
+
+      DROP TABLE book_sources;
+      ALTER TABLE book_sources_new RENAME TO book_sources;
+
+      CREATE INDEX idx_book_sources_book ON book_sources(book_id);
+      CREATE INDEX idx_book_sources_type ON book_sources(source_type);
+      CREATE INDEX idx_book_sources_instance ON book_sources(source_type, source_instance_id);
+      CREATE INDEX idx_book_sources_isbn13 ON book_sources(isbn13);
+      CREATE INDEX idx_book_sources_isbn10 ON book_sources(isbn10);
+      CREATE INDEX idx_book_sources_hardcover_book_id ON book_sources(source_hardcover_book_id);
+      CREATE INDEX idx_book_sources_goodreads_book_id ON book_sources(source_goodreads_book_id);
+      CREATE INDEX idx_book_sources_asin ON book_sources(source_asin);
+
+      -- Per-profile opt-in for reading a Hardcover user's "Owned" list (a
+      -- reserved system list, slug "owned") as a second, independent
+      -- format-ownership signal alongside the current reading-status
+      -- edition — see hardcover-sources.ts. Off by default: nothing changes
+      -- for a profile until the user turns it on.
+      ALTER TABLE hardcover_connections ADD COLUMN owned_import_enabled INTEGER NOT NULL DEFAULT 0;
+    `);
+  }
+};
+
+export const migrations: Migration[] = [migration1, migration2, migration3, migration4, migration5, migration6];
 
 // Guards against a typo'd version number: a duplicate would let two migrations
 // silently race to apply at the same version, and a gap (e.g. 1, 3 — skipping

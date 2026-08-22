@@ -10,6 +10,7 @@ type Db = ReturnType<typeof getDb>;
 // reverse shelf query binds an ID list twice, so leave room for its fixed args.
 const SQLITE_ID_BATCH_SIZE = 400;
 const MAX_GOODREADS_SHELF_PAGES = 200;
+const HARDCOVER_LIST_WRITE_FAILURE_BUDGET = 5;
 
 function batches<T>(values: readonly T[]): T[][] {
   const result: T[][] = [];
@@ -128,12 +129,14 @@ export async function syncGoodreadsShelvesToGrimmory(
     }
 
     const toAdd = grimmoryBookIds.filter((id) => !currentIds.includes(id));
+    let confirmedAdded: number[] = [];
     if (toAdd.length > 0) {
       if (dryRun) {
         logger.info("Dry run: would add books to Grimmory shelf from Goodreads shelf", { profileId, shelfName, grimmoryShelfName: mapping.grimmory_shelf_name, count: toAdd.length });
       } else {
         try {
           await adapters.addBooksToGrimmoryShelf(baseUrl, grimmoryToken, toAdd, shelfId);
+          confirmedAdded = toAdd;
           logger.info("Synced Goodreads shelf to Grimmory shelf", { profileId, shelfName, grimmoryShelfName: mapping.grimmory_shelf_name, added: toAdd.length });
         } catch (err) {
           logger.warn("Failed to add books to Grimmory shelf from Goodreads", { profileId, grimmoryShelfName: mapping.grimmory_shelf_name, error: err });
@@ -143,8 +146,9 @@ export async function syncGoodreadsShelvesToGrimmory(
       logger.info("Grimmory shelf already up to date for Goodreads shelf", { profileId, shelfName, grimmoryShelfName: mapping.grimmory_shelf_name });
     }
 
-    // Record Grimmory shelf membership on user_book_states
-    const allOnShelf = [...new Set([...currentIds, ...toAdd])];
+    // Record Grimmory shelf membership on user_book_states — only for ids
+    // actually confirmed added above, not every id the write merely intended.
+    const allOnShelf = [...new Set([...currentIds, ...confirmedAdded])];
     if (allOnShelf.length > 0 && !dryRun && !mapping.grimmory_shelf_name.includes(",")) {
       const grimmoryShelfName = mapping.grimmory_shelf_name;
       for (const ids of batches(allOnShelf)) {
@@ -256,12 +260,14 @@ export async function syncListsToShelves(
     }
 
     const toAdd = grimmoryBookIds.filter((id) => !currentIds.includes(id));
+    let confirmedAdded: number[] = [];
     if (toAdd.length > 0) {
       if (dryRun) {
         logger.info("Dry run: would add books to Grimmory shelf from Hardcover list", { profileId, listName: hcList.name, shelfName: mapping.grimmory_shelf_name, count: toAdd.length });
       } else {
         try {
           await adapters.addBooksToGrimmoryShelf(baseUrl, grimmoryToken, toAdd, shelfId);
+          confirmedAdded = toAdd;
           logger.info("Synced Hardcover list to Grimmory shelf", { profileId, listName: hcList.name, shelfName: mapping.grimmory_shelf_name, added: toAdd.length });
         } catch (err) {
           logger.warn("Failed to add books to Grimmory shelf", { profileId, shelfName: mapping.grimmory_shelf_name, error: err });
@@ -271,7 +277,9 @@ export async function syncListsToShelves(
       logger.info("Grimmory shelf already up to date for list", { profileId, shelfName: mapping.grimmory_shelf_name });
     }
 
-    const allOnShelf = [...new Set([...currentIds, ...toAdd])];
+    // Record Grimmory shelf membership — only for ids actually confirmed
+    // added above, not every id the write merely intended.
+    const allOnShelf = [...new Set([...currentIds, ...confirmedAdded])];
     if (allOnShelf.length > 0 && !dryRun && !mapping.grimmory_shelf_name.includes(",")) {
       const shelfName = mapping.grimmory_shelf_name;
       for (const ids of batches(allOnShelf)) {
@@ -340,12 +348,23 @@ export async function syncListsToShelves(
     }
 
     let addedToHardcover = 0;
+    let consecutiveFailures = 0;
     for (const hardcoverBookId of toAddToHardcover) {
       try {
         await adapters.addBookToHardcoverList(hardcoverToken, Number.parseInt(mapping.source_list_id, 10), hardcoverBookId);
         addedToHardcover++;
+        consecutiveFailures = 0;
       } catch (err) {
         logger.warn("Failed to add book to Hardcover list", { profileId, listName: hcList.name, hardcoverBookId, error: err });
+        consecutiveFailures++;
+        // A run of failures usually means the API/token is down rather than
+        // one bad book — stop hammering it with the rest of a large batch.
+        if (consecutiveFailures >= HARDCOVER_LIST_WRITE_FAILURE_BUDGET) {
+          logger.warn("Aborting remaining Hardcover list writes after consecutive failures", {
+            profileId, listName: hcList.name, consecutiveFailures, remaining: toAddToHardcover.length - addedToHardcover - consecutiveFailures
+          });
+          break;
+        }
       }
     }
 

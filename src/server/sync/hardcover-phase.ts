@@ -1,10 +1,93 @@
 import { logger } from "../logger.js";
-import { grimmoryRating } from "./grimmory.js";
-import { HARDCOVER_TO_GRIMMORY, matchHardcoverBook } from "./matcher.js";
-import type { HardcoverReadFields } from "./hardcover.js";
-import { getBookSource, getGoodreadsExternalId } from "./repository.js";
+import { grimmoryRating, type GrimmoryBook } from "./grimmory.js";
+import { hasGrimmoryUserActivity } from "./sync-utils.js";
+import { buildGrimmoryIndex, HARDCOVER_TO_GRIMMORY, matchHardcoverBook } from "./matcher.js";
+import type { HardcoverEdition, HardcoverReadFields, HardcoverUserBook } from "./hardcover.js";
+import { getBookSource, getGoodreadsExternalId, getUserState, localGrimmoryBookForBookId } from "./repository.js";
+import type { getDb } from "../db/index.js";
+import type { SyncAdapters } from "./adapters.js";
+import type { cacheGrimmoryCover, cacheSourceCover } from "./covers.js";
+import type { ConflictStrategy, computeSyncDecision } from "./conflict-policy.js";
+import type {
+  audiobookRuntimeForBook,
+  cleanupDuplicateBlankHardcoverReads,
+  grimmoryToHardcoverRating,
+  hardcoverDate,
+  hardcoverFieldsFromGrimmory,
+  hardcoverPages,
+  hardcoverProgressPercent,
+  hardcoverToGrimmoryRating,
+  hasMeaningfulGrChange,
+  hasMeaningfulHcChange,
+  latestHardcoverRead,
+  meaningfulProgress,
+  newerSource,
+  persistResolvedHardcoverAudioEdition,
+  positiveRating,
+  progressPagesFromPercent,
+  sameNumber,
+  sqliteNow,
+  SyncCounters,
+  todayDate
+} from "./sync-utils.js";
+import { bookOwnsSharedHardcoverRecord, sharedHardcoverRecordFor, type SharedHardcoverOwnership } from "./hardcover-ownership.js";
 
-export async function syncHardcoverState(context: any): Promise<void> {
+type Db = ReturnType<typeof getDb>;
+type RecordEvent = (db: Db, runId: number, profileId: number, bookTitle: string, eventType: string, direction: string | null, decision: string, details: Record<string, unknown>) => void;
+
+export interface HardcoverStateContext {
+  db: Db;
+  profileId: number;
+  runId: number;
+  dryRun: boolean;
+  adapters: SyncAdapters;
+  counters: SyncCounters;
+  hcBooks: HardcoverUserBook[];
+  hcEditions: Map<number, HardcoverEdition>;
+  grimmoryBooks: GrimmoryBook[];
+  grimmoryAvailable: boolean;
+  hasGrimmory: boolean;
+  baseUrl: string;
+  grimmoryToken: string | null;
+  hardcoverToken: string;
+  profile: Record<string, unknown>;
+  recordEvent: RecordEvent;
+  getUserState: typeof getUserState;
+  localGrimmoryBookForBookId: typeof localGrimmoryBookForBookId;
+  cacheSourceCover: typeof cacheSourceCover;
+  cacheGrimmoryCover: typeof cacheGrimmoryCover;
+  computeSyncDecision: typeof computeSyncDecision;
+  cleanupDuplicateBlankHardcoverReads: typeof cleanupDuplicateBlankHardcoverReads;
+  hasMeaningfulHcChange: typeof hasMeaningfulHcChange;
+  hasMeaningfulGrChange: typeof hasMeaningfulGrChange;
+  sameNumber: typeof sameNumber;
+  grimmoryToHardcoverRating: typeof grimmoryToHardcoverRating;
+  hardcoverToGrimmoryRating: typeof hardcoverToGrimmoryRating;
+  hardcoverFieldsFromGrimmory: typeof hardcoverFieldsFromGrimmory;
+  progressPagesFromPercent: typeof progressPagesFromPercent;
+  latestHardcoverRead: typeof latestHardcoverRead;
+  hardcoverPages: typeof hardcoverPages;
+  persistResolvedHardcoverAudioEdition: typeof persistResolvedHardcoverAudioEdition;
+  todayDate: typeof todayDate;
+  sqliteNow: typeof sqliteNow;
+  conflictStrategy: ConflictStrategy;
+  grimmoryIndex: ReturnType<typeof buildGrimmoryIndex>;
+  matchedGrimmoryIds: Set<number>;
+  writeTagEnabled: boolean;
+  taggedSourceGrimmoryIds: Set<number>;
+  taggedSourceTitles: Map<number, string>;
+  hardcoverSourceGrimmoryIds: Set<number>;
+  audiobookRuntimeForBook: typeof audiobookRuntimeForBook;
+  hardcoverProgressPercent: typeof hardcoverProgressPercent;
+  absOwnedBookIds: Set<number>;
+  positiveRating: typeof positiveRating;
+  newerSource: typeof newerSource;
+  meaningfulProgress: typeof meaningfulProgress;
+  hardcoverDate: typeof hardcoverDate;
+  sharedHardcoverOwnership: SharedHardcoverOwnership;
+}
+
+export async function syncHardcoverState(context: HardcoverStateContext): Promise<void> {
   const { db, profileId, runId, dryRun, adapters, counters, hcBooks,
     grimmoryBooks, grimmoryAvailable, hasGrimmory, baseUrl, grimmoryToken,
     hardcoverToken, profile, recordEvent, getUserState, localGrimmoryBookForBookId,
@@ -15,7 +98,94 @@ export async function syncHardcoverState(context: any): Promise<void> {
     matchedGrimmoryIds, writeTagEnabled, taggedSourceGrimmoryIds, taggedSourceTitles,
     hardcoverSourceGrimmoryIds, audiobookRuntimeForBook, hardcoverProgressPercent,
     absOwnedBookIds, positiveRating, newerSource, meaningfulProgress, hardcoverDate,
-    activeGrimmorySiblingsForHardcover } = context;
+    sharedHardcoverOwnership } = context;
+
+// Writes/updates a local-only Hardcover-sourced user_book_states row so the
+// target canonical shows as belonging to this profile — but never matched
+// against Grimmory, never carries a read id, and never written back to
+// Hardcover (only ever touches this table — no adapter call). Shared by both
+// the Owned-list bucket row case and the genuine-dual-Grimmory-sibling
+// fallback case below.
+//
+// Status here never borrows the shared work's actual Hardcover status/rating
+// — book and audiobook editions are tracked completely independently in
+// Grimmory, each with its own real progress/status, so a canonical that
+// already has its own Grimmory activity must not have that overwritten by
+// whichever format happens to currently own Hardcover's one status slot
+// (e.g. a book finished reading in print must not show as "currently
+// reading" just because its audiobook sibling is mid-listen, and vice
+// versa). When the canonical has no Grimmory activity of its own — whether
+// because it's a real, on-disk file nobody's opened yet, or because it only
+// exists via the Owned list with no on-disk file at all — its status
+// defaults to a neutral "want to read"/"want to listen" (UNREAD) rather than
+// inheriting whatever state the *other* format happens to be in (see
+// docs/sync.md's "Existence vs. write arbitration" section).
+function upsertLocalOnlyHardcoverState(
+  targetBookId: number,
+  hcBook: HardcoverUserBook,
+  decision: "owned_list_local_only" | "shared_sibling_local_only"
+): void {
+  // Checked against this run's freshly-fetched Grimmory data (not a DB read of
+  // user_book_states) because Phase G, which writes the Grimmory-sourced
+  // state for this run, hasn't run yet at this point in Phase F — a DB read
+  // here would only ever see last run's (possibly stale or nonexistent) state.
+  const ownGrimmorySibling = grimmoryAvailable
+    ? localGrimmoryBookForBookId(db, profileId, targetBookId, grimmoryBooks)
+    : null;
+  const hasOwnActivity = !!ownGrimmorySibling && hasGrimmoryUserActivity(ownGrimmorySibling);
+  const prevState = getUserState(db, targetBookId, profileId, "hardcover");
+  // This run's Grimmory data is empty for every book when Grimmory is
+  // unreachable, so hasOwnActivity's forced-false result here can't be
+  // trusted as "genuinely no activity" — it's indistinguishable from "the
+  // outage hid the activity". Keep whatever was already persisted rather
+  // than flipping an existing (possibly correctly-blank) row to UNREAD, and
+  // don't create a brand-new row either — a first-ever write during an
+  // outage would otherwise permanently mark it UNREAD based on the outage
+  // alone, an artefact this profile may never actually revisit. Guarded by
+  // hasGrimmory, not just grimmoryAvailable — a profile with no Grimmory
+  // connection at all also has grimmoryAvailable === false, but that's not
+  // an outage, so it must not block state creation. Mirrors the same outage
+  // guard on the 'shared' row itself in hardcover-sources.ts.
+  if (hasGrimmory && !grimmoryAvailable) return;
+  const meaningfulChange = hasMeaningfulHcChange(prevState, {
+    hardcoverStatusId: hasOwnActivity ? null : 1,
+    hardcoverRating: null,
+    hardcoverProgress: null
+  });
+  const stateFields: Record<string, unknown> = {
+    status: hasOwnActivity ? null : "UNREAD",
+    rating: null,
+    progress: null,
+    progress_pages: null,
+    progress_seconds: null,
+    last_read_date: null,
+    date_finished: null,
+    sync_health: "synced",
+    match_confidence: "none",
+    match_type: null,
+    last_sync_decision: decision,
+    hardcover_status_id: hasOwnActivity ? null : 1,
+    hardcover_user_book_id: hcBook.id || null,
+    hardcover_read_id: null,
+    hardcover_updated_at: hcBook.updated_at ?? null,
+    hardcover_pages: null
+  };
+  if (prevState) {
+    const setClauses = Object.keys(stateFields).map((k) => `${k} = ?`).join(", ");
+    db.prepare(`
+      UPDATE user_book_states SET ${setClauses},
+        last_sync_at = datetime('now'),
+        last_modified_at = CASE WHEN ? THEN datetime('now') ELSE last_modified_at END
+      WHERE book_id = ? AND profile_id = ? AND source_type = 'hardcover'
+    `).run(...Object.values(stateFields), meaningfulChange ? 1 : 0, targetBookId, profileId);
+  } else {
+    const cols = ["book_id", "profile_id", "source_type", ...Object.keys(stateFields)].join(", ");
+    const placeholders = Array(Object.keys(stateFields).length + 3).fill("?").join(", ");
+    db.prepare(`INSERT OR IGNORE INTO user_book_states (${cols}, last_sync_at) VALUES (${placeholders}, datetime('now'))`)
+      .run(targetBookId, profileId, "hardcover", ...Object.values(stateFields));
+  }
+}
+
 // ── Phase F: HC user states + API sync ───────────────────────────────────
 // For each HC book, find its matching Grimmory book (via the in-memory index
 // AND the book_sources reconciliation), then apply conflict resolution and
@@ -29,14 +199,14 @@ for (const hcBook of hcBooks) {
   }
   const bookId = hcSource.book_id;
 
-  const preferredSiblings = grimmoryAvailable
-    ? activeGrimmorySiblingsForHardcover(grimmoryBooks, hcBook.book.id)
-    : { book: null, audiobook: null };
-  const bookOwnsSharedHardcover = preferredSiblings.book !== null && preferredSiblings.audiobook !== null;
+  const owningBook = grimmoryAvailable
+    ? sharedHardcoverRecordFor(sharedHardcoverOwnership, hcBook.book.id)?.activeBook ?? null
+    : null;
+  const bookOwnsSharedHardcover = bookOwnsSharedHardcoverRecord(sharedHardcoverOwnership, hcBook.book.id);
 
   // Find matching Grimmory book via the in-memory matcher
-  const match = bookOwnsSharedHardcover && preferredSiblings.book
-    ? { grimmoryBook: preferredSiblings.book, confidence: "high" as const, matchType: "hardcover_book_id" as const }
+  const match = bookOwnsSharedHardcover && owningBook
+    ? { grimmoryBook: owningBook, confidence: "high" as const, matchType: "hardcover_book_id" as const }
     : grimmoryAvailable
     ? matchHardcoverBook(hcBook, grimmoryIndex, {
         goodreadsId: getGoodreadsExternalId(db, profileId, bookId),
@@ -69,7 +239,14 @@ for (const hcBook of hcBooks) {
   const projectedHcStatus = grStatus
     ?? localIdentityGrimmoryBook?.readStatus
     ?? prevHcState?.status
-    ?? null;
+    // Last resort: Hardcover's own status_id, translated to the same
+    // vocabulary Grimmory statuses use. Only reached when nothing on the
+    // Grimmory side has ever reported a status (e.g. a list-only stub book —
+    // see source-snapshots.ts's Owned-list handling — with a real Hardcover
+    // status but a purely on-disk, never-opened Grimmory file); otherwise a
+    // live or cached Grimmory status always wins, matching this codebase's
+    // general preference for Grimmory as the read-status source of truth.
+    ?? (hcStatusId !== null ? HARDCOVER_TO_GRIMMORY[hcStatusId] ?? null : null);
   const audiobookRuntimeSeconds = audiobookRuntimeForBook(db, profileId, bookId);
 
   const { decision, syncHealth, writeGrimmory, writeHardcover } = localIdentityGrimmoryBook
@@ -147,7 +324,7 @@ for (const hcBook of hcBooks) {
     match_type: match?.matchType ?? (localIdentityGrimmoryBook ? "local_identity" : null),
     last_sync_decision: decision,
     hardcover_status_id: hcStatusId ?? null,
-    hardcover_user_book_id: hcBook.id ?? null,
+    hardcover_user_book_id: hcBook.id || null,
     hardcover_read_id: hcRead?.id ?? null,
     hardcover_updated_at: hcBook.updated_at ?? null,
     hardcover_pages: hcPages
@@ -166,6 +343,25 @@ for (const hcBook of hcBooks) {
     const placeholders = Array(Object.keys(hcStateFields).length + 3).fill("?").join(", ");
     db.prepare(`INSERT OR IGNORE INTO user_book_states (${cols}, last_sync_at) VALUES (${placeholders}, datetime('now'))`)
       .run(bookId, profileId, "hardcover", ...Object.values(hcStateFields));
+  }
+
+  // ── Secondary-format local presence ─────────────────────────────────────
+  // A secondary-format book_sources row — bucket 'owned' (Hardcover
+  // Owned-list-derived) or 'shared' (derived from a real Grimmory sibling of
+  // the opposite format, see hardcover-sources.ts's Phase C) — never writes
+  // back to Hardcover and is never matched against Grimmory, but it still
+  // needs a user_book_states row of its own so that format's canonical book
+  // shows as belonging to this profile instead of looking like an unclaimed
+  // catalog entry, and so the "linked to Hardcover" source badge/filter
+  // recognizes it (both are real book_sources rows, unlike an ad-hoc
+  // local-only lookup would be).
+  const ownedSource = getBookSource(db, "hardcover", profileId, hcBook.book.id, "owned");
+  if (ownedSource?.book_id && ownedSource.book_id !== bookId) {
+    upsertLocalOnlyHardcoverState(ownedSource.book_id, hcBook, "owned_list_local_only");
+  }
+  const sharedSource = getBookSource(db, "hardcover", profileId, hcBook.book.id, "shared");
+  if (sharedSource?.book_id && sharedSource.book_id !== bookId) {
+    upsertLocalOnlyHardcoverState(sharedSource.book_id, hcBook, "shared_sibling_local_only");
   }
 
   // ── Apply writes ──────────────────────────────────────────────────────
@@ -350,8 +546,8 @@ for (const hcBook of hcBooks) {
 
     if (bookOwnsSharedHardcover && grProgress !== null && !progressAlreadySynced) {
       // Hardcover only exposes one current-progress slot per work. When a
-      // book and audiobook are both active, the book edition owns that slot
-      // even if the profile's general conflict strategy is Hardcover-wins.
+      // book sibling is active, the book edition owns that slot even if the
+      // profile's general conflict strategy is Hardcover-wins.
       progressDirection = "grimmory_to_hardcover";
       progressDecision = "book_progress_wins_shared_hardcover";
     } else if (!progressAlreadySynced) {
@@ -412,7 +608,7 @@ for (const hcBook of hcBooks) {
     if (needsEditionResolution && hardcoverToken) {
       try {
         const editions = await adapters.fetchEditionsForBook(hardcoverToken, hcBook.book.id);
-        const matched = editions.find((e: any) => e.pages === hcPages);
+        const matched = editions.find((e) => e.pages === hcPages);
         if (matched) {
           resolvedEditionId = matched.id;
           db.prepare(`
@@ -430,7 +626,7 @@ for (const hcBook of hcBooks) {
             WHERE book_id = ? AND profile_id = ? AND source_type = 'hardcover'
           `).run(hcPages, bookId, profileId);
           logger.warn("No Hardcover edition matched page count; edition will not be set on progress writes", {
-            profileId, bookId, hcPages, available: editions.map((e: any) => e.pages)
+            profileId, bookId, hcPages, available: editions.map((e) => e.pages)
           });
         }
       } catch (editionErr) {

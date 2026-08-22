@@ -7,9 +7,9 @@ import { logger } from "../logger.js";
 import type { HardcoverEdition, HardcoverUserBook } from "./hardcover.js";
 import type { GrimmoryBook } from "./grimmory.js";
 import { GRIMMORY_TO_HARDCOVER } from "./matcher.js";
-import { normalizeExternalId } from "../identifiers.js";
 import type { UserStateSnapshot } from "./repository.js";
 import { newerSource } from "./time-order.js";
+import { resolvedMediaTypeBucket } from "../db/bookIdentity.js";
 export interface SyncCounters { written: number; skipped: number; superseded: number; sourceFailures: number; }
 
 export type { UserStateSnapshot } from "./repository.js";
@@ -124,8 +124,13 @@ export function latestHardcoverRead(
   // edition we know we care about when we have one; fall back to the
   // highest-id read otherwise (single-edition books, or no hint available).
   if (preferredEditionId !== null) {
-    const editionMatch = reads.find((read) => read.edition_id === preferredEditionId);
-    if (editionMatch) return editionMatch;
+    const editionReads = reads.filter((read) => read.edition_id === preferredEditionId);
+    // Hardcover may auto-create an empty read while changing the parent
+    // user-book edition. Prefer an already-progressed read on the intended
+    // edition so that a blank duplicate cannot become the sync source.
+    const progressedEditionRead = editionReads.find(hardcoverReadHasProgress);
+    if (progressedEditionRead) return progressedEditionRead;
+    if (editionReads[0]) return editionReads[0];
   }
   return reads[0] ?? null;
 }
@@ -220,7 +225,11 @@ export async function cleanupDuplicateBlankHardcoverReads(opts: {
 
   if (deletedReadIds.length === 0) return;
 
-  opts.hcBook.user_book_reads = (opts.hcBook.user_book_reads ?? []).filter((read) => !duplicateIds.has(read.id));
+  // Only drop reads that were actually deleted remotely — a read whose
+  // deletion failed above must stay in the in-memory state, or later logic
+  // in this sync run would treat it as already gone.
+  const deletedReadIdSet = new Set(deletedReadIds);
+  opts.hcBook.user_book_reads = (opts.hcBook.user_book_reads ?? []).filter((read) => !deletedReadIdSet.has(read.id));
   recordSyncEvent(opts.db, opts.runId, opts.profileId, opts.title, "written", "hardcover_cleanup", "deleted_duplicate_blank_read", {
     hardcoverUserBookId: opts.hcBook.id,
     deletedReadIds
@@ -297,21 +306,34 @@ export function effectiveAbsCurrentTimeSeconds(absProgress: { currentTime: numbe
   return 0;
 }
 
+/**
+ * Returns the updated rows' book_sources.id values (empty if nothing changed —
+ * no matching row, or it already had this edition/media type). Flipping
+ * source_media_type to 'audiobook' changes a row's identity-key format bucket
+ * and can change the book's canonical media_type, so callers must reconcile
+ * scoped to the returned ids — see syncAudiobookshelfProgress. Uses .all()
+ * rather than .get(): the WHERE clause isn't guaranteed unique (no DB
+ * constraint ties book_id to at most one hardcover row per instance), and
+ * .get() would still update every matching row while silently returning only
+ * one of their ids, leaving any other updated row's identity data stale.
+ */
 export function persistResolvedHardcoverAudioEdition(
   db: ReturnType<typeof getDb>,
   profileId: number,
   bookId: number,
   editionId: number | null
-): void {
-  if (!editionId || editionId <= 0) return;
+): number[] {
+  if (!editionId || editionId <= 0) return [];
   // Scoped to this profile's own Hardcover instance — each profile can track a
   // different edition of the same shared book.
-  db.prepare(`
+  const rows = db.prepare(`
     UPDATE book_sources
     SET source_edition_id = ?, source_media_type = 'audiobook', last_modified_at = datetime('now')
     WHERE source_type = 'hardcover' AND source_instance_id = ? AND book_id = ?
       AND (source_edition_id IS NULL OR source_edition_id != ? OR source_media_type IS NULL OR source_media_type != 'audiobook')
-  `).run(String(editionId), profileId, bookId, String(editionId));
+    RETURNING id
+  `).all(String(editionId), profileId, bookId, String(editionId)) as { id: number }[];
+  return rows.map((row) => row.id);
 }
 
 export function progressPagesFromPercent(percent: number, pages: number | null): number | null {
@@ -355,37 +377,10 @@ export function hardcoverFieldsFromGrimmory(grBook: GrimmoryBook): { status_id?:
   };
 }
 
-export function isActivelyReadingStatus(status: string | null | undefined): boolean {
-  return status === "READING" || status === "RE_READING" || status === "PARTIALLY_READ";
-}
-
-export function hardcoverIdForGrimmoryBook(book: GrimmoryBook): string | null {
-  return normalizeExternalId(book.hardcoverBookId) ?? null;
-}
-
-export function activeGrimmorySiblingsForHardcover(grimmoryBooks: GrimmoryBook[], hardcoverBookId: number | string): {
-  book: GrimmoryBook | null;
-  audiobook: GrimmoryBook | null;
-} {
-  const normalizedHardcoverId = normalizeExternalId(hardcoverBookId);
-  if (!normalizedHardcoverId) return { book: null, audiobook: null };
-
-  const active = grimmoryBooks.filter((book) =>
-    hardcoverIdForGrimmoryBook(book) === normalizedHardcoverId
-      && isActivelyReadingStatus(book.readStatus)
-  );
-
-  return {
-    book: active.find((book) => book.mediaType !== "audiobook") ?? null,
-    audiobook: active.find((book) => book.mediaType === "audiobook") ?? null
-  };
-}
-
-export function shouldBookProgressOwnSharedHardcover(grimmoryBooks: GrimmoryBook[], hardcoverBookId: number | string | null | undefined): boolean {
-  if (hardcoverBookId === null || hardcoverBookId === undefined) return false;
-  const siblings = activeGrimmorySiblingsForHardcover(grimmoryBooks, hardcoverBookId);
-  return siblings.book !== null && siblings.audiobook !== null;
-}
+// Shared-Hardcover-record ownership (which sibling format may write
+// status/progress/rating to a Hardcover book multiple local editions map
+// to) lives in ./hardcover-ownership.js — resolved once per sync run
+// instead of re-derived independently at each call site.
 
 export function normalizeEditionFormat(value: string | null | undefined): string | null {
   const text = value?.trim();
@@ -394,18 +389,31 @@ export function normalizeEditionFormat(value: string | null | undefined): string
 
 export function inferHardcoverMediaType(
   hcBook: HardcoverUserBook,
-  edition: HardcoverEdition | null | undefined
+  edition: HardcoverEdition | null | undefined,
+  // Defaults to the user's current reading-status edition. Pass a different
+  // edition id to classify some OTHER edition of this book against the same
+  // book's default_*_edition_id pointers — e.g. an edition attached to a
+  // Hardcover list entry rather than hcBook's own current edition (see
+  // hardcover-sources.ts's Owned-list handling).
+  editionId: number | null = hcBook.edition_id
 ): "physical" | "ebook" | "audiobook" | null {
-  const editionId = hcBook.edition_id;
-  const format = edition?.edition_format?.toLowerCase() ?? "";
-
-  // Trust an explicit edition format over Hardcover's default_*_edition_id
-  // pointers. Some books currently expose the same edition ID as physical,
-  // ebook, and audio defaults simultaneously, which would otherwise cause a
-  // clearly-ebook edition to be misbucketed as an audiobook.
-  if (format.includes("ebook") || format.includes("kindle")) return "ebook";
-  if (format.includes("hardcover") || format.includes("paperback") || format.includes("physical")) return "physical";
-  if (format.includes("audio") || format.includes("audible") || format.includes("mp3")) return "audiobook";
+  // reading_format_id is Hardcover's structured "Type" classification
+  // (Physical Book/Audiobook/E-Book/Both) and is normally populated on every
+  // edition — unlike the free-text edition_format field, which is often blank
+  // or inconsistently labeled (e.g. an edition can be tagged edition_format:
+  // "Audiobook" while its own reading_format says otherwise). Trust it over
+  // Hardcover's default_*_edition_id pointers for the same reason the old
+  // edition_format check did: some books expose the same edition ID as
+  // physical, ebook, and audio defaults simultaneously. When it's missing, the
+  // switch below falls through to the default-pointer checks rather than
+  // trusting edition_format.
+  switch (edition?.reading_format_id) {
+    case 1: return "physical";
+    case 2: return "audiobook";
+    case 4: return "ebook";
+    // 3 ("Both") is a genuinely dual-format edition (e.g. bundled text +
+    // audio) — fall through rather than guess one side.
+  }
 
   if (editionId && editionId === hcBook.book.default_audio_edition_id) return "audiobook";
   if (editionId && editionId === hcBook.book.default_ebook_edition_id) return "ebook";
@@ -413,12 +421,24 @@ export function inferHardcoverMediaType(
   return null;
 }
 
+// Collapses a resolved Hardcover/Grimmory format into the two buckets that
+// matter for comparing whether two editions/siblings are "the same format" or
+// genuinely different. Delegates to bookIdentity.ts's resolvedMediaTypeBucket
+// so this and rowFormatBucket's identical mapping can't drift apart.
+export function formatBucket(mediaType: "physical" | "ebook" | "audiobook" | null): "book" | "audiobook" | null {
+  return resolvedMediaTypeBucket(mediaType);
+}
+
 export function hasGrimmoryUserActivity(book: GrimmoryBook): boolean {
-  return book.readStatus !== null
+  // Loose comparisons: these fields are declared optional (`?:`) as well as
+  // nullable on GrimmoryBook, so `undefined` is a type-valid input here, not
+  // just `null` — treat them the same rather than letting an absent field
+  // silently read as "has activity".
+  return book.readStatus != null
     || grimmoryRating(book) !== null
-    || book.readProgress !== null
-    || book.lastReadTime !== null
-    || book.dateFinished !== null;
+    || book.readProgress != null
+    || book.lastReadTime != null
+    || book.dateFinished != null;
 }
 
 // ── DB helpers ────────────────────────────────────────────────────────────────

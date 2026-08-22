@@ -1,4 +1,4 @@
-<!-- shared: content — keep in sync across Migz93 self-hosted apps -->
+<!-- shared: structure — headings kept in sync across Migz93 self-hosted apps, content is app-specific -->
 
 # Deployment
 
@@ -26,8 +26,9 @@ deployment *is*, not how to drive it.
 ## Persistent Data
 
 Everything ShelfBridge keeps — config, SQLite database, image cache, logs — lives in `/config`,
-bind-mounted from `/opt/shelfbridge` on the host. Keep it flat; don't add
-`config/`, `data/`, or `logs/` subdirectories. Don't use named Docker volumes for
+bind-mounted from `/opt/shelfbridge` on the host. Keep it flat except for
+`logs/`, which the app requires (matching hubarr/pacearr) — don't add other
+subdirectories like `config/` or `data/`. Don't use named Docker volumes for
 this app; the user needs host-visible files.
 
 ## Container User
