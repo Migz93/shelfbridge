@@ -386,6 +386,12 @@ Adapters not relevant to a given test are left unimplemented via `createFakeAdap
 | Merge validation | The merge endpoint rejects a pair that isn't a live probable-duplicate match. |
 | Scoped delete cleanup | `DELETE /api/books/:id` cleans up only the deleted book's own `image_cache` rows (via `cleanupImageCacheForSourceIds`), leaving unrelated orphaned rows for the daily full reconcile rather than scanning the whole cache table on the request's hot path. |
 
+### `tests/server/profiles-hardcover-disable.test.ts` — Hardcover connection disable
+
+| Test | What it checks |
+|---|---|
+| Batched detach, scoped correctly | `PATCH /api/profiles/:id` with `hardcover.enabled: false` deletes the profile's Hardcover state and marks exactly its previously-matched Grimmory rows `sync_health: 'missing'` — verified across 1200 matched books (forcing the detach `UPDATE` over multiple 500-row batches, since SQLite's bound-parameter limit made an earlier unbatched version fail on large libraries), leaves a Grimmory-only (never Hardcover-matched) book untouched, and leaves a different profile's Hardcover and Grimmory state completely unaffected. |
+
 ### `tests/server/bookIdentity.bench.test.ts` — Reconciliation benchmarks
 
 Informational timing at small/medium/large synthetic library sizes (documents reconciliation cost, not a hard pass/fail gate), plus one scaling assertion: a scoped reconcile against a large pre-reconciled catalog completes well under the cost of a full reconcile of that catalog, with a generous margin to avoid flaking on a slow runner.
