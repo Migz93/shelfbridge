@@ -576,7 +576,15 @@ if (hasAbs && absApiKey && (hasHardcover || grimmoryAvailable)) {
         logger.warn("Failed to process one Audiobookshelf book; continuing with the rest", {
           profileId, absItemId: absSource.abs_item_id, bookId: absSource.book_id, error: err
         });
-        recordEvent(db, runId, profileId, "", "api_failure", "audiobookshelf", "book_processing_failed", { error: String(err) });
+        // Same reasoning as goodreads-phase.ts's per-book catch: recordEvent
+        // itself can throw for the same DB-level reason that caused this
+        // failure, and that must not escape and be mistaken for a
+        // whole-phase Audiobookshelf outage by the outer catch below.
+        try {
+          recordEvent(db, runId, profileId, "", "api_failure", "audiobookshelf", "book_processing_failed", { error: String(err) });
+        } catch (recordErr) {
+          logger.warn("Failed to record a per-book Audiobookshelf failure event", { profileId, absItemId: absSource.abs_item_id, error: recordErr });
+        }
       }
     }
   } catch (err) {

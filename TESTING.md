@@ -27,8 +27,9 @@ fresh temp-dir SQLite database with the current schema applied — no shared sta
 between tests.
 
 `sync-engine.test.ts`, `auth.test.ts`, `settings.test.ts`, `covers-reconcile.test.ts`,
-`chaptarr-orphan-cleanup.test.ts`, `covers-refresh-isolation.test.ts`, and
-`image-cache-refresh-propagation.test.ts` are the exceptions: each operates on the
+`chaptarr-orphan-cleanup.test.ts`, `covers-refresh-isolation.test.ts`,
+`image-cache-refresh-propagation.test.ts`, and `profiles-hardcover-disable.test.ts`
+are the exceptions: each operates on the
 `db/index.ts` singleton rather than an injected database, so each points
 `DATA_DIR` at its own private temp dir (via a dynamic `import()` of the
 singleton after setting the env var — a static `import` would evaluate the
@@ -41,7 +42,7 @@ otherwise intermittently fail with `table already exists`; isolating each of
 these files removes the shared state the race depends on. `sync-engine.test.ts`
 additionally seeds its own profile per test and scopes assertions to that
 profile's id, since it shares one database across many tests within the file.
-Each of these seven files waits for the logger to flush (`logger.end()` +
+Each of these eight files waits for the logger to flush (`logger.end()` +
 `"finish"` event) before deleting its temp dir in `test.after`, since the
 logger also writes into `DATA_DIR`.
 
@@ -385,6 +386,12 @@ Adapters not relevant to a given test are left unimplemented via `createFakeAdap
 | Scoped duplicate lookup | `GET /api/books/:id` scopes `fetchRows` to the requested book and its duplicate candidates, not the whole catalog. |
 | Merge validation | The merge endpoint rejects a pair that isn't a live probable-duplicate match. |
 | Scoped delete cleanup | `DELETE /api/books/:id` cleans up only the deleted book's own `image_cache` rows (via `cleanupImageCacheForSourceIds`), leaving unrelated orphaned rows for the daily full reconcile rather than scanning the whole cache table on the request's hot path. |
+
+### `tests/server/profiles-hardcover-disable.test.ts` — Hardcover connection disable
+
+| Test | What it checks |
+|---|---|
+| Batched detach, scoped correctly | `PATCH /api/profiles/:id` with `hardcover.enabled: false` deletes the profile's Hardcover state and marks exactly its previously-matched Grimmory rows `sync_health: 'missing'` — verified across 1200 matched books (forcing the detach `UPDATE` over multiple 500-row batches, since SQLite's bound-parameter limit made an earlier unbatched version fail on large libraries), leaves a Grimmory-only (never Hardcover-matched) book untouched, and leaves a different profile's Hardcover and Grimmory state completely unaffected. |
 
 ### `tests/server/bookIdentity.bench.test.ts` — Reconciliation benchmarks
 

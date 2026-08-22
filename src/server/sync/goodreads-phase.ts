@@ -374,7 +374,15 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
         logger.warn("Failed to process one Goodreads book; continuing with the rest of the library", {
           profileId, goodreadsId: grBook.goodreadsId, title: grBook.title, error: err
         });
-        recordEvent(db, runId, profileId, grBook.title, "api_failure", "goodreads", "book_processing_failed", { error: String(err) });
+        // recordEvent writes to the same database that most likely caused
+        // this per-book failure in the first place (e.g. a locked/read-only
+        // DB) — a throw here must not escape and be mistaken by the outer
+        // catch for a whole-phase Goodreads outage.
+        try {
+          recordEvent(db, runId, profileId, grBook.title, "api_failure", "goodreads", "book_processing_failed", { error: String(err) });
+        } catch (recordErr) {
+          logger.warn("Failed to record a per-book Goodreads failure event", { profileId, goodreadsId: grBook.goodreadsId, error: recordErr });
+        }
       }
     }
 
