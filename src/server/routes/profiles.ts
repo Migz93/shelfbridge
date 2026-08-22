@@ -99,34 +99,35 @@ async function cleanupHardcoverSourceData(profileId: number): Promise<void> {
     const result = db.transaction(() => {
       db.prepare("DELETE FROM hardcover_connections WHERE profile_id = ?").run(profileId);
 
+      // Capture which books this profile actually had a Hardcover match on
+      // *before* deleting that state below — book_sources isn't a reliable
+      // signal for this (it persists regardless of this cleanup, so a stale
+      // same-profile row would wrongly look like "still matched" forever,
+      // and a different profile's row would wrongly suppress detachment
+      // entirely). The user_book_states row we're about to delete is the
+      // actual, precise record of "this profile had an HC match here."
+      const previouslyMatchedBookIds = (db.prepare(`
+        SELECT DISTINCT book_id FROM user_book_states WHERE profile_id = ? AND source_type = 'hardcover'
+      `).all(profileId) as { book_id: number }[]).map((row) => row.book_id);
+
       // Delete the HC user state for this profile
       const deleted = db.prepare(`
         DELETE FROM user_book_states WHERE profile_id = ? AND source_type = 'hardcover'
       `).run(profileId).changes;
 
-      // Reset sync_health for Grimmory user states on books that no longer have
-      // an HC match. The book_sources join is scoped to this profile's own
-      // source_instance_id — unscoped, a different profile's still-live
-      // Hardcover book_sources row for the same shared canonical book would
-      // incorrectly suppress marking this profile's own Grimmory row as missing.
-      // Known residual gap: this profile's own Hardcover book_sources row isn't
-      // deleted by this cleanup (only its user_book_states/shelf_mappings are),
-      // so a book can still show a stale match here until the next sync or
-      // reconcile clears that row — a separate, pre-existing question about
-      // whether disabling a connection should also prune its book_sources rows,
-      // not something this query alone can resolve correctly.
-      const detached = db.prepare(`
-        UPDATE user_book_states SET
-          sync_health = 'missing',
-          last_sync_decision = 'hardcover_source_disabled',
-          last_modified_at = datetime('now')
-        WHERE profile_id = ? AND source_type = 'grimmory'
-          AND book_id NOT IN (
-            SELECT DISTINCT ubs.book_id FROM user_book_states ubs
-            JOIN book_sources bs ON bs.book_id = ubs.book_id AND bs.source_type = 'hardcover' AND bs.source_instance_id = ubs.profile_id
-            WHERE ubs.profile_id = ? AND ubs.source_type = 'grimmory'
-          )
-      `).run(profileId, profileId).changes;
+      // Reset sync_health for this profile's Grimmory rows on exactly the
+      // books captured above — the ones that just lost their HC match.
+      let detached = 0;
+      if (previouslyMatchedBookIds.length > 0) {
+        const placeholders = previouslyMatchedBookIds.map(() => "?").join(",");
+        detached = db.prepare(`
+          UPDATE user_book_states SET
+            sync_health = 'missing',
+            last_sync_decision = 'hardcover_source_disabled',
+            last_modified_at = datetime('now')
+          WHERE profile_id = ? AND source_type = 'grimmory' AND book_id IN (${placeholders})
+        `).run(profileId, ...previouslyMatchedBookIds).changes;
+      }
 
       db.prepare("DELETE FROM shelf_mappings WHERE profile_id = ? AND source = 'hardcover'").run(profileId);
       return { deleted, detached };
