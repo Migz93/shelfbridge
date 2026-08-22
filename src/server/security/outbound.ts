@@ -141,7 +141,12 @@ function isPrivateIPv6(address: string): boolean {
   if (/^ff[0-9a-f]{2}:/.test(normalized)) return true;
 
   const groups = expandIPv6Groups(normalized);
-  if (!groups) return false;
+  // net.isIP() already validated this as syntactically valid IPv6 before
+  // isPrivateAddress ever calls this function, so expandIPv6Groups failing
+  // to parse it here would mean a gap between the two parsers — fail closed
+  // (treat as private) rather than letting an unrecognized form through as
+  // if it were a confirmed-public address.
+  if (!groups) return true;
 
   // 2001:db8::/32 — reserved for documentation, never globally routable.
   if (groups[0] === "2001" && groups[1] === "0db8") return true;
