@@ -104,7 +104,17 @@ async function cleanupHardcoverSourceData(profileId: number): Promise<void> {
         DELETE FROM user_book_states WHERE profile_id = ? AND source_type = 'hardcover'
       `).run(profileId).changes;
 
-      // Reset sync_health for Grimmory user states on books that no longer have an HC match
+      // Reset sync_health for Grimmory user states on books that no longer have
+      // an HC match. The book_sources join is scoped to this profile's own
+      // source_instance_id — unscoped, a different profile's still-live
+      // Hardcover book_sources row for the same shared canonical book would
+      // incorrectly suppress marking this profile's own Grimmory row as missing.
+      // Known residual gap: this profile's own Hardcover book_sources row isn't
+      // deleted by this cleanup (only its user_book_states/shelf_mappings are),
+      // so a book can still show a stale match here until the next sync or
+      // reconcile clears that row — a separate, pre-existing question about
+      // whether disabling a connection should also prune its book_sources rows,
+      // not something this query alone can resolve correctly.
       const detached = db.prepare(`
         UPDATE user_book_states SET
           sync_health = 'missing',
@@ -113,7 +123,7 @@ async function cleanupHardcoverSourceData(profileId: number): Promise<void> {
         WHERE profile_id = ? AND source_type = 'grimmory'
           AND book_id NOT IN (
             SELECT DISTINCT ubs.book_id FROM user_book_states ubs
-            JOIN book_sources bs ON bs.book_id = ubs.book_id AND bs.source_type = 'hardcover'
+            JOIN book_sources bs ON bs.book_id = ubs.book_id AND bs.source_type = 'hardcover' AND bs.source_instance_id = ubs.profile_id
             WHERE ubs.profile_id = ? AND ubs.source_type = 'grimmory'
           )
       `).run(profileId, profileId).changes;
