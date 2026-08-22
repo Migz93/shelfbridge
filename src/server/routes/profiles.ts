@@ -117,16 +117,20 @@ async function cleanupHardcoverSourceData(profileId: number): Promise<void> {
 
       // Reset sync_health for this profile's Grimmory rows on exactly the
       // books captured above — the ones that just lost their HC match.
+      // Batched: some supported SQLite builds cap bound parameters at 999,
+      // and a single profile can plausibly have that many Hardcover matches.
       let detached = 0;
-      if (previouslyMatchedBookIds.length > 0) {
-        const placeholders = previouslyMatchedBookIds.map(() => "?").join(",");
-        detached = db.prepare(`
+      const DETACH_BATCH_SIZE = 500;
+      for (let i = 0; i < previouslyMatchedBookIds.length; i += DETACH_BATCH_SIZE) {
+        const batch = previouslyMatchedBookIds.slice(i, i + DETACH_BATCH_SIZE);
+        const placeholders = batch.map(() => "?").join(",");
+        detached += db.prepare(`
           UPDATE user_book_states SET
             sync_health = 'missing',
             last_sync_decision = 'hardcover_source_disabled',
             last_modified_at = datetime('now')
           WHERE profile_id = ? AND source_type = 'grimmory' AND book_id IN (${placeholders})
-        `).run(profileId, ...previouslyMatchedBookIds).changes;
+        `).run(profileId, ...batch).changes;
       }
 
       db.prepare("DELETE FROM shelf_mappings WHERE profile_id = ? AND source = 'hardcover'").run(profileId);
