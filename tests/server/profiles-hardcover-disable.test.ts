@@ -16,10 +16,16 @@ process.env["DATA_DIR"] = dataDir;
 const { getDb } = await import("../../src/server/db/index.js");
 const profilesRouter = (await import("../../src/server/routes/profiles.js")).default;
 const { seedProfile, seedHardcoverConnection } = await import("./test-helpers.js");
+const { logger } = await import("../../src/server/logger.js");
 
 const db = getDb();
 
-test.after(() => {
+test.after(async () => {
+  await new Promise<void>((resolve) => {
+    logger.once("finish", resolve);
+    logger.end();
+  });
+  logger.close();
   db.close();
   rmSync(dataDir, { recursive: true, force: true });
 });
