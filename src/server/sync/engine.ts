@@ -64,11 +64,28 @@ const { sameNumber, positiveRating, grimmoryToHardcoverRating, hardcoverToGrimmo
 
 export { getActiveSyncStatus, runExclusiveOfSyncs };
 
+// runSyncImpl catches everything inside its own try block and records the
+// failure on the sync_runs row rather than rejecting — but an error can still
+// escape from outside that try (getDb(), called before the try starts).
+// Callers rely on runSync never rejecting — routes/sync.ts awaits it in a
+// fire-and-forget loop with nothing to catch a rejection, which would
+// otherwise surface as an unhandled promise rejection and abort every
+// profile still queued behind it. The .catch() is chained onto runSyncImpl's
+// own promise, inside the task passed to runExclusiveOfSyncs, rather than
+// making this function async and awaiting — that would add extra microtask
+// hops after runExclusiveOfSyncs settles, breaking the queue's synchronous,
+// call-time ordering other callers (e.g. the full-reconcile job) depend on.
 export function runSync(profileId: number, runId: number, dryRun: boolean): Promise<void> {
   trackActiveSyncRun(runId, profileId);
-  return runExclusiveOfSyncs(() => runSyncImpl(profileId, runId, dryRun).finally(() => {
-    untrackActiveSyncRun(runId);
-  }));
+  return runExclusiveOfSyncs(() =>
+    runSyncImpl(profileId, runId, dryRun).catch((err) => {
+      logger.error("Sync failed outside its own error handling", {
+        profileId, runId, error: err instanceof Error ? err.message : String(err)
+      });
+    }).finally(() => {
+      untrackActiveSyncRun(runId);
+    })
+  );
 }
 
 export async function runSyncImpl(
