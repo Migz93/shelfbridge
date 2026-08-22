@@ -89,64 +89,72 @@ function profileSourceIds(db: Database.Database, profileId: number): number[] {
 // which is a pre-existing risk independent of this cleanup's own timing).
 async function cleanupHardcoverSourceData(profileId: number): Promise<void> {
   const db = getDb();
-  try {
-    await runExclusiveOfSyncs(async () => {
-      const result = db.transaction(() => {
-        db.prepare("DELETE FROM hardcover_connections WHERE profile_id = ?").run(profileId);
+  // The transaction (connection deletion + local-state cleanup) must
+  // propagate its errors — a failure there means the connection is not
+  // actually disabled, and the caller needs to know rather than report
+  // success. Reconcile is the one part that stays best-effort: the cleanup
+  // itself already fully committed by the time it runs, so a reconcile
+  // failure shouldn't undo reporting that success.
+  await runExclusiveOfSyncs(async () => {
+    const result = db.transaction(() => {
+      db.prepare("DELETE FROM hardcover_connections WHERE profile_id = ?").run(profileId);
 
-        // Delete the HC user state for this profile
-        const deleted = db.prepare(`
-          DELETE FROM user_book_states WHERE profile_id = ? AND source_type = 'hardcover'
-        `).run(profileId).changes;
+      // Delete the HC user state for this profile
+      const deleted = db.prepare(`
+        DELETE FROM user_book_states WHERE profile_id = ? AND source_type = 'hardcover'
+      `).run(profileId).changes;
 
-        // Reset sync_health for Grimmory user states on books that no longer have an HC match
-        const detached = db.prepare(`
-          UPDATE user_book_states SET
-            sync_health = 'missing',
-            last_sync_decision = 'hardcover_source_disabled',
-            last_modified_at = datetime('now')
-          WHERE profile_id = ? AND source_type = 'grimmory'
-            AND book_id NOT IN (
-              SELECT DISTINCT ubs.book_id FROM user_book_states ubs
-              JOIN book_sources bs ON bs.book_id = ubs.book_id AND bs.source_type = 'hardcover'
-              WHERE ubs.profile_id = ? AND ubs.source_type = 'grimmory'
-            )
-        `).run(profileId, profileId).changes;
+      // Reset sync_health for Grimmory user states on books that no longer have an HC match
+      const detached = db.prepare(`
+        UPDATE user_book_states SET
+          sync_health = 'missing',
+          last_sync_decision = 'hardcover_source_disabled',
+          last_modified_at = datetime('now')
+        WHERE profile_id = ? AND source_type = 'grimmory'
+          AND book_id NOT IN (
+            SELECT DISTINCT ubs.book_id FROM user_book_states ubs
+            JOIN book_sources bs ON bs.book_id = ubs.book_id AND bs.source_type = 'hardcover'
+            WHERE ubs.profile_id = ? AND ubs.source_type = 'grimmory'
+          )
+      `).run(profileId, profileId).changes;
 
-        db.prepare("DELETE FROM shelf_mappings WHERE profile_id = ? AND source = 'hardcover'").run(profileId);
-        return { deleted, detached };
-      })();
+      db.prepare("DELETE FROM shelf_mappings WHERE profile_id = ? AND source = 'hardcover'").run(profileId);
+      return { deleted, detached };
+    })();
 
+    try {
       reconcileBookIdentities(db, { sourceIds: profileSourceIds(db, profileId) });
-      logger.info("Cleaned local Hardcover source data after disabling connection", { profileId, ...result });
-    });
-  } catch (err) {
-    logger.warn("Failed to clean local Hardcover source data after disabling connection", { profileId, error: err });
-  }
+    } catch (err) {
+      logger.warn("Failed to reconcile after cleaning local Hardcover source data", { profileId, error: err });
+    }
+    logger.info("Cleaned local Hardcover source data after disabling connection", { profileId, ...result });
+  });
 }
 
 async function cleanupGoodreadsSourceData(profileId: number): Promise<void> {
   const db = getDb();
-  try {
-    await runExclusiveOfSyncs(async () => {
-      const result = db.transaction(() => {
-        // Delete the GR user state for this profile
-        const deleted = db.prepare(`
-          DELETE FROM user_book_states WHERE profile_id = ? AND source_type = 'goodreads'
-        `).run(profileId).changes;
+  // See cleanupHardcoverSourceData: the cleanup transaction propagates its
+  // errors, only reconcile is best-effort.
+  await runExclusiveOfSyncs(async () => {
+    const result = db.transaction(() => {
+      // Delete the GR user state for this profile
+      const deleted = db.prepare(`
+        DELETE FROM user_book_states WHERE profile_id = ? AND source_type = 'goodreads'
+      `).run(profileId).changes;
 
-        // GR book_sources rows are book-level; leave them in place so the book identity is preserved.
-        // Just clean the shelf mappings for this profile.
-        db.prepare("DELETE FROM shelf_mappings WHERE profile_id = ? AND source = 'goodreads'").run(profileId);
-        return { deleted, detached: 0 };
-      })();
+      // GR book_sources rows are book-level; leave them in place so the book identity is preserved.
+      // Just clean the shelf mappings for this profile.
+      db.prepare("DELETE FROM shelf_mappings WHERE profile_id = ? AND source = 'goodreads'").run(profileId);
+      return { deleted, detached: 0 };
+    })();
 
+    try {
       reconcileBookIdentities(db, { sourceIds: profileSourceIds(db, profileId) });
-      logger.info("Cleaned local Goodreads source data after disabling connection", { profileId, ...result });
-    });
-  } catch (err) {
-    logger.warn("Failed to clean local Goodreads source data after disabling connection", { profileId, error: err });
-  }
+    } catch (err) {
+      logger.warn("Failed to reconcile after cleaning local Goodreads source data", { profileId, error: err });
+    }
+    logger.info("Cleaned local Goodreads source data after disabling connection", { profileId, ...result });
+  });
 }
 
 function buildProfileSummary(profileId: number): ProfileSummary | null {
@@ -345,7 +353,13 @@ router.patch("/:id", async (req, res) => {
       // Connection deletion itself now happens inside cleanupHardcoverSourceData,
       // serialized with the local-state cleanup and reconcile against the sync
       // queue — see that function's docs for why.
-      await cleanupHardcoverSourceData(id);
+      try {
+        await cleanupHardcoverSourceData(id);
+      } catch (err) {
+        logger.warn("Failed to disable Hardcover connection", { profileId: id, error: err });
+        res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
+        return;
+      }
       logger.info("Removed Hardcover connection", { profileId: id });
     } else {
     const existing = db.prepare("SELECT id FROM hardcover_connections WHERE profile_id = ?").get(id);
@@ -389,7 +403,6 @@ router.patch("/:id", async (req, res) => {
         vals.push(id);
         db.prepare(`UPDATE goodreads_connections SET ${updates.join(", ")} WHERE profile_id = ?`).run(...vals);
       }
-      if (gr.enabled === false) await cleanupGoodreadsSourceData(id);
     } else {
       db.prepare(`
         INSERT INTO goodreads_connections (profile_id, goodreads_user_id, enabled, sync_shelf_name, target_shelf_name)
@@ -397,7 +410,15 @@ router.patch("/:id", async (req, res) => {
       `).run(
         id, gr.goodreadsUserId ?? "", gr.enabled ? 1 : 0, gr.syncShelfName?.trim() || null, gr.targetShelfName?.trim() || null
       );
-      if (gr.enabled === false) await cleanupGoodreadsSourceData(id);
+    }
+    if (gr.enabled === false) {
+      try {
+        await cleanupGoodreadsSourceData(id);
+      } catch (err) {
+        logger.warn("Failed to disable Goodreads connection", { profileId: id, error: err });
+        res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
+        return;
+      }
     }
   }
 
