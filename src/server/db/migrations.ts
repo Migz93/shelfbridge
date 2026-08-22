@@ -352,6 +352,26 @@ const migration2: Migration = {
       ALTER TABLE chaptarr_id_mismatch_dismissals ADD COLUMN dismissed_hardcover_book_id TEXT;
       ALTER TABLE chaptarr_id_mismatch_dismissals ADD COLUMN dismissed_goodreads_book_id TEXT;
     `);
+    // The routes/books.ts dismissal join matches on this signature, including
+    // NULL — an existing dismissal left NULL here would stop matching a
+    // Chaptarr row whose current source_hardcover_book_id/source_goodreads_book_id
+    // is non-NULL, silently re-arming every dismissal made before this
+    // migration. Freeze each existing row to its current signature instead,
+    // so an upgrade doesn't resurface already-dismissed mismatches.
+    db.exec(`
+      UPDATE chaptarr_id_mismatch_dismissals
+      SET
+        dismissed_hardcover_book_id = (
+          SELECT source_hardcover_book_id FROM book_sources
+          WHERE source_type = 'chaptarr' AND external_id = chaptarr_id_mismatch_dismissals.chaptarr_external_id
+          LIMIT 1
+        ),
+        dismissed_goodreads_book_id = (
+          SELECT source_goodreads_book_id FROM book_sources
+          WHERE source_type = 'chaptarr' AND external_id = chaptarr_id_mismatch_dismissals.chaptarr_external_id
+          LIMIT 1
+        )
+    `);
   }
 };
 
