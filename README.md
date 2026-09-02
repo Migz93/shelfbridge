@@ -65,6 +65,12 @@ Together, that means ShelfBridge can keep reading state current across services 
 - Optional Chaptarr instance for requested/downloaded book state
 - Optional Audiobookshelf instance and per-user API keys for audiobook progress sync
 
+### Hardcover API token
+
+For Hardcover sync, create a [Full ShelfBridge sync token](https://hardcover.app/account/api/keys/new?scope=read%3Ame+read%3Alibrary+read%3Alists+read%3Acatalog%3Adata+write%3Alibrary+write%3Alists) and paste only its token value into the user's Hardcover connection.
+
+The link preselects the permissions ShelfBridge needs: profile identification (`read:me`), library and progress import (`read:library`), list import (`read:lists`), book and edition lookups (`read:catalog:data`), bidirectional library/progress updates (`write:library`), and mapped-list updates (`write:lists`). It does not request full-account access or account/email, social, review, journal, notification, catalog-write, or list-deletion permissions.
+
 ### Docker
 
 ```bash

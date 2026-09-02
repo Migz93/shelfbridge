@@ -238,6 +238,12 @@ so all tests start already authenticated.
 | Redirect handling | Integration requests disable automatic redirects |
 | Empty URL rejection | A blank configured URL cannot reach `fetch` |
 
+### `tests/server/hardcover-auth.test.ts` — Hardcover authentication
+
+| Test | What it checks |
+|---|---|
+| PAT and legacy authorization | Bare `hc_pat_` values are sent as Bearer tokens; existing JWT/header values remain unchanged; connection-test API errors remain useful without echoing the supplied token. |
+
 ### `tests/server/validation.test.ts` — Request validation and atomic replacements
 
 | Test | What it checks |

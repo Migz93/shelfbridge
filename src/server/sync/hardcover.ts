@@ -4,6 +4,13 @@ import { fetchIntegration } from "../security/outbound.js";
 
 const HARDCOVER_API = "https://api.hardcover.app/v1/graphql";
 
+function hardcoverAuthorization(token: string): string {
+  const trimmed = token.trim();
+  // PATs are copied as bare values from Hardcover's API Access page, whereas
+  // existing JWT/header values must remain byte-for-byte compatible.
+  return trimmed.startsWith("hc_pat_") ? `Bearer ${trimmed}` : token;
+}
+
 export interface HardcoverUserBook {
   id: number;
   edition_id: number | null;
@@ -66,7 +73,7 @@ export async function hardcoverQuery<T>(token: string, query: string, variables?
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "authorization": token
+      "authorization": hardcoverAuthorization(token)
     },
     body: JSON.stringify({ query, variables }),
     signal: AbortSignal.timeout(15000)
