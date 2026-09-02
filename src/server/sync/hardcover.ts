@@ -11,6 +11,15 @@ function hardcoverAuthorization(token: string): string {
   return trimmed.startsWith("hc_pat_") ? `Bearer ${trimmed}` : token;
 }
 
+function redactHardcoverToken(message: string, token: string): string {
+  const values = new Set([token, token.trim()]);
+  let redacted = message;
+  for (const value of values) {
+    if (value) redacted = redacted.replaceAll(value, "[redacted]");
+  }
+  return redacted;
+}
+
 export interface HardcoverUserBook {
   id: number;
   edition_id: number | null;
@@ -80,7 +89,9 @@ export async function hardcoverQuery<T>(token: string, query: string, variables?
   });
   if (!res.ok) throw new Error(`Hardcover API error: HTTP ${res.status}`);
   const json = await res.json() as { data?: T; errors?: { message: string }[] };
-  if (json.errors?.length) throw new Error(json.errors[0]?.message ?? "Hardcover GraphQL error");
+  if (json.errors?.length) {
+    throw new Error(redactHardcoverToken(json.errors[0]?.message ?? "Hardcover GraphQL error", token));
+  }
   return json.data as T;
 }
 
