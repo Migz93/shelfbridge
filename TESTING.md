@@ -237,6 +237,7 @@ so all tests start already authenticated.
 | URL validation | HTTP/HTTPS LAN URLs work; relative URLs, non-HTTP schemes, and embedded credentials are rejected |
 | Redirect handling | Integration requests disable automatic redirects |
 | Empty URL rejection | A blank configured URL cannot reach `fetch` |
+| Cover DNS binding | Cover requests reject a hostname that rebinds from a public address to a private one before a socket is opened |
 
 ### `tests/server/hardcover-auth.test.ts` — Hardcover authentication
 
