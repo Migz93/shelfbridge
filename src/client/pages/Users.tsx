@@ -24,6 +24,7 @@ import type { GoodreadsShelfMapping, HardcoverList, HardcoverListMapping, Grimmo
 const USERS_FAST_MS = 3_000;
 const USERS_IDLE_MS = 30_000;
 const GOODREADS_DEFAULT_SHELVES = ["read", "currently-reading", "to-read", "did-not-finish"];
+const HARDCOVER_PAT_URL = "https://hardcover.app/account/api/keys/new?scope=read%3Ame+read%3Alibrary+read%3Alists+read%3Acatalog%3Adata+write%3Alibrary+write%3Alists";
 
 export default function Users() {
   const [profiles, setProfiles] = useState<ProfileSummary[]>([]);
@@ -363,9 +364,13 @@ function AddUserModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
           <div className="rounded-2xl border border-outline-variant/20 bg-background-container-low p-5 space-y-5">
             <ModalSectionTitle title="Hardcover connection" description="Optional. Add this only for users who sync with Hardcover." />
             <div className="text-sm leading-6 text-on-surface-variant bg-background-container rounded-xl px-4 py-3 border border-outline-variant/20">
-              Optional. Find your Hardcover API token in Hardcover &gt; Settings &gt; Integrations, or leave this blank to skip Hardcover.
+              Optional. Paste only the token value, or leave this blank to skip Hardcover. {" "}
+              <a href={HARDCOVER_PAT_URL} target="_blank" rel="noreferrer" className="text-primary hover:underline">
+                Create hardcover API token
+              </a>
+              .
             </div>
-            <Field label="API Token">
+            <Field label="API Token" hint="The preselected token permissions cover library, progress, and list sync.">
               <PasswordInput onChange={setHardcoverToken} placeholder="Enter Hardcover API token, or leave blank" />
             </Field>
           </div>
@@ -963,9 +968,14 @@ function HardcoverTabContent({
       <ToggleField label="Enable Hardcover" checked={hardcoverEnabled} onChange={setHardcoverEnabled} />
 
       {hardcoverEnabled && (<>
-      <Field label="API Token" hint="Leave blank to keep existing token.">
+      <Field label="API Token" hint="Paste only the token value. Leave blank to keep the existing token.">
         <PasswordInput configured={Boolean(profile?.hardcover)} onChange={setHardcoverToken} />
       </Field>
+      {(!profile?.hardcover || profile.hardcover.usesLegacyToken) && (
+        <a href={HARDCOVER_PAT_URL} target="_blank" rel="noreferrer" className="inline-block text-sm text-primary hover:underline">
+          Create hardcover API token
+        </a>
+      )}
       <TestConnectionRow type="hardcover" testing={testing} testResults={testResults} onTest={() => onTest("hardcover")} />
 
       <div className="border-t border-outline-variant/15 pt-5 space-y-4">

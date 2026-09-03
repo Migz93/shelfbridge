@@ -256,6 +256,7 @@ router.get("/:id", (req, res) => {
     hardcover: hardcover ? {
       id: hardcover.id,
       hardcoverUsername: hardcover.hardcover_username,
+      usesLegacyToken: !hardcover.api_token.trim().startsWith("hc_pat_"),
       syncListId: hardcover.sync_list_id ? parseInt(hardcover.sync_list_id, 10) : null,
       syncListName: hardcover.sync_list_name,
       targetShelfName: hardcover.target_shelf_name,
