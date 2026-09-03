@@ -12,7 +12,11 @@ function hardcoverAuthorization(token: string): string {
 }
 
 function redactHardcoverToken(message: string, token: string): string {
-  const values = new Set([token, token.trim()]);
+  const trimmed = token.trim();
+  // Legacy values may include the Authorization scheme, while an API error can
+  // echo only the credential portion.
+  const bearerCredential = trimmed.replace(/^Bearer\s+/i, "");
+  const values = new Set([token, trimmed, bearerCredential]);
   let redacted = message;
   for (const value of values) {
     if (value) redacted = redacted.replaceAll(value, "[redacted]");

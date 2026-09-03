@@ -21,6 +21,11 @@ test("Hardcover PATs use Bearer authorization while legacy headers are preserved
     const result = await testHardcoverToken("hc_pat_secret-value");
     assert.deepEqual(result, { ok: false, message: "Missing required scope: read:me for [redacted]" });
     assert.equal(result.message.includes("hc_pat_secret-value"), false);
+
+    responseBody = JSON.stringify({ errors: [{ message: "Invalid token: legacy-jwt" }] });
+    const legacyResult = await testHardcoverToken("Bearer legacy-jwt");
+    assert.deepEqual(legacyResult, { ok: false, message: "Invalid token: [redacted]" });
+    assert.equal(legacyResult.message.includes("legacy-jwt"), false);
   } finally {
     globalThis.fetch = originalFetch;
   }
