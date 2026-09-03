@@ -43,6 +43,7 @@ export interface GrimmoryConnectionView {
 export interface HardcoverConnectionView {
   id: number;
   hardcoverUsername: string | null;
+  usesLegacyToken: boolean;
   syncListId: number | null;
   syncListName: string | null;
   targetShelfName: string | null;

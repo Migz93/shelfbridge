@@ -366,7 +366,7 @@ function AddUserModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
             <div className="text-sm leading-6 text-on-surface-variant bg-background-container rounded-xl px-4 py-3 border border-outline-variant/20">
               Optional. Paste only the token value, or leave this blank to skip Hardcover. {" "}
               <a href={HARDCOVER_PAT_URL} target="_blank" rel="noreferrer" className="text-primary hover:underline">
-                Create a Full ShelfBridge sync token
+                Create hardcover API token
               </a>
               .
             </div>
@@ -971,9 +971,11 @@ function HardcoverTabContent({
       <Field label="API Token" hint="Paste only the token value. Leave blank to keep the existing token.">
         <PasswordInput configured={Boolean(profile?.hardcover)} onChange={setHardcoverToken} />
       </Field>
-      <a href={HARDCOVER_PAT_URL} target="_blank" rel="noreferrer" className="inline-block text-sm text-primary hover:underline">
-        Create a Full ShelfBridge sync token
-      </a>
+      {(!profile?.hardcover || profile.hardcover.usesLegacyToken) && (
+        <a href={HARDCOVER_PAT_URL} target="_blank" rel="noreferrer" className="inline-block text-sm text-primary hover:underline">
+          Create hardcover API token
+        </a>
+      )}
       <TestConnectionRow type="hardcover" testing={testing} testResults={testResults} onTest={() => onTest("hardcover")} />
 
       <div className="border-t border-outline-variant/15 pt-5 space-y-4">
