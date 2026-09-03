@@ -26,8 +26,8 @@ deployment *is*, not how to drive it.
 ## Persistent Data
 
 Everything ShelfBridge keeps — config, SQLite database, image cache, logs — lives in `/config`,
-bind-mounted from `/opt/shelfbridge` on the host. Keep it flat except for
-`logs/`, which the app requires (matching hubarr/pacearr) — don't add other
+bind-mounted from `/opt/shelfbridge` on the host. Keep it flat except for the
+app-managed `logs/` and `backups/` directories — don't add other operator-created
 subdirectories like `config/` or `data/`. Don't use named Docker volumes for
 this app; the user needs host-visible files.
 

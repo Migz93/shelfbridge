@@ -246,6 +246,25 @@ async function fetchFollowingSameOriginRedirects(url: string, init: RequestInit)
   throw new UnsafeIntegrationUrlError("Integration exceeded the maximum number of redirects");
 }
 
+// Cover URLs come from third-party metadata and commonly redirect to a CDN.
+// Unlike configured integration URLs, each cross-origin hop is acceptable if
+// it independently passes the cover-specific public-address checks.
+async function fetchFollowingPublicCoverRedirects(url: string, init: RequestInit): Promise<Response> {
+  let currentUrl = url;
+  for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount++) {
+    const res = await fetch(currentUrl, { ...init, redirect: "manual" });
+    if (res.status < 300 || res.status >= 400) return res;
+    const location = res.headers.get("location");
+    if (!location) return res;
+    const nextUrl = new URL(location, currentUrl);
+    await res.body?.cancel().catch(() => {});
+    const validatedNextUrl = validateCoverUrl(nextUrl.toString());
+    await ensurePublicHostname(validatedNextUrl);
+    currentUrl = validatedNextUrl;
+  }
+  throw new UnsafeIntegrationUrlError("Cover URL exceeded the maximum number of redirects");
+}
+
 export async function fetchIntegration(url: string, init: RequestInit = {}): Promise<Response> {
   return fetchFollowingSameOriginRedirects(validateOutboundUrl(url), init);
 }
@@ -253,5 +272,5 @@ export async function fetchIntegration(url: string, init: RequestInit = {}): Pro
 export async function fetchCoverImage(url: string, init: RequestInit = {}): Promise<Response> {
   const validated = validateCoverUrl(url);
   await ensurePublicHostname(validated);
-  return fetchFollowingSameOriginRedirects(validated, init);
+  return fetchFollowingPublicCoverRedirects(validated, init);
 }
