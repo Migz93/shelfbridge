@@ -256,11 +256,14 @@ async function fetchFollowingPublicCoverRedirects(url: string, init: RequestInit
     if (res.status < 300 || res.status >= 400) return res;
     const location = res.headers.get("location");
     if (!location) return res;
-    const nextUrl = new URL(location, currentUrl);
-    await res.body?.cancel().catch(() => {});
-    const validatedNextUrl = validateCoverUrl(nextUrl.toString());
-    await ensurePublicHostname(validatedNextUrl);
-    currentUrl = validatedNextUrl;
+    try {
+      const nextUrl = new URL(location, currentUrl);
+      const validatedNextUrl = validateCoverUrl(nextUrl.toString());
+      await ensurePublicHostname(validatedNextUrl);
+      currentUrl = validatedNextUrl;
+    } finally {
+      await res.body?.cancel().catch(() => {});
+    }
   }
   throw new UnsafeIntegrationUrlError("Cover URL exceeded the maximum number of redirects");
 }

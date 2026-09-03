@@ -196,7 +196,17 @@ async function refreshInBackground(cacheKey: string, entityId: string, sourceUrl
   const now = new Date().toISOString();
   getDb().prepare("UPDATE image_cache SET last_attempted_at = ? WHERE cache_key = ?").run(now, cacheKey);
 
-  const data = await fetchImageBuffer(sourceUrl);
+  let data: Buffer | null;
+  try {
+    data = await fetchImageBuffer(sourceUrl);
+  } catch (err) {
+    logger.warn("ImageCache: background refresh fetch failed", {
+      cacheKey, error: err instanceof Error ? err.message : String(err)
+    });
+    getDb().prepare("UPDATE image_cache SET last_error = ? WHERE cache_key = ?")
+      .run("Fetch failed during background refresh", cacheKey);
+    return;
+  }
   if (!data) {
     getDb().prepare("UPDATE image_cache SET last_error = ? WHERE cache_key = ?")
       .run("Fetch failed during background refresh", cacheKey);
