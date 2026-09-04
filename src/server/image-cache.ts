@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type Database from "better-sqlite3";
 import { getDb } from "./db/index.js";
 import { logger } from "./logger.js";
 import { fetchCoverImage } from "./security/outbound.js";
@@ -321,6 +322,11 @@ export async function refreshStaleCachedCovers(): Promise<void> {
 export type StoredFetchedCover = {
   webPath: string;
   previousFilePath: string | null;
+  cacheKey: string;
+  entityId: string;
+  filePath: string | null;
+  cachedAt: string | null;
+  refreshAfter: string | null;
 };
 
 export function storeFetchedCover(bookLinkId: number, data: Buffer): StoredFetchedCover | null {
@@ -337,7 +343,17 @@ export function storeFetchedCover(bookLinkId: number, data: Buffer): StoredFetch
   if (row?.local_web_path && isFresh(row) && fs.existsSync(row.local_file_path ?? "")) {
     try {
       const existing = fs.readFileSync(row.local_file_path!);
-      if (existing.equals(data)) return { webPath: row.local_web_path, previousFilePath: null };
+      if (existing.equals(data)) {
+        return {
+          webPath: row.local_web_path,
+          previousFilePath: null,
+          cacheKey,
+          entityId,
+          filePath: null,
+          cachedAt: null,
+          refreshAfter: null
+        };
+      }
     } catch {
       // Fall through and rewrite if the existing file can't be read.
     }
@@ -362,7 +378,25 @@ export function storeFetchedCover(bookLinkId: number, data: Buffer): StoredFetch
   // refresh job checks them again after the shared seven-day freshness window.
   const refreshAfter = computeRefreshAfter();
 
-  getDb().prepare(`
+  // Do not advance image_cache until the caller has also committed the
+  // book_sources/canonical-book propagation. Otherwise a failed propagation
+  // would make later retries see the new cache hit and lose the old file path
+  // that still needs deleting.
+  return {
+    webPath,
+    previousFilePath: row?.local_file_path ?? null,
+    cacheKey,
+    entityId,
+    filePath,
+    cachedAt: now,
+    refreshAfter
+  };
+}
+
+/** Commit a fetched Grimmory cover inside the caller's propagation transaction. */
+export function persistStoredFetchedCover(db: Database.Database, stored: StoredFetchedCover): void {
+  if (!stored.filePath || !stored.cachedAt || !stored.refreshAfter) return;
+  db.prepare(`
     INSERT INTO image_cache (cache_key, entity_id, source_url, local_file_path, local_web_path,
       cached_at, last_refresh_at, refresh_after)
     VALUES (?, ?, NULL, ?, ?, ?, ?, ?)
@@ -372,13 +406,17 @@ export function storeFetchedCover(bookLinkId: number, data: Buffer): StoredFetch
       last_refresh_at = excluded.last_refresh_at,
       refresh_after = excluded.refresh_after,
       last_error = NULL
-  `).run(cacheKey, entityId, filePath, webPath, now, now, refreshAfter);
+  `).run(stored.cacheKey, stored.entityId, stored.filePath, stored.webPath, stored.cachedAt, stored.cachedAt, stored.refreshAfter);
+}
 
-  logger.info("ImageCache: Grimmory cover cached", { cacheKey, webPath });
-  // Keep the old file until the caller has propagated this new path to both
-  // book_sources and its canonical book. Deleting it here would leave the
-  // UI pointing at a missing file if that follow-up transaction fails.
-  return { webPath, previousFilePath: row?.local_file_path ?? null };
+/** Remove a newly written, uncommitted Grimmory cover after propagation fails. */
+export function discardStoredFetchedCover(stored: StoredFetchedCover): void {
+  if (!stored.filePath) return;
+  try {
+    fs.unlinkSync(stored.filePath);
+  } catch {
+    // Best effort: a failed propagation must not hide its original error.
+  }
 }
 
 /**

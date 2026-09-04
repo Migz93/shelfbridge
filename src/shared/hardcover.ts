@@ -1,0 +1,1 @@
+export const HARDCOVER_PERSONAL_ACCESS_TOKEN_PREFIX = "hc_pat_";

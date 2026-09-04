@@ -14,7 +14,7 @@ test("Hardcover PATs use Bearer authorization while legacy headers are preserved
 
   try {
     await hardcoverQuery("  hc_pat_secret-value  ", "query { me { id } }");
-    await hardcoverQuery("Bearer legacy-jwt", "query { me { id } }");
+    await hardcoverQuery("  Bearer legacy-jwt  ", "query { me { id } }");
     assert.deepEqual(authorizations, ["Bearer hc_pat_secret-value", "Bearer legacy-jwt"]);
 
     responseBody = JSON.stringify({ errors: [{ message: "Missing required scope: read:me for hc_pat_secret-value" }] });

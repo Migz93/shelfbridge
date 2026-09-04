@@ -237,7 +237,7 @@ so all tests start already authenticated.
 | URL validation | HTTP/HTTPS LAN URLs work; relative URLs, non-HTTP schemes, and embedded credentials are rejected |
 | Redirect handling | Integration requests disable automatic redirects |
 | Empty URL rejection | A blank configured URL cannot reach `fetch` |
-| Cover DNS binding | Cover requests reject a hostname that rebinds from a public address to a private one before a socket is opened |
+| Cover DNS binding | Cover requests reject a hostname that rebinds from a public address to a private one before a socket is opened, and return Node's required all-address callback shape for Happy Eyeballs connections |
 
 ### `tests/server/hardcover-auth.test.ts` — Hardcover authentication
 
@@ -403,6 +403,7 @@ Adapters not relevant to a given test are left unimplemented via `createFakeAdap
 | Test | What it checks |
 |---|---|
 | Delayed cache propagation | A cover that finishes caching (via `cacheSourceCover`, the same path a background cover-cache task uses) after a book's own reconcile has already run still updates the canonical `books.cover_cache_path`, instead of only `book_sources.cover_cache_path`. |
+| Retained-cover retry safety | Replacing a Grimmory cover keeps the old cache record and file until the source/canonical propagation transaction commits, so a failed propagation can retry without leaking the superseded file. |
 
 ### `tests/server/covers-refresh-isolation.test.ts` — Scheduled Grimmory cover refresh
 

@@ -52,8 +52,8 @@ re-fetching hundreds of images every few minutes.
 
 **Atomic writes:** cover data is written to a temp file in the same directory,
 then renamed into place with `fs.renameSync` to avoid partial reads. Background
-refreshes replace the file with a new UUID filename and delete the old one after
-the rename succeeds.
+refreshes replace the file with a new UUID filename and delete the old one only
+after its `book_sources` and canonical-book paths have been propagated.
 
 After identity reconciliation, ShelfBridge removes orphaned `image_cache` rows
 whose `entity_id` no longer points at an existing `book_sources.id`. The cached
@@ -62,4 +62,3 @@ inside `DATA_DIR/image-cache/`.
 
 `cover_cache_path` in `book_sources` is the only cover path sent to API clients —
 external source URLs are never exposed to the browser.
-

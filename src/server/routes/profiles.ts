@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { getDb, getSetting } from "../db/index.js";
+import { HARDCOVER_PERSONAL_ACCESS_TOKEN_PREFIX } from "../../shared/hardcover.js";
 import type { AudiobookshelfConnectionView, ConnectionStatus, Profile, ProfileSummary, SyncSettings } from "../../shared/types.js";
 import { testGrimmoryLogin, getGrimmoryToken, fetchGrimmoryShelfList } from "../sync/grimmory.js";
 import { testHardcoverToken, fetchHardcoverLists } from "../sync/hardcover.js";
@@ -256,7 +257,7 @@ router.get("/:id", (req, res) => {
     hardcover: hardcover ? {
       id: hardcover.id,
       hardcoverUsername: hardcover.hardcover_username,
-      usesLegacyToken: !hardcover.api_token.trim().startsWith("hc_pat_"),
+      usesLegacyToken: !hardcover.api_token.trim().startsWith(HARDCOVER_PERSONAL_ACCESS_TOKEN_PREFIX),
       syncListId: hardcover.sync_list_id ? parseInt(hardcover.sync_list_id, 10) : null,
       syncListName: hardcover.sync_list_name,
       targetShelfName: hardcover.target_shelf_name,

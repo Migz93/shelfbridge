@@ -1,7 +1,7 @@
 import { getDb, getSetting } from "../db/index.js";
 import fs from "node:fs";
 import { logger } from "../logger.js";
-import { ensureCoverCached, getCachedCoverPath, storeFetchedCover } from "../image-cache.js";
+import { discardStoredFetchedCover, ensureCoverCached, getCachedCoverPath, persistStoredFetchedCover, storeFetchedCover, type StoredFetchedCover } from "../image-cache.js";
 import { getGrimmoryToken } from "./grimmory.js";
 import { fetchIntegration } from "../security/outbound.js";
 import { reconcileBookIdentities } from "../db/bookIdentity.js";
@@ -80,9 +80,10 @@ export async function fetchGrimmoryCoverBuffer(baseUrl: string, token: string, g
 // them and a reconcile failure can't leave cover_cache_path pointing at a
 // path nothing else will retry. Reconcile only fires when the UPDATE actually
 // changed the row, so re-caching an already-current path is a no-op.
-async function writeCoverPathAndReconcile(db: Db, sourceId: number, newPath: string): Promise<void> {
+async function writeCoverPathAndReconcile(db: Db, sourceId: number, newPath: string, stored?: StoredFetchedCover): Promise<void> {
   await runExclusiveOfSyncs(async () => {
     db.transaction(() => {
+      if (stored) persistStoredFetchedCover(db, stored);
       const { changes } = db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ? AND cover_cache_path IS NOT ?")
         .run(newPath, sourceId, newPath);
       if (changes > 0) reconcileBookIdentities(db, { sourceIds: [sourceId] });
@@ -120,7 +121,12 @@ export async function cacheGrimmoryCover(db: Db, bookSourceId: number, baseUrl: 
     if (!data) { logger.info("No Grimmory cover available; leaving other source covers eligible", { bookSourceId, grimmoryBookId }); return; }
     const stored = storeFetchedCover(bookSourceId, data);
     if (stored) {
-      await writeCoverPathAndReconcile(db, bookSourceId, stored.webPath);
+      try {
+        await writeCoverPathAndReconcile(db, bookSourceId, stored.webPath, stored);
+      } catch (err) {
+        discardStoredFetchedCover(stored);
+        throw err;
+      }
       removeSupersededCoverFile(stored.previousFilePath);
       logger.info("Cached Grimmory source cover", { bookSourceId, grimmoryBookId });
     }
@@ -170,7 +176,12 @@ export async function refreshStaleGrimmoryCovers(): Promise<void> {
           if (!data) continue;
           const stored = storeFetchedCover(sourceId, data);
           if (stored) {
-            await writeCoverPathAndReconcile(db, sourceId, stored.webPath);
+            try {
+              await writeCoverPathAndReconcile(db, sourceId, stored.webPath, stored);
+            } catch (err) {
+              discardStoredFetchedCover(stored);
+              throw err;
+            }
             removeSupersededCoverFile(stored.previousFilePath);
             refreshed++;
           }

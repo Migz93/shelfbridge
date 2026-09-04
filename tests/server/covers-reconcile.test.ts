@@ -80,4 +80,6 @@ test("a replaced Grimmory cover retains its old file until path propagation succ
   assert.ok(stored);
   assert.equal(stored.previousFilePath, oldFilePath);
   assert.ok(existsSync(oldFilePath), "the old file must remain available until the caller commits path propagation");
+  const cacheRow = db.prepare("SELECT local_file_path FROM image_cache WHERE cache_key = ?").get(`cover:${sourceId}`) as { local_file_path: string };
+  assert.equal(cacheRow.local_file_path, oldFilePath, "a failed propagation leaves the cache pointing at the retryable old file");
 });

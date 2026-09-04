@@ -203,10 +203,18 @@ async function ensurePublicHostname(url: string): Promise<void> {
 // The global fetch performs its own DNS lookup after ensurePublicHostname()
 // returns, leaving a rebinding window. This lookup is passed to Undici's
 // connector, so the address it validates is the address the socket uses.
-function lookupPublicAddress(
+type LookupAddress = { address: string; family: number };
+
+type LookupCallback = (
+  error: NodeJS.ErrnoException | null,
+  address?: string | LookupAddress[],
+  family?: number
+) => void;
+
+export function lookupPublicAddress(
   hostname: string,
-  options: { family?: number; hints?: number },
-  callback: (error: NodeJS.ErrnoException | null, address?: string, family?: number) => void
+  options: { family?: number; hints?: number; all?: boolean },
+  callback: LookupCallback
 ): void {
   void dns.lookup(hostname, {
     all: true,
@@ -216,6 +224,14 @@ function lookupPublicAddress(
   }).then((addresses) => {
     if (addresses.length === 0 || addresses.some((entry) => isPrivateAddress(entry.address))) {
       callback(new UnsafeIntegrationUrlError("Cover URL must not target a private network address") as NodeJS.ErrnoException);
+      return;
+    }
+    // Node 20+ asks custom lookups for all candidates so its connector can
+    // apply Happy Eyeballs. Its callback requires an address array in that
+    // mode; returning the legacy single-address shape makes net.connect()
+    // reject with ERR_INVALID_IP_ADDRESS before opening the socket.
+    if (options.all) {
+      callback(null, addresses.map(({ address, family }) => ({ address, family })));
       return;
     }
     const address = addresses[0]!;

@@ -1,4 +1,5 @@
 import type { TestResult } from "../../shared/types.js";
+import { HARDCOVER_PERSONAL_ACCESS_TOKEN_PREFIX } from "../../shared/hardcover.js";
 import { logger } from "../logger.js";
 import { fetchIntegration } from "../security/outbound.js";
 
@@ -7,8 +8,9 @@ const HARDCOVER_API = "https://api.hardcover.app/v1/graphql";
 function hardcoverAuthorization(token: string): string {
   const trimmed = token.trim();
   // PATs are copied as bare values from Hardcover's API Access page, whereas
-  // existing JWT/header values must remain byte-for-byte compatible.
-  return trimmed.startsWith("hc_pat_") ? `Bearer ${trimmed}` : token;
+  // legacy JWT/header values are normalized too, so copied whitespace cannot
+  // turn an otherwise valid credential into a silent authentication failure.
+  return trimmed.startsWith(HARDCOVER_PERSONAL_ACCESS_TOKEN_PREFIX) ? `Bearer ${trimmed}` : trimmed;
 }
 
 function redactHardcoverToken(message: string, token: string): string {

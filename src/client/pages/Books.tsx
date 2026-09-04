@@ -31,6 +31,7 @@ type ActionFilter = "add-to-chaptarr" | "grab-in-chaptarr" | "review-in-grimmory
 type SourceKey = "GR" | "HA" | "GO" | "CH" | "AB";
 type BookDetailLocationState = {
   returnTo?: string;
+  mergeWarning?: string;
 };
 
 const SOURCE_BADGE_STYLE: Record<SourceKey, string> = {
@@ -610,6 +611,10 @@ export function BookDetailPage() {
   const returnTo = locationState?.returnTo ?? fallbackListPath;
 
   useEffect(() => {
+    if (locationState?.mergeWarning) setDuplicateError(locationState.mergeWarning);
+  }, [location.key, locationState?.mergeWarning]);
+
+  useEffect(() => {
     setCoverFailed(false);
   }, [detail?.coverUrl]);
 
@@ -705,8 +710,17 @@ export function BookDetailPage() {
       }>(`/api/books/${bookId}/duplicates/${duplicateId}/merge`, {});
       const partialFailure = result.finalizationError
         ?? result.failures?.map(({ profileId, error }) => `Profile ${profileId}: ${error}`).join("; ");
-      if (result.bookId === null || partialFailure) {
-        setDuplicateError(partialFailure || "The duplicate merge could not be finalized. Refresh the page before trying again.");
+      if (result.bookId === null) {
+        setDuplicateError(partialFailure ?? "The duplicate merge could not be finalized. Refresh the page before trying again.");
+        return;
+      }
+      if (partialFailure) {
+        // The local merge completed, so leave the stale duplicate detail and
+        // load the canonical book while retaining the profile-write warning.
+        void navigate(`/books/${result.bookId}`, {
+          replace: true,
+          state: { returnTo, mergeWarning: partialFailure }
+        });
         return;
       }
       void navigate(returnTo, { replace: true });
