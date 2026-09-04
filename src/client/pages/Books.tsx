@@ -717,6 +717,13 @@ export function BookDetailPage() {
       if (partialFailure) {
         // The local merge completed, so leave the stale duplicate detail and
         // load the canonical book while retaining the profile-write warning.
+        // Navigating to the same route does not re-run the [bookId] load
+        // effect, so refresh explicitly when this book remains canonical.
+        if (result.bookId === bookId) {
+          await loadDetail();
+          setDuplicateError(partialFailure);
+          return;
+        }
         void navigate(`/books/${result.bookId}`, {
           replace: true,
           state: { returnTo, mergeWarning: partialFailure }
