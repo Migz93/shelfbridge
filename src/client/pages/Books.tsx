@@ -922,6 +922,12 @@ export function BookDetailPage() {
                 </section>
               )}
 
+              {duplicateError && (
+                <div className="rounded-md border border-error/25 bg-error/10 px-3 py-2 text-xs text-error">
+                  {duplicateError}
+                </div>
+              )}
+
               {detail.duplicateCandidates.length > 0 && (
                 <DuplicateReviewSection
                   bookId={detail.id}
@@ -929,7 +935,6 @@ export function BookDetailPage() {
                   dismissingId={dismissingDuplicateId}
                   mergingId={mergingDuplicateId}
                   confirmingAction={confirmingDuplicateAction}
-                  error={duplicateError}
                   onDismiss={(candidateId) => requestDuplicateAction(candidateId, "dismiss")}
                   onMerge={(candidateId) => requestDuplicateAction(candidateId, "merge")}
                 />
@@ -1129,7 +1134,6 @@ function DuplicateReviewSection({
   dismissingId,
   mergingId,
   confirmingAction,
-  error,
   onDismiss,
   onMerge
 }: {
@@ -1138,7 +1142,6 @@ function DuplicateReviewSection({
   dismissingId: number | null;
   mergingId: number | null;
   confirmingAction: { id: number; action: "dismiss" | "merge" } | null;
-  error: string | null;
   onDismiss: (candidateId: number) => void;
   onMerge: (candidateId: number) => void;
 }) {
@@ -1211,12 +1214,6 @@ function DuplicateReviewSection({
           </div>
         ))}
       </div>
-
-      {error && (
-        <div className="mt-3 rounded-md border border-error/25 bg-error/10 px-3 py-2 text-xs text-error">
-          {error}
-        </div>
-      )}
     </section>
   );
 }

@@ -28,7 +28,9 @@
   `book_sources(source_type='grimmory')` rows on every sync, regardless of user
   reading activity. Grimmory is the "on disk" source.
 - **Hardcover → ShelfBridge**: per-profile import when a Hardcover API token is
-  configured. Reading state is bidirectionally synced back to Hardcover.
+  configured. Bare `hc_pat_` personal-access tokens are sent as Bearer
+  credentials; existing legacy Authorization values remain supported. Reading
+  state is bidirectionally synced back to Hardcover.
 - **Goodreads → ShelfBridge**: per-profile read-only import. Goodreads is never
   written to.
 - **Chaptarr → ShelfBridge**: read-only. ShelfBridge fetches Chaptarr's monitored
