@@ -176,13 +176,9 @@ export function isPrivateAddress(address: string): boolean {
 // can still resolve to a private/loopback address. Resolve it and reject if
 // any returned address is private, closing that SSRF path.
 //
-// This does not fully close DNS rebinding (the record could theoretically
-// change between this check and the fetch() call below) — that needs pinning
-// the HTTP connection to the exact resolved address, which isn't practical
-// with Node's built-in fetch without pulling in undici as a direct dependency
-// purely for its Agent/dispatcher API. The realistic attack this closes is a
-// malicious hostname resolving to a private address, which is the far more
-// practical exploitation path than a precisely-timed DNS rebind.
+// fetchCoverImage also uses the connector lookup below, which validates the
+// address supplied to the eventual socket and closes the DNS-rebinding window.
+// This initial check still rejects unsafe URLs before they reach that transport.
 async function ensurePublicHostname(url: string): Promise<void> {
   // URL.hostname wraps IPv6 literals in brackets (e.g. "[2606:4700::1111]");
   // net.isIP() and dns.lookup() both expect the bare address.
