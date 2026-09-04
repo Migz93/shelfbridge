@@ -54,6 +54,9 @@ re-fetching hundreds of images every few minutes.
 then renamed into place with `fs.renameSync` to avoid partial reads. Background
 refreshes replace the file with a new UUID filename and delete the old one only
 after its `book_sources` and canonical-book paths have been propagated.
+The `image_cache` row is committed in that same propagation transaction; a
+failed propagation removes the newly written file and leaves the previous cache
+entry retryable.
 
 After identity reconciliation, ShelfBridge removes orphaned `image_cache` rows
 whose `entity_id` no longer points at an existing `book_sources.id`. The cached

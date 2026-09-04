@@ -155,6 +155,31 @@ async function fetchImageBuffer(sourceUrl: string): Promise<Buffer | null> {
   }
 }
 
+async function persistPublicCoverAndReconcile(
+  cacheKey: string, entityId: string, sourceUrl: string, filePath: string, webPath: string, refreshAfter: string
+): Promise<void> {
+  if (!/^[1-9]\d*$/.test(entityId)) throw new Error("cache entity ID is not a positive integer");
+  const sourceId = Number(entityId);
+  if (!Number.isSafeInteger(sourceId)) throw new Error("cache entity ID is outside SQLite's safe integer range");
+  const now = new Date().toISOString();
+  const db = getDb();
+  await runExclusiveOfSyncs(async () => {
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO image_cache (cache_key, entity_id, source_url, local_file_path, local_web_path,
+          cached_at, last_refresh_at, refresh_after)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(cache_key) DO UPDATE SET
+          source_url = excluded.source_url, local_file_path = excluded.local_file_path,
+          local_web_path = excluded.local_web_path, last_refresh_at = excluded.last_refresh_at,
+          refresh_after = excluded.refresh_after, last_error = NULL
+      `).run(cacheKey, entityId, sourceUrl, filePath, webPath, now, now, refreshAfter);
+      db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(webPath, sourceId);
+      reconcileBookIdentities(db, { sourceIds: [sourceId] });
+    })();
+  });
+}
+
 async function fetchAndStore(cacheKey: string, entityId: string, sourceUrl: string): Promise<string | null> {
   const data = await fetchImageBuffer(sourceUrl);
   if (!data) return null;
@@ -173,21 +198,14 @@ async function fetchAndStore(cacheKey: string, entityId: string, sourceUrl: stri
     return null;
   }
 
-  const now = new Date().toISOString();
   const refreshAfter = computeRefreshAfter();
-
-  getDb().prepare(`
-    INSERT INTO image_cache (cache_key, entity_id, source_url, local_file_path, local_web_path,
-      cached_at, last_refresh_at, refresh_after)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(cache_key) DO UPDATE SET
-      source_url = excluded.source_url,
-      local_file_path = excluded.local_file_path,
-      local_web_path = excluded.local_web_path,
-      last_refresh_at = excluded.last_refresh_at,
-      refresh_after = excluded.refresh_after,
-      last_error = NULL
-  `).run(cacheKey, entityId, sourceUrl, filePath, webPath, now, now, refreshAfter);
+  try {
+    await persistPublicCoverAndReconcile(cacheKey, entityId, sourceUrl, filePath, webPath, refreshAfter);
+  } catch (err) {
+    try { fs.unlinkSync(filePath); } catch { /* best-effort */ }
+    logger.warn("ImageCache: failed to propagate cached cover path", { cacheKey, error: err instanceof Error ? err.message : String(err) });
+    return null;
+  }
 
   logger.info("ImageCache: cover cached", { cacheKey, webPath, sourceUrl });
   return webPath;
@@ -231,15 +249,6 @@ async function refreshInBackground(cacheKey: string, entityId: string, sourceUrl
   }
 
   const refreshAfter = computeRefreshAfter();
-  getDb().prepare(`
-    UPDATE image_cache SET
-      source_url = ?, local_file_path = ?, local_web_path = ?,
-      last_refresh_at = ?, refresh_after = ?, last_error = NULL
-    WHERE cache_key = ?
-  `).run(sourceUrl, newFilePath, newWebPath, new Date().toISOString(), refreshAfter, cacheKey);
-
-  logger.info("ImageCache: cover refreshed", { cacheKey, webPath: newWebPath });
-
   // entityId is always a book_sources.id (see the cacheKey convention in
   // fetchAndStore/storeFetchedCover). ensureCoverCached returns the OLD path
   // immediately when it schedules this refresh, so book_sources.cover_cache_path
@@ -247,30 +256,23 @@ async function refreshInBackground(cacheKey: string, entityId: string, sourceUrl
   // books.cover_cache_path would otherwise keep pointing at a file this
   // function is about to delete below, until some unrelated later write
   // happens to re-cache this same source. Propagate the new path now instead.
-  // Isolated in its own try/catch: the refresh itself already succeeded and
-  // committed above, so a propagation failure here must not abort
+  // Isolated in its own try/catch so a failed propagation cannot abort
   // refreshStaleCachedCovers's loop over the rest of its batch.
   // Only true once book_sources (if applicable) durably points at newFilePath
   // — false leaves oldFilePath as the last surviving reference, so it must
   // not be deleted below.
   let propagated = false;
   try {
-    if (!/^[1-9]\d*$/.test(entityId)) throw new Error("cache entity ID is not a positive integer");
-    const sourceId = Number(entityId);
-    if (!Number.isSafeInteger(sourceId)) throw new Error("cache entity ID is outside SQLite's safe integer range");
-    const db = getDb();
-    await runExclusiveOfSyncs(async () => {
-      db.transaction(() => {
-        db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(newWebPath, sourceId);
-        reconcileBookIdentities(db, { sourceIds: [sourceId] });
-      })();
-    });
+    await persistPublicCoverAndReconcile(cacheKey, entityId, sourceUrl, newFilePath, newWebPath, refreshAfter);
     propagated = true;
   } catch (err) {
+    try { fs.unlinkSync(newFilePath); } catch { /* best-effort */ }
     logger.warn("ImageCache: failed to propagate refreshed cover path to book_sources", {
       cacheKey, error: err instanceof Error ? err.message : String(err)
     });
   }
+
+  if (propagated) logger.info("ImageCache: cover refreshed", { cacheKey, webPath: newWebPath });
 
   // Delete the old file only once every row that could still reference it
   // (image_cache, already updated above, and book_sources when propagation

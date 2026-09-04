@@ -282,7 +282,8 @@ Hardcover connections also include `hardcoverUsername` when it has been resolved
 by a successful token test, plus optional `syncListId` and `syncListName` fields
 when the profile is scoped to a single Hardcover list, and `ownedImportEnabled`
 (default `false`) — see [docs/sync.md](sync.md)'s "Hardcover Owned-List Import"
-section. Goodreads connections include `goodreadsUserId`, `goodreadsUsername`,
+section. `usesLegacyToken` indicates whether the configured Hardcover credential
+is a legacy Authorization value rather than a personal-access token. Goodreads connections include `goodreadsUserId`, `goodreadsUsername`,
 and optional `syncShelfName`; the username is parsed from the public RSS
 channel when available.
 
