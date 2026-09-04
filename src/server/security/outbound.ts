@@ -45,23 +45,10 @@ export function validateOutboundUrl(value: unknown): string {
 // are allowed to target these — LAN-hosted services are a supported setup.
 // Remote cover URLs come from third-party source metadata instead, so they
 // get the stricter check below to reduce SSRF exposure.
-const PRIVATE_HOSTNAME_PATTERNS = [
-  /^localhost$/i,
-  /^127\./,
-  /^0\.0\.0\.0$/,
-  /^10\./,
-  /^192\.168\./,
-  /^172\.(1[6-9]|2\d|3[01])\./,
-  /^169\.254\./,
-  /^\[?::1\]?$/,
-  /^\[?fe80:/i,
-  /^\[?f[cd][0-9a-f]{2}:/i
-];
-
 export function validateCoverUrl(value: unknown): string {
   const url = validateOutboundUrl(value);
-  const hostname = new URL(url).hostname;
-  if (PRIVATE_HOSTNAME_PATTERNS.some((pattern) => pattern.test(hostname))) {
+  const hostname = new URL(url).hostname.replace(/^\[(.*)\]$/, "$1");
+  if (hostname.toLowerCase() === "localhost" || (net.isIP(hostname) && isPrivateAddress(hostname))) {
     throw new UnsafeIntegrationUrlError("Cover URL must not target a private network address");
   }
   return url;

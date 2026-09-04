@@ -1,4 +1,5 @@
 import { getDb, getSetting } from "../db/index.js";
+import fs from "node:fs";
 import { logger } from "../logger.js";
 import { ensureCoverCached, getCachedCoverPath, storeFetchedCover } from "../image-cache.js";
 import { getGrimmoryToken } from "./grimmory.js";
@@ -89,6 +90,15 @@ async function writeCoverPathAndReconcile(db: Db, sourceId: number, newPath: str
   });
 }
 
+function removeSupersededCoverFile(previousFilePath: string | null): void {
+  if (!previousFilePath) return;
+  try {
+    fs.unlinkSync(previousFilePath);
+  } catch {
+    // Best effort: stale image files are harmless and can be removed later.
+  }
+}
+
 export async function cacheSourceCover(db: Db, sourceId: number, sourceType: string, coverUrl: string): Promise<void> {
   try {
     const localPath = await ensureCoverCached(sourceId, coverUrl);
@@ -108,9 +118,10 @@ export async function cacheGrimmoryCover(db: Db, bookSourceId: number, baseUrl: 
     }
     const data = await fetchGrimmoryCoverBuffer(baseUrl, token, grimmoryBookId, mediaType);
     if (!data) { logger.info("No Grimmory cover available; leaving other source covers eligible", { bookSourceId, grimmoryBookId }); return; }
-    const webPath = storeFetchedCover(bookSourceId, data);
-    if (webPath) {
-      await writeCoverPathAndReconcile(db, bookSourceId, webPath);
+    const stored = storeFetchedCover(bookSourceId, data);
+    if (stored) {
+      await writeCoverPathAndReconcile(db, bookSourceId, stored.webPath);
+      removeSupersededCoverFile(stored.previousFilePath);
       logger.info("Cached Grimmory source cover", { bookSourceId, grimmoryBookId });
     }
   } catch (err) { logger.warn("Failed to cache Grimmory source cover", { bookSourceId, grimmoryBookId, error: err }); }
@@ -157,9 +168,10 @@ export async function refreshStaleGrimmoryCovers(): Promise<void> {
           const source = db.prepare("SELECT source_media_type FROM book_sources WHERE id = ?").get(sourceId) as { source_media_type: "physical" | "ebook" | "audiobook" | null } | undefined;
           const data = await fetchGrimmoryCoverBuffer(baseUrl, token, grimmory_book_id, source?.source_media_type ?? null);
           if (!data) continue;
-          const webPath = storeFetchedCover(sourceId, data);
-          if (webPath) {
-            await writeCoverPathAndReconcile(db, sourceId, webPath);
+          const stored = storeFetchedCover(sourceId, data);
+          if (stored) {
+            await writeCoverPathAndReconcile(db, sourceId, stored.webPath);
+            removeSupersededCoverFile(stored.previousFilePath);
             refreshed++;
           }
         } catch (error) {

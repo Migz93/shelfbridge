@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -14,6 +14,7 @@ process.env["DATA_DIR"] = dataDir;
 
 const { getDb } = await import("../../src/server/db/index.js");
 const { cacheSourceCover } = await import("../../src/server/sync/covers.js");
+const { storeFetchedCover } = await import("../../src/server/image-cache.js");
 const { reconcileBookIdentities } = await import("../../src/server/db/bookIdentity.js");
 const { logger } = await import("../../src/server/logger.js");
 
@@ -64,4 +65,19 @@ test("a cover finishing to cache after Phase D's own reconcile still propagates 
 
   const after = db.prepare("SELECT cover_cache_path FROM books WHERE id = ?").get(bookId) as { cover_cache_path: string | null };
   assert.equal(after.cover_cache_path, localWebPath, "the canonical book's cover must be updated as soon as the cover finishes caching, not left stale until the next unrelated reconcile");
+});
+
+test("a replaced Grimmory cover retains its old file until path propagation succeeds", () => {
+  const sourceId = 9876;
+  const oldFilePath = path.join(cacheDir, "old-grimmory-cover.jpg");
+  writeFileSync(oldFilePath, Buffer.from([0xff, 0xd8, 0xff, 0x00]));
+  db.prepare(`
+    INSERT INTO image_cache (cache_key, entity_id, local_file_path, local_web_path, cached_at, last_refresh_at)
+    VALUES (?, ?, ?, ?, datetime('now', '-8 days'), datetime('now', '-8 days'))
+  `).run(`cover:${sourceId}`, String(sourceId), oldFilePath, "/images/old-grimmory-cover.jpg");
+
+  const stored = storeFetchedCover(sourceId, Buffer.from([0xff, 0xd8, 0xff, 0x01]));
+  assert.ok(stored);
+  assert.equal(stored.previousFilePath, oldFilePath);
+  assert.ok(existsSync(oldFilePath), "the old file must remain available until the caller commits path propagation");
 });

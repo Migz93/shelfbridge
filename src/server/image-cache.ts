@@ -318,7 +318,12 @@ export async function refreshStaleCachedCovers(): Promise<void> {
  * or the file is missing from disk, leaving any already-fresh cache alone.
  * Returns the local web path, or null on failure.
  */
-export function storeFetchedCover(bookLinkId: number, data: Buffer): string | null {
+export type StoredFetchedCover = {
+  webPath: string;
+  previousFilePath: string | null;
+};
+
+export function storeFetchedCover(bookLinkId: number, data: Buffer): StoredFetchedCover | null {
   const cacheKey = `cover:${bookLinkId}`;
   const entityId = String(bookLinkId);
 
@@ -332,7 +337,7 @@ export function storeFetchedCover(bookLinkId: number, data: Buffer): string | nu
   if (row?.local_web_path && isFresh(row) && fs.existsSync(row.local_file_path ?? "")) {
     try {
       const existing = fs.readFileSync(row.local_file_path!);
-      if (existing.equals(data)) return row.local_web_path;
+      if (existing.equals(data)) return { webPath: row.local_web_path, previousFilePath: null };
     } catch {
       // Fall through and rewrite if the existing file can't be read.
     }
@@ -350,10 +355,6 @@ export function storeFetchedCover(bookLinkId: number, data: Buffer): string | nu
       cacheKey, error: err instanceof Error ? err.message : String(err)
     });
     return null;
-  }
-
-  if (row?.local_file_path && row.local_file_path !== filePath) {
-    try { fs.unlinkSync(row.local_file_path); } catch { /* best-effort */ }
   }
 
   const now = new Date().toISOString();
@@ -374,7 +375,10 @@ export function storeFetchedCover(bookLinkId: number, data: Buffer): string | nu
   `).run(cacheKey, entityId, filePath, webPath, now, now, refreshAfter);
 
   logger.info("ImageCache: Grimmory cover cached", { cacheKey, webPath });
-  return webPath;
+  // Keep the old file until the caller has propagated this new path to both
+  // book_sources and its canonical book. Deleting it here would leave the
+  // UI pointing at a missing file if that follow-up transaction fails.
+  return { webPath, previousFilePath: row?.local_file_path ?? null };
 }
 
 /**

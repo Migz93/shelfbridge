@@ -245,6 +245,36 @@ so all tests start already authenticated.
 |---|---|
 | PAT and legacy authorization | Bare `hc_pat_` values are sent as Bearer tokens; existing JWT/header values remain unchanged; connection-test API errors remain useful without echoing the supplied token. |
 
+### `tests/server/hardcover-ownership.test.ts` — Shared Hardcover ownership
+
+| Test | What it checks |
+|---|---|
+| Ownership resolution | Active, finished, and Audiobookshelf-owned siblings select one safe owner for a shared Hardcover record without input-order dependence. |
+
+### `tests/server/goodreads-xml.test.ts` — Goodreads XML decoding
+
+| Test | What it checks |
+|---|---|
+| XML entities | Named and numeric XML entities decode once while invalid or out-of-range code points stay safe. |
+
+### `tests/server/grimmory-state.test.ts` — Grimmory state ownership conflicts
+
+| Test | What it checks |
+|---|---|
+| Ownership conflict reporting | A shared-record ownership conflict is reported only when a write would otherwise be eligible. |
+
+### `tests/server/identity-review.test.ts` — Identity-review conflicts
+
+| Test | What it checks |
+|---|---|
+| Cross-reference comparison | Goodreads and Hardcover cross-reference IDs flag only real same-profile disagreements. |
+
+### `tests/server/chaptarr-mismatch-dismissal.test.ts` — Chaptarr mismatch dismissals
+
+| Test | What it checks |
+|---|---|
+| Dismissal signature | A dismissal re-arms when Chaptarr reports a different upstream identifier. |
+
 ### `tests/server/validation.test.ts` — Request validation and atomic replacements
 
 | Test | What it checks |
