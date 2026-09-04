@@ -1,5 +1,6 @@
 import dns from "node:dns/promises";
 import net from "node:net";
+import { Agent } from "undici";
 
 export class UnsafeIntegrationUrlError extends Error {
   constructor(message: string) {
@@ -216,6 +217,37 @@ async function ensurePublicHostname(url: string): Promise<void> {
   }
 }
 
+// The global fetch performs its own DNS lookup after ensurePublicHostname()
+// returns, leaving a rebinding window. This lookup is passed to Undici's
+// connector, so the address it validates is the address the socket uses.
+function lookupPublicAddress(
+  hostname: string,
+  options: { family?: number; hints?: number },
+  callback: (error: NodeJS.ErrnoException | null, address?: string, family?: number) => void
+): void {
+  void dns.lookup(hostname, {
+    all: true,
+    verbatim: true,
+    ...(options.family ? { family: options.family } : {}),
+    ...(options.hints ? { hints: options.hints } : {})
+  }).then((addresses) => {
+    if (addresses.length === 0 || addresses.some((entry) => isPrivateAddress(entry.address))) {
+      callback(new UnsafeIntegrationUrlError("Cover URL must not target a private network address") as NodeJS.ErrnoException);
+      return;
+    }
+    const address = addresses[0]!;
+    callback(null, address.address, address.family);
+  }).catch(() => {
+    callback(new UnsafeIntegrationUrlError("Cover URL hostname could not be resolved") as NodeJS.ErrnoException);
+  });
+}
+
+// Undici's runtime connector supports Node's lookup option, although its v7
+// declaration omits it. Keep this dispatcher limited to untrusted cover URLs.
+const coverDispatcher = new Agent({
+  connect: { lookup: lookupPublicAddress } as never
+});
+
 const MAX_REDIRECTS = 5;
 
 // Redirects are followed only when they stay on the same origin as the
@@ -246,6 +278,38 @@ async function fetchFollowingSameOriginRedirects(url: string, init: RequestInit)
   throw new UnsafeIntegrationUrlError("Integration exceeded the maximum number of redirects");
 }
 
+// Cover URLs come from third-party metadata and commonly redirect to a CDN.
+// Unlike configured integration URLs, each cross-origin hop is acceptable if
+// it independently passes the cover-specific public-address checks.
+async function fetchFollowingPublicCoverRedirects(url: string, init: RequestInit): Promise<Response> {
+  let currentUrl = url;
+  for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount++) {
+    let res: Response;
+    try {
+      res = await fetch(currentUrl, {
+        ...init,
+        dispatcher: coverDispatcher,
+        redirect: "manual"
+      } as RequestInit);
+    } catch (error) {
+      if (error instanceof TypeError && error.cause instanceof UnsafeIntegrationUrlError) throw error.cause;
+      throw error;
+    }
+    if (res.status < 300 || res.status >= 400) return res;
+    const location = res.headers.get("location");
+    if (!location) return res;
+    try {
+      const nextUrl = new URL(location, currentUrl);
+      const validatedNextUrl = validateCoverUrl(nextUrl.toString());
+      await ensurePublicHostname(validatedNextUrl);
+      currentUrl = validatedNextUrl;
+    } finally {
+      await res.body?.cancel().catch(() => {});
+    }
+  }
+  throw new UnsafeIntegrationUrlError("Cover URL exceeded the maximum number of redirects");
+}
+
 export async function fetchIntegration(url: string, init: RequestInit = {}): Promise<Response> {
   return fetchFollowingSameOriginRedirects(validateOutboundUrl(url), init);
 }
@@ -253,5 +317,5 @@ export async function fetchIntegration(url: string, init: RequestInit = {}): Pro
 export async function fetchCoverImage(url: string, init: RequestInit = {}): Promise<Response> {
   const validated = validateCoverUrl(url);
   await ensurePublicHostname(validated);
-  return fetchFollowingSameOriginRedirects(validated, init);
+  return fetchFollowingPublicCoverRedirects(validated, init);
 }

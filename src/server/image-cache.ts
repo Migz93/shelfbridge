@@ -196,7 +196,17 @@ async function refreshInBackground(cacheKey: string, entityId: string, sourceUrl
   const now = new Date().toISOString();
   getDb().prepare("UPDATE image_cache SET last_attempted_at = ? WHERE cache_key = ?").run(now, cacheKey);
 
-  const data = await fetchImageBuffer(sourceUrl);
+  let data: Buffer | null;
+  try {
+    data = await fetchImageBuffer(sourceUrl);
+  } catch (err) {
+    logger.warn("ImageCache: background refresh fetch failed", {
+      cacheKey, error: err instanceof Error ? err.message : String(err)
+    });
+    getDb().prepare("UPDATE image_cache SET last_error = ? WHERE cache_key = ?")
+      .run("Fetch failed during background refresh", cacheKey);
+    return;
+  }
   if (!data) {
     getDb().prepare("UPDATE image_cache SET last_error = ? WHERE cache_key = ?")
       .run("Fetch failed during background refresh", cacheKey);
@@ -244,16 +254,16 @@ async function refreshInBackground(cacheKey: string, entityId: string, sourceUrl
   // not be deleted below.
   let propagated = false;
   try {
-    const sourceId = Number.parseInt(entityId, 10);
-    if (Number.isFinite(sourceId)) {
-      const db = getDb();
-      await runExclusiveOfSyncs(async () => {
-        db.transaction(() => {
-          db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(newWebPath, sourceId);
-          reconcileBookIdentities(db, { sourceIds: [sourceId] });
-        })();
-      });
-    }
+    if (!/^[1-9]\d*$/.test(entityId)) throw new Error("cache entity ID is not a positive integer");
+    const sourceId = Number(entityId);
+    if (!Number.isSafeInteger(sourceId)) throw new Error("cache entity ID is outside SQLite's safe integer range");
+    const db = getDb();
+    await runExclusiveOfSyncs(async () => {
+      db.transaction(() => {
+        db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(newWebPath, sourceId);
+        reconcileBookIdentities(db, { sourceIds: [sourceId] });
+      })();
+    });
     propagated = true;
   } catch (err) {
     logger.warn("ImageCache: failed to propagate refreshed cover path to book_sources", {

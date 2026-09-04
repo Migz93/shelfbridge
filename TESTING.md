@@ -237,6 +237,7 @@ so all tests start already authenticated.
 | URL validation | HTTP/HTTPS LAN URLs work; relative URLs, non-HTTP schemes, and embedded credentials are rejected |
 | Redirect handling | Integration requests disable automatic redirects |
 | Empty URL rejection | A blank configured URL cannot reach `fetch` |
+| Cover DNS binding | Cover requests reject a hostname that rebinds from a public address to a private one before a socket is opened |
 
 ### `tests/server/hardcover-auth.test.ts` — Hardcover authentication
 
@@ -405,7 +406,7 @@ Informational timing at small/medium/large synthetic library sizes (documents re
 
 ### Known gaps
 
-- No coverage yet for Goodreads/Chaptarr/Audiobookshelf sync paths or shelf/list syncing.
+- Focused server tests cover Goodreads, Chaptarr, and Audiobookshelf sync paths, but there is no end-to-end sync coverage for those integrations or for shelf/list syncing.
 - The Grimmory cover-caching path (`cacheGrimmoryCover` in `covers.ts`) makes a real `fetch()` call outside the adapter seam — `sync-engine.test.ts` stubs `globalThis.fetch` globally so it never hits the network. `covers-reconcile.test.ts` covers the reconcile-on-cache-completion behavior directly (via the cache-hit path, no network involved), and `covers-refresh-isolation.test.ts` covers `refreshStaleGrimmoryCovers`'s network fetch/store path (via a local Express server standing in for Grimmory) — but `cacheGrimmoryCover`'s own live network path still has no dedicated test.
 - No forced mid-transaction failure test for `reconcileBookIdentities`'s rollback behaviour.
 - No expired-session cleanup or expiry-boundary coverage.

@@ -169,3 +169,23 @@ test("cover image requests proceed when DNS resolves a hostname to only public a
   }
   assert.equal(fetchCalled, true);
 });
+
+test("cover image requests reject a DNS rebind before the connector can reach a private address", async () => {
+  const originalLookup = dns.lookup;
+  let lookupCount = 0;
+  (dns as unknown as { lookup: typeof dns.lookup }).lookup = (async () => {
+    lookupCount++;
+    return [{ address: lookupCount === 1 ? "8.8.8.8" : "127.0.0.1", family: 4 }];
+  }) as typeof dns.lookup;
+
+  try {
+    await assert.rejects(
+      fetchCoverImage("http://rebind.example.test/cover.jpg"),
+      UnsafeIntegrationUrlError
+    );
+  } finally {
+    (dns as unknown as { lookup: typeof dns.lookup }).lookup = originalLookup;
+  }
+
+  assert.equal(lookupCount, 2, "the connector must resolve independently and reject the rebinding result");
+});

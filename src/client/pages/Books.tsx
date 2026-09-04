@@ -697,7 +697,18 @@ export function BookDetailPage() {
     setMergingDuplicateId(duplicateId);
     setDuplicateError(null);
     try {
-      await apiPost<{ ok: true; bookId: number }>(`/api/books/${bookId}/duplicates/${duplicateId}/merge`, {});
+      const result = await apiPost<{
+        ok: true;
+        bookId: number | null;
+        failures?: Array<{ profileId: number; error: string }>;
+        finalizationError?: string;
+      }>(`/api/books/${bookId}/duplicates/${duplicateId}/merge`, {});
+      const partialFailure = result.finalizationError
+        ?? result.failures?.map(({ profileId, error }) => `Profile ${profileId}: ${error}`).join("; ");
+      if (result.bookId === null || partialFailure) {
+        setDuplicateError(partialFailure || "The duplicate merge could not be finalized. Refresh the page before trying again.");
+        return;
+      }
       void navigate(returnTo, { replace: true });
     } catch (err) {
       setDuplicateError(err instanceof Error ? err.message : String(err));
