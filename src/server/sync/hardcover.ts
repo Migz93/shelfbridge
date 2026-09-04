@@ -26,6 +26,10 @@ function redactHardcoverToken(message: string, token: string): string {
   return redacted;
 }
 
+function throwRedactedHardcoverMutationError(error: string, token: string): never {
+  throw new Error(redactHardcoverToken(error, token));
+}
+
 export interface HardcoverUserBook {
   id: number;
   edition_id: number | null;
@@ -461,7 +465,7 @@ export async function insertHardcoverUserBook(
     INSERT_USER_BOOK_MUTATION,
     { object: fields }
   );
-  if (data.insert_user_book.error) throw new Error(data.insert_user_book.error);
+  if (data.insert_user_book.error) throwRedactedHardcoverMutationError(data.insert_user_book.error, token);
   return data.insert_user_book.id;
 }
 
@@ -497,7 +501,7 @@ export async function insertHardcoverUserBookRead(
     INSERT_USER_BOOK_READ_MUTATION,
     { userBookId, read: fields }
   );
-  if (data.insert_user_book_read.error) throw new Error(data.insert_user_book_read.error);
+  if (data.insert_user_book_read.error) throwRedactedHardcoverMutationError(data.insert_user_book_read.error, token);
   return data.insert_user_book_read.id;
 }
 
@@ -511,7 +515,7 @@ export async function updateHardcoverUserBookRead(
     UPDATE_USER_BOOK_READ_MUTATION,
     { id: readId, object: fields }
   );
-  if (data.update_user_book_read.error) throw new Error(data.update_user_book_read.error);
+  if (data.update_user_book_read.error) throwRedactedHardcoverMutationError(data.update_user_book_read.error, token);
 }
 
 export async function deleteHardcoverUserBookRead(
@@ -523,5 +527,5 @@ export async function deleteHardcoverUserBookRead(
     DELETE_USER_BOOK_READ_MUTATION,
     { id: readId }
   );
-  if (data.delete_user_book_read.error) throw new Error(data.delete_user_book_read.error);
+  if (data.delete_user_book_read.error) throwRedactedHardcoverMutationError(data.delete_user_book_read.error, token);
 }

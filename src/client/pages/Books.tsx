@@ -611,6 +611,10 @@ export function BookDetailPage() {
   const returnTo = locationState?.returnTo ?? fallbackListPath;
 
   useEffect(() => {
+    setDuplicateError(null);
+  }, [bookId]);
+
+  useEffect(() => {
     if (locationState?.mergeWarning) setDuplicateError(locationState.mergeWarning);
   }, [location.key, locationState?.mergeWarning]);
 

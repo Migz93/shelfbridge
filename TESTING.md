@@ -243,7 +243,7 @@ so all tests start already authenticated.
 
 | Test | What it checks |
 |---|---|
-| PAT and legacy authorization | Bare `hc_pat_` values are sent as Bearer tokens; existing JWT/header values remain unchanged; connection-test API errors remain useful without echoing the supplied token. |
+| PAT and legacy authorization | Bare `hc_pat_` values are sent as Bearer tokens; existing JWT/header values remain unchanged; connection-test and mutation API errors remain useful without echoing the supplied token. |
 
 ### `tests/server/hardcover-ownership.test.ts` — Shared Hardcover ownership
 

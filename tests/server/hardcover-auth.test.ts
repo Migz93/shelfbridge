@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { hardcoverQuery, testHardcoverToken } from "../../src/server/sync/hardcover.js";
+import { hardcoverQuery, insertHardcoverUserBook, testHardcoverToken } from "../../src/server/sync/hardcover.js";
 
 test("Hardcover PATs use Bearer authorization while legacy headers are preserved", { concurrency: false }, async () => {
   const originalFetch = globalThis.fetch;
@@ -26,6 +26,12 @@ test("Hardcover PATs use Bearer authorization while legacy headers are preserved
     const legacyResult = await testHardcoverToken("Bearer legacy-jwt");
     assert.deepEqual(legacyResult, { ok: false, message: "Invalid token: [redacted]" });
     assert.equal(legacyResult.message.includes("legacy-jwt"), false);
+
+    responseBody = JSON.stringify({ data: { insert_user_book: { id: 0, error: "Invalid token: hc_pat_secret-value" } } });
+    await assert.rejects(
+      insertHardcoverUserBook("hc_pat_secret-value", { book_id: 1 }),
+      (error: unknown) => error instanceof Error && error.message === "Invalid token: [redacted]"
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }

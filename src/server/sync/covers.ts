@@ -82,12 +82,35 @@ export async function fetchGrimmoryCoverBuffer(baseUrl: string, token: string, g
 // changed the row, so re-caching an already-current path is a no-op.
 async function writeCoverPathAndReconcile(db: Db, sourceId: number, newPath: string, stored?: StoredFetchedCover): Promise<void> {
   await runExclusiveOfSyncs(async () => {
-    db.transaction(() => {
-      if (stored) persistStoredFetchedCover(db, stored);
-      const { changes } = db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ? AND cover_cache_path IS NOT ?")
-        .run(newPath, sourceId, newPath);
-      if (changes > 0) reconcileBookIdentities(db, { sourceIds: [sourceId] });
-    })();
+    writeCoverPathAndReconcileTransaction(db, sourceId, newPath, stored);
+  });
+}
+
+function writeCoverPathAndReconcileTransaction(db: Db, sourceId: number, newPath: string, stored?: StoredFetchedCover): void {
+  db.transaction(() => {
+    if (stored) persistStoredFetchedCover(db, stored);
+    const { changes } = db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ? AND cover_cache_path IS NOT ?")
+      .run(newPath, sourceId, newPath);
+    if (changes > 0) reconcileBookIdentities(db, { sourceIds: [sourceId] });
+  })();
+}
+
+// Stage, commit, and cleanup run under the same exclusive queue. Fetching
+// happens outside it, but serialising from storeFetchedCover's read of the old
+// cache row onward prevents concurrent refreshes from orphaning each other's
+// newly written file.
+async function storeCoverAndReconcile(db: Db, sourceId: number, data: Buffer): Promise<boolean> {
+  return runExclusiveOfSyncs(async () => {
+    const stored = storeFetchedCover(sourceId, data);
+    if (!stored) return false;
+    try {
+      writeCoverPathAndReconcileTransaction(db, sourceId, stored.webPath, stored);
+    } catch (err) {
+      discardStoredFetchedCover(stored);
+      throw err;
+    }
+    removeSupersededCoverFile(stored.previousFilePath);
+    return true;
   });
 }
 
@@ -119,15 +142,7 @@ export async function cacheGrimmoryCover(db: Db, bookSourceId: number, baseUrl: 
     }
     const data = await fetchGrimmoryCoverBuffer(baseUrl, token, grimmoryBookId, mediaType);
     if (!data) { logger.info("No Grimmory cover available; leaving other source covers eligible", { bookSourceId, grimmoryBookId }); return; }
-    const stored = storeFetchedCover(bookSourceId, data);
-    if (stored) {
-      try {
-        await writeCoverPathAndReconcile(db, bookSourceId, stored.webPath, stored);
-      } catch (err) {
-        discardStoredFetchedCover(stored);
-        throw err;
-      }
-      removeSupersededCoverFile(stored.previousFilePath);
+    if (await storeCoverAndReconcile(db, bookSourceId, data)) {
       logger.info("Cached Grimmory source cover", { bookSourceId, grimmoryBookId });
     }
   } catch (err) { logger.warn("Failed to cache Grimmory source cover", { bookSourceId, grimmoryBookId, error: err }); }
@@ -174,15 +189,7 @@ export async function refreshStaleGrimmoryCovers(): Promise<void> {
           const source = db.prepare("SELECT source_media_type FROM book_sources WHERE id = ?").get(sourceId) as { source_media_type: "physical" | "ebook" | "audiobook" | null } | undefined;
           const data = await fetchGrimmoryCoverBuffer(baseUrl, token, grimmory_book_id, source?.source_media_type ?? null);
           if (!data) continue;
-          const stored = storeFetchedCover(sourceId, data);
-          if (stored) {
-            try {
-              await writeCoverPathAndReconcile(db, sourceId, stored.webPath, stored);
-            } catch (err) {
-              discardStoredFetchedCover(stored);
-              throw err;
-            }
-            removeSupersededCoverFile(stored.previousFilePath);
+          if (await storeCoverAndReconcile(db, sourceId, data)) {
             refreshed++;
           }
         } catch (error) {
