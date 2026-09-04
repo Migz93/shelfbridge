@@ -114,6 +114,18 @@ async function storeCoverAndReconcile(db: Db, sourceId: number, data: Buffer): P
   });
 }
 
+async function propagateCachedCover(db: Db, sourceId: number): Promise<boolean> {
+  return runExclusiveOfSyncs(async () => {
+    // Read the cache path inside the same exclusive section as propagation:
+    // a refresh may otherwise replace and delete this file between a cache-hit
+    // read and the later queued update, reasserting a stale path.
+    const cachedPath = getCachedCoverPath(sourceId);
+    if (!cachedPath) return false;
+    writeCoverPathAndReconcileTransaction(db, sourceId, cachedPath);
+    return true;
+  });
+}
+
 function removeSupersededCoverFile(previousFilePath: string | null): void {
   if (!previousFilePath) return;
   try {
@@ -135,9 +147,7 @@ export async function cacheSourceCover(db: Db, sourceId: number, sourceType: str
 
 export async function cacheGrimmoryCover(db: Db, bookSourceId: number, baseUrl: string, token: string, grimmoryBookId: number, mediaType: "physical" | "ebook" | "audiobook" | null = null): Promise<void> {
   try {
-    const cachedPath = getCachedCoverPath(bookSourceId);
-    if (cachedPath) {
-      await writeCoverPathAndReconcile(db, bookSourceId, cachedPath);
+    if (await propagateCachedCover(db, bookSourceId)) {
       return;
     }
     const data = await fetchGrimmoryCoverBuffer(baseUrl, token, grimmoryBookId, mediaType);

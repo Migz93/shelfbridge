@@ -453,7 +453,12 @@ export async function updateHardcoverUserBook(
   userBookId: number,
   fields: { status_id?: number; edition_id?: number | null; rating?: number; last_read_date?: string | null }
 ): Promise<void> {
-  await hardcoverQuery<unknown>(token, UPDATE_USER_BOOK_MUTATION, { id: userBookId, object: fields });
+  const data = await hardcoverQuery<{ update_user_book: { id: number; error?: string | null } }>(
+    token,
+    UPDATE_USER_BOOK_MUTATION,
+    { id: userBookId, object: fields }
+  );
+  if (data.update_user_book.error) throwRedactedHardcoverMutationError(data.update_user_book.error, token);
 }
 
 export async function insertHardcoverUserBook(
