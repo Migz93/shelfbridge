@@ -137,9 +137,16 @@ function removeSupersededCoverFile(previousFilePath: string | null): void {
 
 export async function cacheSourceCover(db: Db, sourceId: number, sourceType: string, coverUrl: string): Promise<void> {
   try {
+    const cachedPath = getCachedCoverPath(sourceId);
+    if (cachedPath) {
+      await writeCoverPathAndReconcile(db, sourceId, cachedPath);
+      logger.info("Cached source cover", { sourceType, sourceId });
+      return;
+    }
     const localPath = await ensureCoverCached(sourceId, coverUrl);
     if (localPath) {
-      await writeCoverPathAndReconcile(db, sourceId, localPath);
+      // A miss commits its cache and source/canonical paths together inside
+      // fetchAndStore, so a second queued reconcile would only be a no-op.
       logger.info("Cached source cover", { sourceType, sourceId });
     }
   } catch (err) { logger.warn("Failed to cache source cover", { sourceType, sourceId, coverUrl, error: err }); }
