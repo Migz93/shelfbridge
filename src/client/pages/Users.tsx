@@ -608,22 +608,8 @@ export function UserDetailPage() {
         : {};
       const result = await apiPost<TestResult>(`/api/profiles/${profileId}/test/${type}`, body);
       setTestResults((r) => ({ ...r, [type]: result }));
-      // Only reload if the connection is already persisted — otherwise the reload
-      // resets unsaved form toggles (e.g. absEnabled before first save).
-      const isPersisted =
-        type === "grimmory" ? Boolean(profile?.grimmory)
-        : type === "hardcover" ? Boolean(profile?.hardcover)
-        : type === "goodreads" ? Boolean(profile?.goodreads)
-        : type === "audiobookshelf" ? Boolean(profile?.audiobookshelf)
-        : true;
-      // loadProfile() overwrites every field on every tab with the server's
-      // persisted values, including hardcoverOwnedImportEnabled — testing
-      // ANY already-persisted connection (not just Hardcover's own) would
-      // otherwise silently discard an unsaved Owned Import toggle flip made
-      // just before clicking Test. preserveOwnedImportToggle = true tells
-      // loadProfile() to restore the ref's value (the user's latest toggle
-      // intent) instead of the just-fetched persisted one.
-      if (result.ok && isPersisted) await loadProfile(true);
+      // A successful test is represented by testResults; reloading here would
+      // overwrite unrelated unsaved edits in the connection form.
     } catch (e) { setTestResults((r) => ({ ...r, [type]: { ok: false, message: e instanceof Error ? e.message : String(e) } })); }
     finally { setTesting(null); }
   }
