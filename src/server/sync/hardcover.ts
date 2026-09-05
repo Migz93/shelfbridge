@@ -30,6 +30,15 @@ function throwRedactedHardcoverMutationError(error: string, token: string): neve
   throw new Error(redactHardcoverToken(error, token));
 }
 
+function requireHardcoverMutationId(payload: { id: number | null; error?: string | null } | null | undefined, token: string): number {
+  if (payload?.error) throwRedactedHardcoverMutationError(payload.error, token);
+  const id = payload?.id;
+  if (!Number.isSafeInteger(id) || id === undefined || id === null || id <= 0) {
+    throw new Error("Hardcover mutation returned no result ID");
+  }
+  return id;
+}
+
 export interface HardcoverUserBook {
   id: number;
   edition_id: number | null;
@@ -453,25 +462,24 @@ export async function updateHardcoverUserBook(
   userBookId: number,
   fields: { status_id?: number; edition_id?: number | null; rating?: number; last_read_date?: string | null }
 ): Promise<void> {
-  const data = await hardcoverQuery<{ update_user_book: { id: number; error?: string | null } }>(
+  const data = await hardcoverQuery<{ update_user_book: { id: number | null; error?: string | null } | null }>(
     token,
     UPDATE_USER_BOOK_MUTATION,
     { id: userBookId, object: fields }
   );
-  if (data.update_user_book.error) throwRedactedHardcoverMutationError(data.update_user_book.error, token);
+  requireHardcoverMutationId(data.update_user_book, token);
 }
 
 export async function insertHardcoverUserBook(
   token: string,
   fields: { book_id: number; status_id?: number; edition_id?: number | null; rating?: number; last_read_date?: string | null }
 ): Promise<number> {
-  const data = await hardcoverQuery<{ insert_user_book: { id: number; error?: string | null } }>(
+  const data = await hardcoverQuery<{ insert_user_book: { id: number | null; error?: string | null } | null }>(
     token,
     INSERT_USER_BOOK_MUTATION,
     { object: fields }
   );
-  if (data.insert_user_book.error) throwRedactedHardcoverMutationError(data.insert_user_book.error, token);
-  return data.insert_user_book.id;
+  return requireHardcoverMutationId(data.insert_user_book, token);
 }
 
 export async function addBookToHardcoverList(
@@ -479,12 +487,12 @@ export async function addBookToHardcoverList(
   listId: number,
   bookId: number
 ): Promise<number> {
-  const data = await hardcoverQuery<{ insert_list_book: { id: number } }>(
+  const data = await hardcoverQuery<{ insert_list_book: { id: number | null; error?: string | null } | null }>(
     token,
     INSERT_LIST_BOOK_MUTATION,
     { object: { list_id: listId, book_id: bookId } }
   );
-  return data.insert_list_book.id;
+  return requireHardcoverMutationId(data.insert_list_book, token);
 }
 
 export type HardcoverReadFields = {
@@ -501,13 +509,12 @@ export async function insertHardcoverUserBookRead(
   userBookId: number,
   fields: HardcoverReadFields
 ): Promise<number> {
-  const data = await hardcoverQuery<{ insert_user_book_read: { id: number; error?: string | null } }>(
+  const data = await hardcoverQuery<{ insert_user_book_read: { id: number | null; error?: string | null } | null }>(
     token,
     INSERT_USER_BOOK_READ_MUTATION,
     { userBookId, read: fields }
   );
-  if (data.insert_user_book_read.error) throwRedactedHardcoverMutationError(data.insert_user_book_read.error, token);
-  return data.insert_user_book_read.id;
+  return requireHardcoverMutationId(data.insert_user_book_read, token);
 }
 
 export async function updateHardcoverUserBookRead(
@@ -515,22 +522,22 @@ export async function updateHardcoverUserBookRead(
   readId: number,
   fields: HardcoverReadFields
 ): Promise<void> {
-  const data = await hardcoverQuery<{ update_user_book_read: { id: number; error?: string | null } }>(
+  const data = await hardcoverQuery<{ update_user_book_read: { id: number | null; error?: string | null } | null }>(
     token,
     UPDATE_USER_BOOK_READ_MUTATION,
     { id: readId, object: fields }
   );
-  if (data.update_user_book_read.error) throwRedactedHardcoverMutationError(data.update_user_book_read.error, token);
+  requireHardcoverMutationId(data.update_user_book_read, token);
 }
 
 export async function deleteHardcoverUserBookRead(
   token: string,
   readId: number
 ): Promise<void> {
-  const data = await hardcoverQuery<{ delete_user_book_read: { id: number; error?: string | null } }>(
+  const data = await hardcoverQuery<{ delete_user_book_read: { id: number | null; error?: string | null } | null }>(
     token,
     DELETE_USER_BOOK_READ_MUTATION,
     { id: readId }
   );
-  if (data.delete_user_book_read.error) throwRedactedHardcoverMutationError(data.delete_user_book_read.error, token);
+  requireHardcoverMutationId(data.delete_user_book_read, token);
 }
