@@ -82,7 +82,12 @@ export async function fetchGrimmoryCoverBuffer(baseUrl: string, token: string, g
 // changed the row, so re-caching an already-current path is a no-op.
 async function writeCoverPathAndReconcile(db: Db, sourceId: number, newPath: string, stored?: StoredFetchedCover): Promise<void> {
   await runExclusiveOfSyncs(async () => {
-    writeCoverPathAndReconcileTransaction(db, sourceId, newPath, stored);
+    // ensureCoverCached may return an old path while a public-cover refresh is
+    // already in flight. Resolve again after entering the queue so a refresh
+    // that committed first cannot have its new path overwritten by the stale
+    // return value (and cannot leave book_sources pointing at its deleted file).
+    const currentCachedPath = getCachedCoverPath(sourceId);
+    writeCoverPathAndReconcileTransaction(db, sourceId, currentCachedPath ?? newPath, stored);
   });
 }
 
