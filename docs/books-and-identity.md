@@ -195,6 +195,7 @@ the right):
   - **Bad Chaptarr ID** — Chaptarr's own upstream ID doesn't match its matched book (only shown when this applies to at least one book)
   - **ID Review** — ShelfBridge detected conflicting external IDs for this book across sources
   - **Possible Duplicates** — a loose title/author match that hasn't been confirmed as the same book
+  - **Needs Fix** — an unresolved media type that needs source metadata correction
 
 One more action value exists but isn't a clickable chip on this page —
 **ABS Runtime Mismatch** (`action=abs-runtime-mismatch` in the URL, reachable

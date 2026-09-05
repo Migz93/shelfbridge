@@ -349,7 +349,7 @@ export async function syncListsToShelves(
 
     let addedToHardcover = 0;
     let consecutiveFailures = 0;
-    for (const hardcoverBookId of toAddToHardcover) {
+    for (const [index, hardcoverBookId] of toAddToHardcover.entries()) {
       try {
         await adapters.addBookToHardcoverList(hardcoverToken, Number.parseInt(mapping.source_list_id, 10), hardcoverBookId);
         addedToHardcover++;
@@ -361,7 +361,7 @@ export async function syncListsToShelves(
         // one bad book — stop hammering it with the rest of a large batch.
         if (consecutiveFailures >= HARDCOVER_LIST_WRITE_FAILURE_BUDGET) {
           logger.warn("Aborting remaining Hardcover list writes after consecutive failures", {
-            profileId, listName: hcList.name, consecutiveFailures, remaining: toAddToHardcover.length - addedToHardcover - consecutiveFailures
+            profileId, listName: hcList.name, consecutiveFailures, remaining: toAddToHardcover.length - index - 1
           });
           break;
         }
