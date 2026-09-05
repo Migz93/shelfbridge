@@ -17,12 +17,12 @@ import { test, expect, type Page } from "@playwright/test";
  */
 
 async function checkCovers(page: Page, context: string) {
+  let waitTimedOut = false;
   await page.waitForFunction(() => {
     const imgs = Array.from(document.querySelectorAll<HTMLImageElement>("img.object-cover[src*='/images/']"));
     return imgs.every((img) => img.complete || img.getBoundingClientRect().top > window.innerHeight);
   }, { timeout: 10_000 }).catch(() => {
-    // Best-effort: fall through and let the failure check below report
-    // exactly which in-viewport images never finished loading.
+    waitTimedOut = true;
   });
 
   const results = await page.evaluate(() =>
@@ -32,6 +32,7 @@ async function checkCovers(page: Page, context: string) {
         alt: img.alt,
         src: img.src,
         complete: img.complete,
+        inViewport: img.getBoundingClientRect().top <= window.innerHeight,
         loaded: img.complete && img.naturalWidth > 0
       };
     })
@@ -45,10 +46,11 @@ async function checkCovers(page: Page, context: string) {
   // Only flag images the browser actually attempted to load (complete === true).
   // Lazy images that are still off-screen will have complete === false and are not failures.
   const failed = results.filter((r) => r.complete && !r.loaded);
+  const unsettled = results.filter((r) => r.inViewport && !r.complete);
 
-  if (failed.length > 0) {
-    const details = failed.map((r) => `  - "${r.alt}" (${r.src})`).join("\n");
-    throw new Error(`${failed.length} of ${results.length} covers failed to load on ${context}:\n${details}`);
+  if (failed.length > 0 || waitTimedOut || unsettled.length > 0) {
+    const details = [...failed, ...unsettled].map((r) => `  - "${r.alt}" (${r.src})`).join("\n");
+    throw new Error(`Cover images failed to settle on ${context}:\n${details}`);
   }
 
   console.log(`  ${results.length} cover(s) loaded successfully on ${context}`);
