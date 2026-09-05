@@ -615,7 +615,7 @@ export function BookDetailPage() {
   }, [bookId]);
 
   useEffect(() => {
-    if (locationState?.mergeWarning) setDuplicateError(locationState.mergeWarning);
+    setDuplicateError(locationState?.mergeWarning ?? null);
   }, [location.key, locationState?.mergeWarning]);
 
   useEffect(() => {
@@ -728,7 +728,7 @@ export function BookDetailPage() {
           setDuplicateError(partialFailure);
           return;
         }
-        void navigate(`/books/${result.bookId}`, {
+        void navigate(`${isAudiobookDetail ? "/audiobooks" : "/books"}/${result.bookId}`, {
           replace: true,
           state: { returnTo, mergeWarning: partialFailure }
         });
