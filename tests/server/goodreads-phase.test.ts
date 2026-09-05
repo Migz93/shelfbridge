@@ -133,9 +133,9 @@ test("one book throwing during processing does not abort the rest of the Goodrea
     // upsertBookSource throws for the first (poisoned) book's external id and
     // succeeds normally for everything else, simulating an unexpected failure
     // isolated to one book's write rather than the whole Goodreads source.
-    const flakyUpsertBookSource: typeof upsertBookSource = (db_, sourceType, instanceId, externalId, fields) => {
-      if (externalId === "gr-poison") throw new Error("simulated write failure");
-      return upsertBookSource(db_, sourceType, instanceId, externalId, fields);
+    const flakyUpsertBookSource: typeof upsertBookSource = (...args) => {
+      if (args[3] === "gr-poison") throw new Error("simulated write failure");
+      return upsertBookSource(...args);
     };
 
     await syncGoodreadsEnrichment({

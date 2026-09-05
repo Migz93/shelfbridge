@@ -117,7 +117,7 @@ test("reconcileBookIdentities keeps a book and its audiobook sibling separate ev
     // are deliberately kept apart everywhere else in this codebase (bucket-
     // prefixed hardcover_book_id keys, the Owned-list/shared-sibling dual-row
     // mechanism), so a same-ISBN, opposite-bucket pair must stay split.
-    const sharedIsbn = "9780000000099";
+    const sharedIsbn = validIsbn13(99);
     db.prepare(`
       INSERT INTO book_sources (source_type, external_id, title, author, isbn13, source_media_type, source_hardcover_book_id)
       VALUES ('grimmory', 'gr-book', 'Same ISBN Both Formats', 'Author', ?, 'ebook', '777')
