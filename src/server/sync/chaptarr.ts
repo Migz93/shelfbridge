@@ -611,7 +611,7 @@ export async function syncChaptarrStatus(profileId: number): Promise<number[]> {
       WHERE source_type = 'chaptarr' AND external_id NOT IN (SELECT id FROM shelfbridge_fetched_ids)
     `).run();
     cleanupAfterSourceRemoval(db, staleBookIds, staleSourceIds);
-  } else if (books.length === 0) {
+  } else if (allBooks.length === 0) {
     const staleRows = db.prepare(`
       SELECT id, book_id FROM book_sources WHERE source_type = 'chaptarr'
     `).all() as { id: number; book_id: number | null }[];

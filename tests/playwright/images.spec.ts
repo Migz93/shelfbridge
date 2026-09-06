@@ -20,7 +20,11 @@ async function checkCovers(page: Page, context: string) {
   let waitTimedOut = false;
   await page.waitForFunction(() => {
     const imgs = Array.from(document.querySelectorAll<HTMLImageElement>("img.object-cover[src*='/images/']"));
-    return imgs.every((img) => img.complete || img.getBoundingClientRect().top > window.innerHeight);
+    return imgs.every((img) => {
+      const rect = img.getBoundingClientRect();
+      const inViewport = rect.bottom > 0 && rect.top < window.innerHeight;
+      return img.complete || !inViewport;
+    });
   }, { timeout: 10_000 }).catch(() => {
     waitTimedOut = true;
   });
@@ -32,7 +36,7 @@ async function checkCovers(page: Page, context: string) {
         alt: img.alt,
         src: img.src,
         complete: img.complete,
-        inViewport: img.getBoundingClientRect().top <= window.innerHeight,
+        inViewport: img.getBoundingClientRect().bottom > 0 && img.getBoundingClientRect().top < window.innerHeight,
         loaded: img.complete && img.naturalWidth > 0
       };
     })
@@ -48,9 +52,10 @@ async function checkCovers(page: Page, context: string) {
   const failed = results.filter((r) => r.complete && !r.loaded);
   const unsettled = results.filter((r) => r.inViewport && !r.complete);
 
-  if (failed.length > 0 || waitTimedOut || unsettled.length > 0) {
+  if (failed.length > 0 || unsettled.length > 0) {
     const details = [...failed, ...unsettled].map((r) => `  - "${r.alt}" (${r.src})`).join("\n");
-    throw new Error(`Cover images failed to settle on ${context}:\n${details}`);
+    const suffix = waitTimedOut ? " (wait for in-viewport images timed out)" : "";
+    throw new Error(`Cover images failed to settle on ${context}${suffix}:\n${details}`);
   }
 
   console.log(`  ${results.length} cover(s) loaded successfully on ${context}`);

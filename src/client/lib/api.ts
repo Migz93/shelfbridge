@@ -18,7 +18,14 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
     return undefined as T;
   }
 
-  return res.json() as Promise<T>;
+  const result = await res.json() as T;
+  if (typeof result === "object" && result !== null && "ok" in result) {
+    const partial = result as { ok?: unknown; cleanupFailures?: unknown };
+    if (partial.ok === false && Array.isArray(partial.cleanupFailures)) {
+      throw new Error(`${method} ${url} → ${res.status}: ${partial.cleanupFailures.join("; ")}`);
+    }
+  }
+  return result;
 }
 
 export const apiGet = <T>(url: string) => request<T>("GET", url);
