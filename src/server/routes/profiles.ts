@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { getDb, getSetting } from "../db/index.js";
+import { HARDCOVER_PERSONAL_ACCESS_TOKEN_PREFIX } from "../../shared/hardcover.js";
 import type { AudiobookshelfConnectionView, ConnectionStatus, Profile, ProfileSummary, SyncSettings } from "../../shared/types.js";
 import { testGrimmoryLogin, getGrimmoryToken, fetchGrimmoryShelfList } from "../sync/grimmory.js";
 import { testHardcoverToken, fetchHardcoverLists } from "../sync/hardcover.js";
@@ -256,7 +257,7 @@ router.get("/:id", (req, res) => {
     hardcover: hardcover ? {
       id: hardcover.id,
       hardcoverUsername: hardcover.hardcover_username,
-      usesLegacyToken: !hardcover.api_token.trim().startsWith("hc_pat_"),
+      usesLegacyToken: !hardcover.api_token.trim().startsWith(HARDCOVER_PERSONAL_ACCESS_TOKEN_PREFIX),
       syncListId: hardcover.sync_list_id ? parseInt(hardcover.sync_list_id, 10) : null,
       syncListName: hardcover.sync_list_name,
       targetShelfName: hardcover.target_shelf_name,
@@ -330,6 +331,7 @@ router.patch("/:id", async (req, res) => {
   }
   const body = parsed.data;
   const db = getDb();
+  const cleanupFailures: string[] = [];
   if (!profileExists(db, id)) {
     res.status(404).json({ error: "Profile not found" });
     return;
@@ -373,8 +375,7 @@ router.patch("/:id", async (req, res) => {
         await cleanupHardcoverSourceData(id);
       } catch (err) {
         logger.warn("Failed to disable Hardcover connection", { profileId: id, error: err });
-        res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
-        return;
+        cleanupFailures.push(`Hardcover cleanup: ${err instanceof Error ? err.message : String(err)}`);
       }
       logger.info("Removed Hardcover connection", { profileId: id });
     } else {
@@ -432,8 +433,7 @@ router.patch("/:id", async (req, res) => {
         await cleanupGoodreadsSourceData(id);
       } catch (err) {
         logger.warn("Failed to disable Goodreads connection", { profileId: id, error: err });
-        res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
-        return;
+        cleanupFailures.push(`Goodreads cleanup: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }
@@ -483,6 +483,10 @@ router.patch("/:id", async (req, res) => {
     }
   }
 
+  if (cleanupFailures.length > 0) {
+    res.status(207).json({ ok: false, cleanupFailures });
+    return;
+  }
   res.json({ ok: true });
 });
 

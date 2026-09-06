@@ -87,6 +87,7 @@ test("Hardcover list writes stop after a run of consecutive failures instead of 
       addBookToHardcoverList: async () => { attempts++; throw new Error("Hardcover write failed"); }
     }));
 
+    assert.ok(attempts > 0, "setup: the reverse lookup must produce at least one Hardcover write candidate");
     assert.ok(attempts < 10, `expected the write loop to stop early after consecutive failures, but it attempted all ${attempts}`);
   } finally {
     cleanup();

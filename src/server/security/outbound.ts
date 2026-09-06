@@ -45,23 +45,10 @@ export function validateOutboundUrl(value: unknown): string {
 // are allowed to target these — LAN-hosted services are a supported setup.
 // Remote cover URLs come from third-party source metadata instead, so they
 // get the stricter check below to reduce SSRF exposure.
-const PRIVATE_HOSTNAME_PATTERNS = [
-  /^localhost$/i,
-  /^127\./,
-  /^0\.0\.0\.0$/,
-  /^10\./,
-  /^192\.168\./,
-  /^172\.(1[6-9]|2\d|3[01])\./,
-  /^169\.254\./,
-  /^\[?::1\]?$/,
-  /^\[?fe80:/i,
-  /^\[?f[cd][0-9a-f]{2}:/i
-];
-
 export function validateCoverUrl(value: unknown): string {
   const url = validateOutboundUrl(value);
-  const hostname = new URL(url).hostname;
-  if (PRIVATE_HOSTNAME_PATTERNS.some((pattern) => pattern.test(hostname))) {
+  const hostname = new URL(url).hostname.replace(/^\[(.*)\]$/, "$1");
+  if (hostname.toLowerCase() === "localhost" || (net.isIP(hostname) && isPrivateAddress(hostname))) {
     throw new UnsafeIntegrationUrlError("Cover URL must not target a private network address");
   }
   return url;
@@ -162,6 +149,9 @@ function isPrivateIPv6(address: string): boolean {
       (groups[0] === "0064" && groups[1] === "ff9b" && groups.slice(2, 6).every((g) => g === "0000"))) {
     return isPrivateIPv4(ipv4FromGroups(groups[6]!, groups[7]!));
   }
+  // RFC 8215 local-use NAT64. Its embedded IPv4 offset varies, so reject the
+  // whole prefix rather than attempting to extract a potentially private IP.
+  if (groups[0] === "0064" && groups[1] === "ff9b" && groups[2] === "0001") return true;
   // 2002::/16 — 6to4, embeds the IPv4 in bits 16-48 (groups 1-2)
   if (groups[0] === "2002") {
     return isPrivateIPv4(ipv4FromGroups(groups[1]!, groups[2]!));
@@ -189,13 +179,9 @@ export function isPrivateAddress(address: string): boolean {
 // can still resolve to a private/loopback address. Resolve it and reject if
 // any returned address is private, closing that SSRF path.
 //
-// This does not fully close DNS rebinding (the record could theoretically
-// change between this check and the fetch() call below) — that needs pinning
-// the HTTP connection to the exact resolved address, which isn't practical
-// with Node's built-in fetch without pulling in undici as a direct dependency
-// purely for its Agent/dispatcher API. The realistic attack this closes is a
-// malicious hostname resolving to a private address, which is the far more
-// practical exploitation path than a precisely-timed DNS rebind.
+// fetchCoverImage also uses the connector lookup below, which validates the
+// address supplied to the eventual socket and closes the DNS-rebinding window.
+// This initial check still rejects unsafe URLs before they reach that transport.
 async function ensurePublicHostname(url: string): Promise<void> {
   // URL.hostname wraps IPv6 literals in brackets (e.g. "[2606:4700::1111]");
   // net.isIP() and dns.lookup() both expect the bare address.
@@ -220,10 +206,18 @@ async function ensurePublicHostname(url: string): Promise<void> {
 // The global fetch performs its own DNS lookup after ensurePublicHostname()
 // returns, leaving a rebinding window. This lookup is passed to Undici's
 // connector, so the address it validates is the address the socket uses.
-function lookupPublicAddress(
+type LookupAddress = { address: string; family: number };
+
+type LookupCallback = (
+  error: NodeJS.ErrnoException | null,
+  address?: string | LookupAddress[],
+  family?: number
+) => void;
+
+export function lookupPublicAddress(
   hostname: string,
-  options: { family?: number; hints?: number },
-  callback: (error: NodeJS.ErrnoException | null, address?: string, family?: number) => void
+  options: { family?: number; hints?: number; all?: boolean },
+  callback: LookupCallback
 ): void {
   void dns.lookup(hostname, {
     all: true,
@@ -233,6 +227,14 @@ function lookupPublicAddress(
   }).then((addresses) => {
     if (addresses.length === 0 || addresses.some((entry) => isPrivateAddress(entry.address))) {
       callback(new UnsafeIntegrationUrlError("Cover URL must not target a private network address") as NodeJS.ErrnoException);
+      return;
+    }
+    // Node 20+ asks custom lookups for all candidates so its connector can
+    // apply Happy Eyeballs. Its callback requires an address array in that
+    // mode; returning the legacy single-address shape makes net.connect()
+    // reject with ERR_INVALID_IP_ADDRESS before opening the socket.
+    if (options.all) {
+      callback(null, addresses.map(({ address, family }) => ({ address, family })));
       return;
     }
     const address = addresses[0]!;

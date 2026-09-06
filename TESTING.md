@@ -237,13 +237,43 @@ so all tests start already authenticated.
 | URL validation | HTTP/HTTPS LAN URLs work; relative URLs, non-HTTP schemes, and embedded credentials are rejected |
 | Redirect handling | Integration requests disable automatic redirects |
 | Empty URL rejection | A blank configured URL cannot reach `fetch` |
-| Cover DNS binding | Cover requests reject a hostname that rebinds from a public address to a private one before a socket is opened |
+| Cover DNS binding | Cover requests reject a hostname that rebinds from a public address to a private one before a socket is opened, and return Node's required all-address callback shape for Happy Eyeballs connections |
 
 ### `tests/server/hardcover-auth.test.ts` — Hardcover authentication
 
 | Test | What it checks |
 |---|---|
-| PAT and legacy authorization | Bare `hc_pat_` values are sent as Bearer tokens; existing JWT/header values remain unchanged; connection-test API errors remain useful without echoing the supplied token. |
+| PAT and legacy authorization | Bare `hc_pat_` values are sent as Bearer tokens; existing JWT/header values remain unchanged; connection-test and every mutation API error remain useful without echoing the supplied token. |
+
+### `tests/server/hardcover-ownership.test.ts` — Shared Hardcover ownership
+
+| Test | What it checks |
+|---|---|
+| Ownership resolution | Active, finished, and Audiobookshelf-owned siblings select one safe owner for a shared Hardcover record without input-order dependence. |
+
+### `tests/server/goodreads-xml.test.ts` — Goodreads XML decoding
+
+| Test | What it checks |
+|---|---|
+| XML entities | Named and numeric XML entities decode once while invalid or out-of-range code points stay safe. |
+
+### `tests/server/grimmory-state.test.ts` — Grimmory state ownership conflicts
+
+| Test | What it checks |
+|---|---|
+| Ownership conflict reporting | A shared-record ownership conflict is reported only when a write would otherwise be eligible. |
+
+### `tests/server/identity-review.test.ts` — Identity-review conflicts
+
+| Test | What it checks |
+|---|---|
+| Cross-reference comparison | Goodreads and Hardcover cross-reference IDs flag only real same-profile disagreements. |
+
+### `tests/server/chaptarr-mismatch-dismissal.test.ts` — Chaptarr mismatch dismissals
+
+| Test | What it checks |
+|---|---|
+| Dismissal signature | A dismissal re-arms when Chaptarr reports a different upstream identifier. |
 
 ### `tests/server/validation.test.ts` — Request validation and atomic replacements
 
@@ -373,6 +403,7 @@ Adapters not relevant to a given test are left unimplemented via `createFakeAdap
 | Test | What it checks |
 |---|---|
 | Delayed cache propagation | A cover that finishes caching (via `cacheSourceCover`, the same path a background cover-cache task uses) after a book's own reconcile has already run still updates the canonical `books.cover_cache_path`, instead of only `book_sources.cover_cache_path`. |
+| Retained-cover retry safety | Replacing a Grimmory cover keeps the old cache record and file until the source/canonical propagation transaction commits, so a failed propagation can retry without leaking the superseded file. |
 
 ### `tests/server/covers-refresh-isolation.test.ts` — Scheduled Grimmory cover refresh
 

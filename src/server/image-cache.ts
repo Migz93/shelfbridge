@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type Database from "better-sqlite3";
 import { getDb } from "./db/index.js";
 import { logger } from "./logger.js";
 import { fetchCoverImage } from "./security/outbound.js";
@@ -154,6 +155,31 @@ async function fetchImageBuffer(sourceUrl: string): Promise<Buffer | null> {
   }
 }
 
+async function persistPublicCoverAndReconcile(
+  cacheKey: string, entityId: string, sourceUrl: string, filePath: string, webPath: string, refreshAfter: string
+): Promise<void> {
+  if (!/^[1-9]\d*$/.test(entityId)) throw new Error("cache entity ID is not a positive integer");
+  const sourceId = Number(entityId);
+  if (!Number.isSafeInteger(sourceId)) throw new Error("cache entity ID is outside SQLite's safe integer range");
+  const now = new Date().toISOString();
+  const db = getDb();
+  await runExclusiveOfSyncs(async () => {
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO image_cache (cache_key, entity_id, source_url, local_file_path, local_web_path,
+          cached_at, last_refresh_at, refresh_after)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(cache_key) DO UPDATE SET
+          source_url = excluded.source_url, local_file_path = excluded.local_file_path,
+          local_web_path = excluded.local_web_path, last_refresh_at = excluded.last_refresh_at,
+          refresh_after = excluded.refresh_after, last_error = NULL
+      `).run(cacheKey, entityId, sourceUrl, filePath, webPath, now, now, refreshAfter);
+      db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(webPath, sourceId);
+      reconcileBookIdentities(db, { sourceIds: [sourceId] });
+    })();
+  });
+}
+
 async function fetchAndStore(cacheKey: string, entityId: string, sourceUrl: string): Promise<string | null> {
   const data = await fetchImageBuffer(sourceUrl);
   if (!data) return null;
@@ -172,21 +198,14 @@ async function fetchAndStore(cacheKey: string, entityId: string, sourceUrl: stri
     return null;
   }
 
-  const now = new Date().toISOString();
   const refreshAfter = computeRefreshAfter();
-
-  getDb().prepare(`
-    INSERT INTO image_cache (cache_key, entity_id, source_url, local_file_path, local_web_path,
-      cached_at, last_refresh_at, refresh_after)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(cache_key) DO UPDATE SET
-      source_url = excluded.source_url,
-      local_file_path = excluded.local_file_path,
-      local_web_path = excluded.local_web_path,
-      last_refresh_at = excluded.last_refresh_at,
-      refresh_after = excluded.refresh_after,
-      last_error = NULL
-  `).run(cacheKey, entityId, sourceUrl, filePath, webPath, now, now, refreshAfter);
+  try {
+    await persistPublicCoverAndReconcile(cacheKey, entityId, sourceUrl, filePath, webPath, refreshAfter);
+  } catch (err) {
+    try { fs.unlinkSync(filePath); } catch { /* best-effort */ }
+    logger.warn("ImageCache: failed to propagate cached cover path", { cacheKey, error: err instanceof Error ? err.message : String(err) });
+    return null;
+  }
 
   logger.info("ImageCache: cover cached", { cacheKey, webPath, sourceUrl });
   return webPath;
@@ -230,15 +249,6 @@ async function refreshInBackground(cacheKey: string, entityId: string, sourceUrl
   }
 
   const refreshAfter = computeRefreshAfter();
-  getDb().prepare(`
-    UPDATE image_cache SET
-      source_url = ?, local_file_path = ?, local_web_path = ?,
-      last_refresh_at = ?, refresh_after = ?, last_error = NULL
-    WHERE cache_key = ?
-  `).run(sourceUrl, newFilePath, newWebPath, new Date().toISOString(), refreshAfter, cacheKey);
-
-  logger.info("ImageCache: cover refreshed", { cacheKey, webPath: newWebPath });
-
   // entityId is always a book_sources.id (see the cacheKey convention in
   // fetchAndStore/storeFetchedCover). ensureCoverCached returns the OLD path
   // immediately when it schedules this refresh, so book_sources.cover_cache_path
@@ -246,30 +256,25 @@ async function refreshInBackground(cacheKey: string, entityId: string, sourceUrl
   // books.cover_cache_path would otherwise keep pointing at a file this
   // function is about to delete below, until some unrelated later write
   // happens to re-cache this same source. Propagate the new path now instead.
-  // Isolated in its own try/catch: the refresh itself already succeeded and
-  // committed above, so a propagation failure here must not abort
+  // Isolated in its own try/catch so a failed propagation cannot abort
   // refreshStaleCachedCovers's loop over the rest of its batch.
   // Only true once book_sources (if applicable) durably points at newFilePath
   // — false leaves oldFilePath as the last surviving reference, so it must
   // not be deleted below.
   let propagated = false;
   try {
-    if (!/^[1-9]\d*$/.test(entityId)) throw new Error("cache entity ID is not a positive integer");
-    const sourceId = Number(entityId);
-    if (!Number.isSafeInteger(sourceId)) throw new Error("cache entity ID is outside SQLite's safe integer range");
-    const db = getDb();
-    await runExclusiveOfSyncs(async () => {
-      db.transaction(() => {
-        db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ?").run(newWebPath, sourceId);
-        reconcileBookIdentities(db, { sourceIds: [sourceId] });
-      })();
-    });
+    await persistPublicCoverAndReconcile(cacheKey, entityId, sourceUrl, newFilePath, newWebPath, refreshAfter);
     propagated = true;
   } catch (err) {
+    try { fs.unlinkSync(newFilePath); } catch { /* best-effort */ }
+    getDb().prepare("UPDATE image_cache SET last_error = ? WHERE cache_key = ?")
+      .run("Failed to propagate refreshed cover path", cacheKey);
     logger.warn("ImageCache: failed to propagate refreshed cover path to book_sources", {
       cacheKey, error: err instanceof Error ? err.message : String(err)
     });
   }
+
+  if (propagated) logger.info("ImageCache: cover refreshed", { cacheKey, webPath: newWebPath });
 
   // Delete the old file only once every row that could still reference it
   // (image_cache, already updated above, and book_sources when propagation
@@ -318,7 +323,17 @@ export async function refreshStaleCachedCovers(): Promise<void> {
  * or the file is missing from disk, leaving any already-fresh cache alone.
  * Returns the local web path, or null on failure.
  */
-export function storeFetchedCover(bookLinkId: number, data: Buffer): string | null {
+export type StoredFetchedCover = {
+  webPath: string;
+  previousFilePath: string | null;
+  cacheKey: string;
+  entityId: string;
+  filePath: string | null;
+  cachedAt: string | null;
+  refreshAfter: string | null;
+};
+
+export function storeFetchedCover(bookLinkId: number, data: Buffer): StoredFetchedCover | null {
   const cacheKey = `cover:${bookLinkId}`;
   const entityId = String(bookLinkId);
 
@@ -332,7 +347,17 @@ export function storeFetchedCover(bookLinkId: number, data: Buffer): string | nu
   if (row?.local_web_path && isFresh(row) && fs.existsSync(row.local_file_path ?? "")) {
     try {
       const existing = fs.readFileSync(row.local_file_path!);
-      if (existing.equals(data)) return row.local_web_path;
+      if (existing.equals(data)) {
+        return {
+          webPath: row.local_web_path,
+          previousFilePath: null,
+          cacheKey,
+          entityId,
+          filePath: null,
+          cachedAt: null,
+          refreshAfter: null
+        };
+      }
     } catch {
       // Fall through and rewrite if the existing file can't be read.
     }
@@ -352,16 +377,30 @@ export function storeFetchedCover(bookLinkId: number, data: Buffer): string | nu
     return null;
   }
 
-  if (row?.local_file_path && row.local_file_path !== filePath) {
-    try { fs.unlinkSync(row.local_file_path); } catch { /* best-effort */ }
-  }
-
   const now = new Date().toISOString();
   // Grimmory covers are fetched with a live token. The daily authenticated
   // refresh job checks them again after the shared seven-day freshness window.
   const refreshAfter = computeRefreshAfter();
 
-  getDb().prepare(`
+  // Do not advance image_cache until the caller has also committed the
+  // book_sources/canonical-book propagation. Otherwise a failed propagation
+  // would make later retries see the new cache hit and lose the old file path
+  // that still needs deleting.
+  return {
+    webPath,
+    previousFilePath: row?.local_file_path ?? null,
+    cacheKey,
+    entityId,
+    filePath,
+    cachedAt: now,
+    refreshAfter
+  };
+}
+
+/** Commit a fetched Grimmory cover inside the caller's propagation transaction. */
+export function persistStoredFetchedCover(db: Database.Database, stored: StoredFetchedCover): void {
+  if (!stored.filePath || !stored.cachedAt || !stored.refreshAfter) return;
+  db.prepare(`
     INSERT INTO image_cache (cache_key, entity_id, source_url, local_file_path, local_web_path,
       cached_at, last_refresh_at, refresh_after)
     VALUES (?, ?, NULL, ?, ?, ?, ?, ?)
@@ -371,10 +410,17 @@ export function storeFetchedCover(bookLinkId: number, data: Buffer): string | nu
       last_refresh_at = excluded.last_refresh_at,
       refresh_after = excluded.refresh_after,
       last_error = NULL
-  `).run(cacheKey, entityId, filePath, webPath, now, now, refreshAfter);
+  `).run(stored.cacheKey, stored.entityId, stored.filePath, stored.webPath, stored.cachedAt, stored.cachedAt, stored.refreshAfter);
+}
 
-  logger.info("ImageCache: Grimmory cover cached", { cacheKey, webPath });
-  return webPath;
+/** Remove a newly written, uncommitted Grimmory cover after propagation fails. */
+export function discardStoredFetchedCover(stored: StoredFetchedCover): void {
+  if (!stored.filePath) return;
+  try {
+    fs.unlinkSync(stored.filePath);
+  } catch {
+    // Best effort: a failed propagation must not hide its original error.
+  }
 }
 
 /**

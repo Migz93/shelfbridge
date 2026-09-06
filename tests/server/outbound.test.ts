@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import dns from "node:dns/promises";
 import test from "node:test";
-import { fetchCoverImage, fetchIntegration, isPrivateAddress, UnsafeIntegrationUrlError, validateCoverUrl, validateIntegrationUrl, validateOutboundUrl } from "../../src/server/security/outbound.js";
+import { fetchCoverImage, fetchIntegration, isPrivateAddress, lookupPublicAddress, UnsafeIntegrationUrlError, validateCoverUrl, validateIntegrationUrl, validateOutboundUrl } from "../../src/server/security/outbound.js";
 
 test("integration URLs allow normal LAN HTTP endpoints", () => {
   assert.equal(validateIntegrationUrl("http://192.168.1.20:9303/api/"), "http://192.168.1.20:9303/api");
@@ -188,4 +188,27 @@ test("cover image requests reject a DNS rebind before the connector can reach a 
   }
 
   assert.equal(lookupCount, 2, "the connector must resolve independently and reject the rebinding result");
+});
+
+test("cover connector lookup returns address candidates when Node requests all addresses", async () => {
+  const originalLookup = dns.lookup;
+  (dns as unknown as { lookup: typeof dns.lookup }).lookup = (async () => [
+    { address: "8.8.8.8", family: 4 },
+    { address: "2001:4860:4860::8888", family: 6 }
+  ]) as typeof dns.lookup;
+
+  try {
+    const addresses = await new Promise<Array<{ address: string; family: number }>>((resolve, reject) => {
+      lookupPublicAddress("covers.example.test", { all: true }, (error, result) => {
+        if (error) reject(error);
+        else resolve(result as Array<{ address: string; family: number }>);
+      });
+    });
+    assert.deepEqual(addresses, [
+      { address: "8.8.8.8", family: 4 },
+      { address: "2001:4860:4860::8888", family: 6 }
+    ]);
+  } finally {
+    (dns as unknown as { lookup: typeof dns.lookup }).lookup = originalLookup;
+  }
 });

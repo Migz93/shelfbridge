@@ -230,6 +230,10 @@ export function cleanupAfterSourceRemoval(db: Db, affectedBookIds: number[], del
   }
   deleteOrphanedBooks(db, affectedBookIds);
   if (survivorSourceIds.length > 0) {
-    reconcileBookIdentities(db, { sourceIds: survivorSourceIds });
+    // Keep a large upstream prune proportional to its survivors instead of
+    // letting reconcile's scope-expansion cap fall back to the whole catalog.
+    for (const batch of chunk(survivorSourceIds, BATCH_SIZE)) {
+      reconcileBookIdentities(db, { sourceIds: batch });
+    }
   }
 }

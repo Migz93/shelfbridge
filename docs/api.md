@@ -282,8 +282,11 @@ Hardcover connections also include `hardcoverUsername` when it has been resolved
 by a successful token test, plus optional `syncListId` and `syncListName` fields
 when the profile is scoped to a single Hardcover list, and `ownedImportEnabled`
 (default `false`) — see [docs/sync.md](sync.md)'s "Hardcover Owned-List Import"
-section. Goodreads connections include `goodreadsUserId`, `goodreadsUsername`,
-and optional `syncShelfName`; the username is parsed from the public RSS
+section. `usesLegacyToken` indicates whether the configured Hardcover credential
+is a legacy Authorization value rather than a personal-access token.
+
+Goodreads connections include `goodreadsUserId`, `goodreadsUsername`, and
+optional `syncShelfName`; the username is parsed from the public RSS
 channel when available.
 
 `syncSettings.syncWriteTagEnabled` controls the Grimmory-tab `Write Tag` setting.
@@ -320,6 +323,13 @@ Hardcover fetches and writes during sync.
   }
 }
 ```
+
+**Response**
+
+Returns `{ "ok": true }` on full success. If disabling Hardcover or Goodreads
+partially completes but its source cleanup fails, returns HTTP 207 with
+`{ "ok": false, "cleanupFailures": ["..."] }`; all other requested updates
+have still been applied.
 
 ### `DELETE /api/profiles/:id`
 

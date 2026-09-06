@@ -32,7 +32,9 @@ static route at `/images`. The `image_cache` table tracks each entry:
   - *Fresh*: refreshed within the last seven days → return `local_web_path` immediately
   - *Stale*: older than seven days → return existing path immediately and trigger a
     background refresh (stale-while-revalidate)
-  - *Miss*: no entry → fetch inline, write file atomically, insert row
+  - *Miss*: no entry → fetch inline, write file atomically, then transactionally
+    update the cache row and source/canonical cover paths; a failed propagation
+    discards the new file and leaves the prior cache state retryable
   - Validates that the response `Content-Type` starts with `image/`; enforces a
     20 MB size cap and a hard 15-second end-to-end timeout. A changed public
     source URL triggers an early background refresh because it is a strong signal
@@ -51,9 +53,12 @@ seven days, allowing ShelfBridge to detect changed upstream artwork without
 re-fetching hundreds of images every few minutes.
 
 **Atomic writes:** cover data is written to a temp file in the same directory,
-then renamed into place with `fs.renameSync` to avoid partial reads. Background
-refreshes replace the file with a new UUID filename and delete the old one after
-the rename succeeds.
+then renamed into place with `fs.renameSync` to avoid partial reads. All cover
+writes replace the file with a new UUID filename and delete the old one only
+after its `book_sources` and canonical-book paths have been propagated.
+The `image_cache` row is committed in that same propagation transaction; a
+failed propagation removes the newly written file and leaves the previous cache
+entry retryable.
 
 After identity reconciliation, ShelfBridge removes orphaned `image_cache` rows
 whose `entity_id` no longer points at an existing `book_sources.id`. The cached
@@ -62,4 +67,3 @@ inside `DATA_DIR/image-cache/`.
 
 `cover_cache_path` in `book_sources` is the only cover path sent to API clients —
 external source URLs are never exposed to the browser.
-

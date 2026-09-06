@@ -390,10 +390,16 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
     // updates (identity data on an existing book can change) and newly
     // created rows (book_id assigned by this call) — then write new books'
     // user states now that their book_id is known.
+    let reconciled = true;
     if (touchedGoodreadsSourceIds.length > 0) {
-      reconcileBookIdentities(db, { sourceIds: touchedGoodreadsSourceIds });
+      try { reconcileBookIdentities(db, { sourceIds: touchedGoodreadsSourceIds }); }
+      catch (err) {
+        reconciled = false;
+        logger.warn("Failed to reconcile Goodreads identities; skipping deferred Goodreads-only user states", { profileId, error: err });
+      }
     }
-    for (const pending of pendingGoodreadsOnly) {
+    if (reconciled) for (const pending of pendingGoodreadsOnly) {
+      try {
       const newSource = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(pending.newSourceId) as { book_id: number } | undefined;
       if (!newSource?.book_id) {
         logger.warn("Goodreads-only book has no book_id after reconcile; skipping its user state", {
@@ -414,6 +420,9 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
         pending.matchType, pending.bookLink
       );
       logger.info("Created Goodreads-only book", { profileId, goodreadsId: pending.goodreadsId, title: pending.title, bookId: newSource.book_id });
+      } catch (err) {
+        logger.warn("Failed to create one deferred Goodreads-only user state; continuing", { profileId, goodreadsId: pending.goodreadsId, error: err });
+      }
     }
     logger.info("Goodreads enrichment complete", { profileId, goodreadsMatched, goodreadsUnmatched });
 

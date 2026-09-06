@@ -1068,6 +1068,10 @@ export function reconcileBookIdentities(db: Database.Database, scope?: Reconcile
   // job in scheduler.ts).
   const repairAudiobookshelfStates = (scopeBookIds?: number[]): void => {
     if (scopeBookIds && scopeBookIds.length === 0) return;
+    if (scopeBookIds && scopeBookIds.length > 500) {
+      for (let i = 0; i < scopeBookIds.length; i += 500) repairAudiobookshelfStates(scopeBookIds.slice(i, i + 500));
+      return;
+    }
     // Matched by (external_id AND instance) — a colliding local item id on a
     // different profile's ABS server must not move this profile's user state.
     const scopeClause = scopeBookIds ? `AND bs.book_id IN (${scopeBookIds.map(() => "?").join(",")})` : "";
@@ -1092,6 +1096,10 @@ export function reconcileBookIdentities(db: Database.Database, scope?: Reconcile
 
   const repairGrimmoryStates = (scopeBookIds?: number[]): void => {
     if (scopeBookIds && scopeBookIds.length === 0) return;
+    if (scopeBookIds && scopeBookIds.length > 500) {
+      for (let i = 0; i < scopeBookIds.length; i += 500) repairGrimmoryStates(scopeBookIds.slice(i, i + 500));
+      return;
+    }
     // Matched by (external_id AND instance) — a colliding local book id on a
     // different profile's Grimmory server must not move this profile's user state.
     const scopeClause = scopeBookIds ? `AND bs.book_id IN (${scopeBookIds.map(() => "?").join(",")})` : "";
