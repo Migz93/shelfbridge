@@ -331,6 +331,7 @@ router.patch("/:id", async (req, res) => {
   }
   const body = parsed.data;
   const db = getDb();
+  const cleanupFailures: string[] = [];
   if (!profileExists(db, id)) {
     res.status(404).json({ error: "Profile not found" });
     return;
@@ -374,8 +375,7 @@ router.patch("/:id", async (req, res) => {
         await cleanupHardcoverSourceData(id);
       } catch (err) {
         logger.warn("Failed to disable Hardcover connection", { profileId: id, error: err });
-        res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
-        return;
+        cleanupFailures.push(`Hardcover cleanup: ${err instanceof Error ? err.message : String(err)}`);
       }
       logger.info("Removed Hardcover connection", { profileId: id });
     } else {
@@ -433,8 +433,7 @@ router.patch("/:id", async (req, res) => {
         await cleanupGoodreadsSourceData(id);
       } catch (err) {
         logger.warn("Failed to disable Goodreads connection", { profileId: id, error: err });
-        res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
-        return;
+        cleanupFailures.push(`Goodreads cleanup: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }
@@ -484,6 +483,10 @@ router.patch("/:id", async (req, res) => {
     }
   }
 
+  if (cleanupFailures.length > 0) {
+    res.status(207).json({ ok: false, cleanupFailures });
+    return;
+  }
   res.json({ ok: true });
 });
 
