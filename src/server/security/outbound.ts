@@ -250,6 +250,20 @@ const coverDispatcher = new Agent({
   connect: { lookup: lookupPublicAddress } as never
 });
 
+// Fetch implementations can wrap connector failures more than once. Preserve
+// the specific SSRF rejection so callers do not mistake it for a generic
+// network error, regardless of the Undici version supplying fetch.
+function findUnsafeIntegrationUrlError(error: unknown): UnsafeIntegrationUrlError | null {
+  const seen = new Set<Error>();
+  let current = error;
+  while (current instanceof Error && !seen.has(current)) {
+    if (current instanceof UnsafeIntegrationUrlError) return current;
+    seen.add(current);
+    current = current.cause;
+  }
+  return null;
+}
+
 const MAX_REDIRECTS = 5;
 
 // Redirects are followed only when they stay on the same origin as the
@@ -294,7 +308,8 @@ async function fetchFollowingPublicCoverRedirects(url: string, init: RequestInit
         redirect: "manual"
       } as RequestInit);
     } catch (error) {
-      if (error instanceof TypeError && error.cause instanceof UnsafeIntegrationUrlError) throw error.cause;
+      const unsafeError = findUnsafeIntegrationUrlError(error);
+      if (unsafeError) throw unsafeError;
       throw error;
     }
     if (res.status < 300 || res.status >= 400) return res;
