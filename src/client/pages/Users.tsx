@@ -593,7 +593,12 @@ export function UserDetailPage() {
       }
       setSuccess(true);
       await loadProfile();
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    } catch (e) {
+      // A 207 PATCH has applied the non-cleanup fields; refresh those values
+      // before surfacing the cleanup error so the form cannot remain stale.
+      await loadProfile().catch(() => null);
+      setError(e instanceof Error ? e.message : String(e));
+    }
     finally { setSaving(false); }
   }
 
