@@ -611,7 +611,7 @@ export async function syncChaptarrStatus(profileId: number): Promise<number[]> {
       WHERE source_type = 'chaptarr' AND external_id NOT IN (SELECT id FROM shelfbridge_fetched_ids)
     `).run();
     cleanupAfterSourceRemoval(db, staleBookIds, staleSourceIds);
-  } else {
+  } else if (books.length === 0) {
     const staleRows = db.prepare(`
       SELECT id, book_id FROM book_sources WHERE source_type = 'chaptarr'
     `).all() as { id: number; book_id: number | null }[];
@@ -619,6 +619,8 @@ export async function syncChaptarrStatus(profileId: number): Promise<number[]> {
     const staleBookIds = staleRows.map((row) => row.book_id).filter((id): id is number => id !== null);
     db.prepare("DELETE FROM book_sources WHERE source_type = 'chaptarr'").run();
     cleanupAfterSourceRemoval(db, staleBookIds, staleSourceIds);
+  } else {
+    logger.warn("Skipped Chaptarr stale-source pruning: books were returned but none matched", { profileId, fetched: books.length, unmatched });
   }
 
   // Promote 'missing' Grimmory user_book_states to 'pending_download' when Chaptarr

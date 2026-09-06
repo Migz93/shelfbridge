@@ -267,6 +267,8 @@ async function refreshInBackground(cacheKey: string, entityId: string, sourceUrl
     propagated = true;
   } catch (err) {
     try { fs.unlinkSync(newFilePath); } catch { /* best-effort */ }
+    getDb().prepare("UPDATE image_cache SET last_error = ? WHERE cache_key = ?")
+      .run("Failed to propagate refreshed cover path", cacheKey);
     logger.warn("ImageCache: failed to propagate refreshed cover path to book_sources", {
       cacheKey, error: err instanceof Error ? err.message : String(err)
     });

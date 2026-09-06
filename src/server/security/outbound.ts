@@ -149,6 +149,9 @@ function isPrivateIPv6(address: string): boolean {
       (groups[0] === "0064" && groups[1] === "ff9b" && groups.slice(2, 6).every((g) => g === "0000"))) {
     return isPrivateIPv4(ipv4FromGroups(groups[6]!, groups[7]!));
   }
+  // RFC 8215 local-use NAT64. Its embedded IPv4 offset varies, so reject the
+  // whole prefix rather than attempting to extract a potentially private IP.
+  if (groups[0] === "0064" && groups[1] === "ff9b" && groups[2] === "0001") return true;
   // 2002::/16 — 6to4, embeds the IPv4 in bits 16-48 (groups 1-2)
   if (groups[0] === "2002") {
     return isPrivateIPv4(ipv4FromGroups(groups[1]!, groups[2]!));
