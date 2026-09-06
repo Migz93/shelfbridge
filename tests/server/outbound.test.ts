@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import dns from "node:dns/promises";
 import test from "node:test";
-import { fetchCoverImage, fetchIntegration, isPrivateAddress, lookupPublicAddress, UnsafeIntegrationUrlError, validateCoverUrl, validateIntegrationUrl, validateOutboundUrl } from "../../src/server/security/outbound.js";
+import { fetchCoverImage, fetchIntegration, isPrivateAddress, lookupPublicAddress, setCoverFetchForTesting, UnsafeIntegrationUrlError, validateCoverUrl, validateIntegrationUrl, validateOutboundUrl } from "../../src/server/security/outbound.js";
 
 test("integration URLs allow normal LAN HTTP endpoints", () => {
   assert.equal(validateIntegrationUrl("http://192.168.1.20:9303/api/"), "http://192.168.1.20:9303/api");
@@ -168,6 +168,37 @@ test("cover connector lookup accepts a hostname that resolves only to public add
   } finally {
     (dns as unknown as { lookup: typeof dns.lookup }).lookup = originalLookup;
   }
+});
+
+test("cover image redirects retain the secure dispatcher and validate each destination", async () => {
+  const originalLookup = dns.lookup;
+  const requested: Array<{ url: string; redirect: unknown; dispatcher: unknown }> = [];
+  (dns as unknown as { lookup: typeof dns.lookup }).lookup = (async () => [{ address: "8.8.8.8", family: 4 }]) as typeof dns.lookup;
+  const restoreCoverFetch = setCoverFetchForTesting((async (url, init) => {
+    requested.push({
+      url: String(url),
+      redirect: init?.redirect,
+      dispatcher: (init as { dispatcher?: unknown } | undefined)?.dispatcher
+    });
+    if (String(url) === "https://covers.example.test/book.jpg") {
+      return new Response(null, { status: 302, headers: { location: "https://cdn.example.test/book.jpg" } });
+    }
+    return new Response(null, { status: 204 });
+  }) as never);
+
+  try {
+    const res = await fetchCoverImage("https://covers.example.test/book.jpg");
+    assert.equal(res.status, 204);
+  } finally {
+    (dns as unknown as { lookup: typeof dns.lookup }).lookup = originalLookup;
+    restoreCoverFetch();
+  }
+
+  assert.deepEqual(requested.map((request) => request.url), [
+    "https://covers.example.test/book.jpg",
+    "https://cdn.example.test/book.jpg"
+  ]);
+  assert.ok(requested.every((request) => request.redirect === "manual" && request.dispatcher !== undefined));
 });
 
 test("cover image requests reject a DNS rebind before the connector can reach a private address", async () => {
