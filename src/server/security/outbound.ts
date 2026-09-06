@@ -1,6 +1,6 @@
 import dns from "node:dns/promises";
 import net from "node:net";
-import { Agent } from "undici";
+import { Agent, fetch as undiciFetch } from "undici";
 
 export class UnsafeIntegrationUrlError extends Error {
   constructor(message: string) {
@@ -250,6 +250,30 @@ const coverDispatcher = new Agent({
   connect: { lookup: lookupPublicAddress } as never
 });
 
+let coverFetch = undiciFetch;
+
+// Test seam for callers that need to exercise cover-cache handling without
+// opening a real public-network connection.
+export function setCoverFetchForTesting(fetch: typeof undiciFetch): () => void {
+  const previous = coverFetch;
+  coverFetch = fetch;
+  return () => { coverFetch = previous; };
+}
+
+// Fetch implementations can wrap connector failures more than once. Preserve
+// the specific SSRF rejection so callers do not mistake it for a generic
+// network error, regardless of the Undici version supplying fetch.
+function findUnsafeIntegrationUrlError(error: unknown): UnsafeIntegrationUrlError | null {
+  const seen = new Set<Error>();
+  let current = error;
+  while (current instanceof Error && !seen.has(current)) {
+    if (current instanceof UnsafeIntegrationUrlError) return current;
+    seen.add(current);
+    current = current.cause;
+  }
+  return null;
+}
+
 const MAX_REDIRECTS = 5;
 
 // Redirects are followed only when they stay on the same origin as the
@@ -288,13 +312,14 @@ async function fetchFollowingPublicCoverRedirects(url: string, init: RequestInit
   for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount++) {
     let res: Response;
     try {
-      res = await fetch(currentUrl, {
+      res = await coverFetch(currentUrl, {
         ...init,
         dispatcher: coverDispatcher,
         redirect: "manual"
       } as RequestInit);
     } catch (error) {
-      if (error instanceof TypeError && error.cause instanceof UnsafeIntegrationUrlError) throw error.cause;
+      const unsafeError = findUnsafeIntegrationUrlError(error);
+      if (unsafeError) throw unsafeError;
       throw error;
     }
     if (res.status < 300 || res.status >= 400) return res;
