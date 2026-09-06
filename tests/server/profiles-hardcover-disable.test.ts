@@ -63,9 +63,11 @@ test("disabling a Hardcover connection with >500 matches marks only that profile
   // exceed SQLite's bound-parameter limit.
   const MATCHED_COUNT = 1200;
   const matchedBookIds: number[] = [];
-  for (let i = 0; i < MATCHED_COUNT; i++) {
-    matchedBookIds.push(seedHardcoverMatchedGrimmoryBook(profileId));
-  }
+  db.transaction(() => {
+    for (let i = 0; i < MATCHED_COUNT; i++) {
+      matchedBookIds.push(seedHardcoverMatchedGrimmoryBook(profileId));
+    }
+  })();
 
   // A Grimmory-only book for the same profile, never matched to Hardcover —
   // must not be touched by the detach update.

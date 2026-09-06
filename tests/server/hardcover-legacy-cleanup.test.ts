@@ -111,7 +111,7 @@ test("cleanupLegacyHardcoverSources never touches a live, profile-scoped row", (
 function seedSplitScenario(db: ReturnType<typeof createTestDatabase>["db"]) {
   const liveBookId = insertBook(db, "Shared Title");
   const canonicalBookId = insertBook(db, "Shared Title");
-  seedProfile(db, "Profile");
+  const profileId = seedProfile(db, "Profile");
 
   // Inserted first so it's the lower book_sources id, matching production
   // (legacy rows predate their live per-profile counterparts).
@@ -121,16 +121,16 @@ function seedSplitScenario(db: ReturnType<typeof createTestDatabase>["db"]) {
   `).run(liveBookId);
   db.prepare(`
     INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, author, series_name, series_number, source_media_type)
-    VALUES (?, 'hardcover', 1, 'hc-1', 'Shared Title', 'Shared Author', 'Series X', '1', 'book')
-  `).run(liveBookId);
+    VALUES (?, 'hardcover', ?, 'hc-1', 'Shared Title', 'Shared Author', 'Series X', '1', 'book')
+  `).run(liveBookId, profileId);
   db.prepare(`
     INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, author, series_name, series_number, source_media_type)
-    VALUES (?, 'grimmory', 1, 'gr-1', 'Shared Title', 'Shared Author', 'Series X', '1', 'book')
-  `).run(canonicalBookId);
+    VALUES (?, 'grimmory', ?, 'gr-1', 'Shared Title', 'Shared Author', 'Series X', '1', 'book')
+  `).run(canonicalBookId, profileId);
   db.prepare(`
     INSERT INTO user_book_states (book_id, profile_id, source_type, status, rating)
-    VALUES (?, 1, 'hardcover', 'READ', 5)
-  `).run(liveBookId);
+    VALUES (?, ?, 'hardcover', 'READ', 5)
+  `).run(liveBookId, profileId);
 
   return { liveBookId, canonicalBookId };
 }
@@ -159,17 +159,17 @@ test("cleanupLegacyHardcoverSources migrates state already stranded on the legac
     // sitting on the legacy row's own orphan book_id, not the live row's book.
     const orphanBookId = insertBook(db, "Orphan");
     const canonicalBookId = insertBook(db, "Canonical");
-    seedProfile(db, "Profile");
+    const profileId = seedProfile(db, "Profile");
     insertHardcoverSource(db, orphanBookId, null, "hc-5");
-    insertHardcoverSource(db, canonicalBookId, 1, "hc-5");
+    insertHardcoverSource(db, canonicalBookId, profileId, "hc-5");
     db.prepare(`
       INSERT INTO user_book_states (book_id, profile_id, source_type, status, rating)
-      VALUES (?, 1, 'hardcover', 'READ', 4)
-    `).run(orphanBookId);
+      VALUES (?, ?, 'hardcover', 'READ', 4)
+    `).run(orphanBookId, profileId);
 
     cleanupLegacyHardcoverSources(db);
 
-    const migrated = db.prepare("SELECT book_id, rating FROM user_book_states WHERE profile_id = 1 AND source_type = 'hardcover'").get() as
+    const migrated = db.prepare("SELECT book_id, rating FROM user_book_states WHERE profile_id = ? AND source_type = 'hardcover'").get(profileId) as
       { book_id: number; rating: number } | undefined;
     assert.ok(migrated, "the stranded state must survive the cleanup");
     assert.equal(migrated!.book_id, canonicalBookId, "it must follow the live row's book, not stay on the deleted orphan");
@@ -184,23 +184,23 @@ test("cleanupLegacyHardcoverSources drops a stranded duplicate when the live row
   try {
     const orphanBookId = insertBook(db, "Orphan");
     const canonicalBookId = insertBook(db, "Canonical");
-    seedProfile(db, "Profile");
+    const profileId = seedProfile(db, "Profile");
     insertHardcoverSource(db, orphanBookId, null, "hc-6");
-    insertHardcoverSource(db, canonicalBookId, 1, "hc-6");
+    insertHardcoverSource(db, canonicalBookId, profileId, "hc-6");
     // The live row's own state on the canonical book was modified more recently...
     db.prepare(`
       INSERT INTO user_book_states (book_id, profile_id, source_type, status, rating, last_modified_at)
-      VALUES (?, 1, 'hardcover', 'READ', 5, '2026-01-02T00:00:00.000Z')
-    `).run(canonicalBookId);
+      VALUES (?, ?, 'hardcover', 'READ', 5, '2026-01-02T00:00:00.000Z')
+    `).run(canonicalBookId, profileId);
     // ...while a stale duplicate is stranded on the orphan from before the fix.
     db.prepare(`
       INSERT INTO user_book_states (book_id, profile_id, source_type, status, rating, last_modified_at)
-      VALUES (?, 1, 'hardcover', 'READING', 2, '2026-01-01T00:00:00.000Z')
-    `).run(orphanBookId);
+      VALUES (?, ?, 'hardcover', 'READING', 2, '2026-01-01T00:00:00.000Z')
+    `).run(orphanBookId, profileId);
 
     cleanupLegacyHardcoverSources(db);
 
-    const states = db.prepare("SELECT book_id, rating FROM user_book_states WHERE profile_id = 1 AND source_type = 'hardcover'").all() as
+    const states = db.prepare("SELECT book_id, rating FROM user_book_states WHERE profile_id = ? AND source_type = 'hardcover'").all(profileId) as
       { book_id: number; rating: number }[];
     assert.equal(states.length, 1, "the stale stranded duplicate must be dropped rather than left behind or clobbering the live state");
     assert.equal(states[0]!.book_id, canonicalBookId);
@@ -221,23 +221,23 @@ test("cleanupLegacyHardcoverSources keeps the stranded state when it is more cur
     // recorded before the profile's Hardcover connection was reconnected).
     const orphanBookId = insertBook(db, "Orphan");
     const canonicalBookId = insertBook(db, "Canonical");
-    seedProfile(db, "Profile");
+    const profileId = seedProfile(db, "Profile");
     insertHardcoverSource(db, orphanBookId, null, "hc-9");
-    insertHardcoverSource(db, canonicalBookId, 1, "hc-9");
+    insertHardcoverSource(db, canonicalBookId, profileId, "hc-9");
     // The live row's own state is stale...
     db.prepare(`
       INSERT INTO user_book_states (book_id, profile_id, source_type, status, rating, last_modified_at)
-      VALUES (?, 1, 'hardcover', 'READ', 3, '2026-01-01T00:00:00.000Z')
-    `).run(canonicalBookId);
+      VALUES (?, ?, 'hardcover', 'READ', 3, '2026-01-01T00:00:00.000Z')
+    `).run(canonicalBookId, profileId);
     // ...while the stranded orphan state has real listening progress recorded later.
     db.prepare(`
       INSERT INTO user_book_states (book_id, profile_id, source_type, status, rating, progress_seconds, last_modified_at)
-      VALUES (?, 1, 'hardcover', 'READING', 4, 1800, '2026-01-02T00:00:00.000Z')
-    `).run(orphanBookId);
+      VALUES (?, ?, 'hardcover', 'READING', 4, 1800, '2026-01-02T00:00:00.000Z')
+    `).run(orphanBookId, profileId);
 
     cleanupLegacyHardcoverSources(db);
 
-    const states = db.prepare("SELECT book_id, rating, progress_seconds FROM user_book_states WHERE profile_id = 1 AND source_type = 'hardcover'").all() as
+    const states = db.prepare("SELECT book_id, rating, progress_seconds FROM user_book_states WHERE profile_id = ? AND source_type = 'hardcover'").all(profileId) as
       { book_id: number; rating: number; progress_seconds: number | null }[];
     assert.equal(states.length, 1, "exactly one state must survive per profile");
     assert.equal(states[0]!.book_id, canonicalBookId, "it must still end up on the live row's book, not the deleted orphan");
@@ -383,9 +383,9 @@ test("cleanupAfterSourceRemoval removes a book left with no sources and no state
     // deleted by this cleanup).
     const orphanBookId = insertBook(db, "Orphan");
     const canonicalBookId = insertBook(db, "Canonical");
-    seedProfile(db, "Profile");
+    const profileId = seedProfile(db, "Profile");
     insertHardcoverSource(db, orphanBookId, null, "hc-10");
-    insertHardcoverSource(db, canonicalBookId, 1, "hc-10");
+    insertHardcoverSource(db, canonicalBookId, profileId, "hc-10");
 
     const result = cleanupLegacyHardcoverSources(db);
     assert.equal(result.deleted, 1);
