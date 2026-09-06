@@ -22,7 +22,7 @@ async function checkCovers(page: Page, context: string) {
     const imgs = Array.from(document.querySelectorAll<HTMLImageElement>("img.object-cover[src*='/images/']"));
     return imgs.every((img) => {
       const rect = img.getBoundingClientRect();
-      const inViewport = rect.bottom > 0 && rect.top < window.innerHeight;
+      const inViewport = rect.bottom > 0 && rect.top < window.innerHeight && rect.right > 0 && rect.left < window.innerWidth;
       return img.complete || !inViewport;
     });
   }, { timeout: 10_000 }).catch(() => {
@@ -36,7 +36,8 @@ async function checkCovers(page: Page, context: string) {
         alt: img.alt,
         src: img.src,
         complete: img.complete,
-        inViewport: img.getBoundingClientRect().bottom > 0 && img.getBoundingClientRect().top < window.innerHeight,
+        inViewport: img.getBoundingClientRect().bottom > 0 && img.getBoundingClientRect().top < window.innerHeight
+          && img.getBoundingClientRect().right > 0 && img.getBoundingClientRect().left < window.innerWidth,
         loaded: img.complete && img.naturalWidth > 0
       };
     })
