@@ -189,7 +189,7 @@ the right):
 - **Actions** — pipeline-gap shortcuts. Each chip answers one step in the
   download pipeline and tells you what to do next:
   - **Add to Chaptarr** — in Hardcover/Goodreads but not monitored in Chaptarr
-  - **Grab in Chaptarr** — monitored in Chaptarr but file not yet downloaded
+  - **Grab in Chaptarr** — monitored in Chaptarr, but the file is not yet downloaded
   - **Review in Grimmory** — file downloaded in Chaptarr but no Grimmory match (likely a wrong ID)
 - **Review** — chips that surface data-quality issues rather than pipeline gaps:
   - **Bad Chaptarr ID** — Chaptarr's own upstream ID doesn't match its matched book (only shown when this applies to at least one book)

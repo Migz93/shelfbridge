@@ -39,6 +39,11 @@ function requireHardcoverMutationId(payload: { id: number | null; error?: string
   return id;
 }
 
+function requireHardcoverMutationSuccess(payload: { error?: string | null } | null | undefined, token: string): void {
+  if (payload?.error) throwRedactedHardcoverMutationError(payload.error, token);
+  if (!payload) throw new Error("Hardcover mutation returned no result");
+}
+
 export interface HardcoverUserBook {
   id: number;
   edition_id: number | null;
@@ -467,7 +472,7 @@ export async function updateHardcoverUserBook(
     UPDATE_USER_BOOK_MUTATION,
     { id: userBookId, object: fields }
   );
-  requireHardcoverMutationId(data.update_user_book, token);
+  requireHardcoverMutationSuccess(data.update_user_book, token);
 }
 
 export async function insertHardcoverUserBook(
@@ -527,7 +532,7 @@ export async function updateHardcoverUserBookRead(
     UPDATE_USER_BOOK_READ_MUTATION,
     { id: readId, object: fields }
   );
-  requireHardcoverMutationId(data.update_user_book_read, token);
+  requireHardcoverMutationSuccess(data.update_user_book_read, token);
 }
 
 export async function deleteHardcoverUserBookRead(
@@ -539,5 +544,5 @@ export async function deleteHardcoverUserBookRead(
     DELETE_USER_BOOK_READ_MUTATION,
     { id: readId }
   );
-  requireHardcoverMutationId(data.delete_user_book_read, token);
+  requireHardcoverMutationSuccess(data.delete_user_book_read, token);
 }

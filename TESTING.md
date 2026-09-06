@@ -28,7 +28,8 @@ between tests.
 
 `sync-engine.test.ts`, `auth.test.ts`, `settings.test.ts`, `covers-reconcile.test.ts`,
 `chaptarr-orphan-cleanup.test.ts`, `covers-refresh-isolation.test.ts`,
-`image-cache-refresh-propagation.test.ts`, and `profiles-hardcover-disable.test.ts`
+`image-cache-refresh-propagation.test.ts`, `profiles-hardcover-disable.test.ts`,
+and `chaptarr-mismatch-dismissal.test.ts`
 are the exceptions: each operates on the
 `db/index.ts` singleton rather than an injected database, so each points
 `DATA_DIR` at its own private temp dir (via a dynamic `import()` of the
@@ -273,7 +274,7 @@ so all tests start already authenticated.
 
 | Test | What it checks |
 |---|---|
-| Dismissal signature | A dismissal re-arms when Chaptarr reports a different upstream identifier. |
+| Dismissal signature | The live Books API's dismissal endpoint suppresses its current mismatch, then the `fix-chaptarr-id` action re-arms when Chaptarr reports a different upstream identifier. |
 
 ### `tests/server/validation.test.ts` — Request validation and atomic replacements
 

@@ -41,6 +41,23 @@ function booksByTitle(db: ReturnType<typeof createTestDatabase>["db"]) {
   return db.prepare("SELECT id, title FROM books ORDER BY id").all() as { id: number; title: string }[];
 }
 
+function captureWarnings(): {
+  calls: Array<{ message: string; meta?: unknown }>;
+  restore: () => void;
+} {
+  const originalWarn = logger.warn.bind(logger);
+  const calls: Array<{ message: string; meta?: unknown }> = [];
+  (logger as unknown as { warn: typeof logger.warn }).warn = ((message: string, meta?: unknown) => {
+    calls.push({ message, meta });
+  }) as typeof logger.warn;
+  return {
+    calls,
+    restore: () => {
+      (logger as unknown as { warn: typeof logger.warn }).warn = originalWarn;
+    }
+  };
+}
+
 test("reconcileBookIdentities merges two sources that share an ISBN13 into one book", () => {
   const { db, cleanup } = createTestDatabase();
   try {
@@ -425,11 +442,7 @@ test("the stale-Grimmory-ID escape hatch does not drag in an unrelated conflicti
 
 test("reconcileBookIdentities aggregates many ambiguous Chaptarr file-path skips into a single bounded warning", () => {
   const { db, cleanup } = createTestDatabase();
-  const originalWarn = logger.warn.bind(logger);
-  const warnCalls: Array<{ message: string; meta?: unknown }> = [];
-  (logger as unknown as { warn: typeof logger.warn }).warn = ((message: string, meta?: unknown) => {
-    warnCalls.push({ message, meta });
-  }) as typeof logger.warn;
+  const warningCapture = captureWarnings();
   try {
     const firstProfile = seedProfile(db, "First");
     const secondProfile = seedProfile(db, "Second");
@@ -456,7 +469,7 @@ test("reconcileBookIdentities aggregates many ambiguous Chaptarr file-path skips
 
     reconcileBookIdentities(db);
 
-    const aggregatedWarnCalls = warnCalls.filter((call) => call.message === "Skipped Chaptarr file-path reassignment across scoped source profiles");
+    const aggregatedWarnCalls = warningCapture.calls.filter((call) => call.message === "Skipped Chaptarr file-path reassignment across scoped source profiles");
     assert.equal(aggregatedWarnCalls.length, 1, "a sync with many ambiguous paths must produce exactly one aggregated warning, not one per group");
 
     const meta = aggregatedWarnCalls[0]?.meta as { skippedGroups: number; sample: Array<{ path: string; instanceIds: Array<number | null> }> };
@@ -473,18 +486,14 @@ test("reconcileBookIdentities aggregates many ambiguous Chaptarr file-path skips
       assert.equal(chaptarrRow.book_id, originalChaptarrBookIds.get(externalId), `Chaptarr row ${externalId} must keep its original canonical book, not the ambiguous cross-profile one`);
     }
   } finally {
-    (logger as unknown as { warn: typeof logger.warn }).warn = originalWarn;
+    warningCapture.restore();
     cleanup();
   }
 });
 
 test("reconcileBookIdentities does not let a single crossing path fill the aggregated warning's sample with duplicates", () => {
   const { db, cleanup } = createTestDatabase();
-  const originalWarn = logger.warn.bind(logger);
-  const warnCalls: Array<{ message: string; meta?: unknown }> = [];
-  (logger as unknown as { warn: typeof logger.warn }).warn = ((message: string, meta?: unknown) => {
-    warnCalls.push({ message, meta });
-  }) as typeof logger.warn;
+  const warningCapture = captureWarnings();
   try {
     const firstProfile = seedProfile(db, "First");
     const secondProfile = seedProfile(db, "Second");
@@ -504,7 +513,7 @@ test("reconcileBookIdentities does not let a single crossing path fill the aggre
 
     reconcileBookIdentities(db);
 
-    const aggregatedWarnCalls = warnCalls.filter((call) => call.message === "Skipped Chaptarr file-path reassignment across scoped source profiles");
+    const aggregatedWarnCalls = warningCapture.calls.filter((call) => call.message === "Skipped Chaptarr file-path reassignment across scoped source profiles");
     assert.equal(aggregatedWarnCalls.length, 1);
 
     const meta = aggregatedWarnCalls[0]?.meta as { skippedGroups: number; sample: Array<{ path: string; instanceIds: unknown[] }> };
@@ -512,7 +521,7 @@ test("reconcileBookIdentities does not let a single crossing path fill the aggre
     const samplesForPath = meta.sample.filter((entry) => entry.path === path);
     assert.equal(samplesForPath.length, 1, "a path shared by two rows within the same skipped group must appear once in the sample, not once per row");
   } finally {
-    (logger as unknown as { warn: typeof logger.warn }).warn = originalWarn;
+    warningCapture.restore();
     cleanup();
   }
 });
