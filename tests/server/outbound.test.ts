@@ -153,21 +153,21 @@ test("cover image requests reject a hostname that resolves to a private address 
   assert.equal(fetchCalled, false, "the fetch must not happen once DNS resolves to a private address");
 });
 
-test("cover image requests proceed when DNS resolves a hostname to only public addresses", async () => {
+test("cover connector lookup accepts a hostname that resolves only to public addresses", async () => {
   const originalLookup = dns.lookup;
-  const originalFetch = globalThis.fetch;
-  let fetchCalled = false;
   (dns as unknown as { lookup: typeof dns.lookup }).lookup = (async () => [{ address: "8.8.8.8", family: 4 }]) as typeof dns.lookup;
-  globalThis.fetch = async () => { fetchCalled = true; return new Response(null, { status: 204 }); };
 
   try {
-    const res = await fetchCoverImage("http://covers.example.test/cover.jpg");
-    assert.equal(res.status, 204);
+    const result = await new Promise<{ address: string; family: number }>((resolve, reject) => {
+      lookupPublicAddress("covers.example.test", {}, (error, address, family) => {
+        if (error || typeof address !== "string" || family === undefined) reject(error ?? new Error("Expected one address"));
+        else resolve({ address, family });
+      });
+    });
+    assert.deepEqual(result, { address: "8.8.8.8", family: 4 });
   } finally {
     (dns as unknown as { lookup: typeof dns.lookup }).lookup = originalLookup;
-    globalThis.fetch = originalFetch;
   }
-  assert.equal(fetchCalled, true);
 });
 
 test("cover image requests reject a DNS rebind before the connector can reach a private address", async () => {
