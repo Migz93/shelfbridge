@@ -712,8 +712,12 @@ export function BookDetailPage() {
         failures?: Array<{ profileId: number; error: string }>;
         finalizationError?: string;
       }>(`/api/books/${bookId}/duplicates/${duplicateId}/merge`, {});
-      const partialFailure = result.finalizationError
-        ?? result.failures?.map(({ profileId, error }) => `Profile ${profileId}: ${error}`).join("; ");
+      const failureSummary = result.failures?.length
+        ? result.failures.map(({ profileId, error }) => `Profile ${profileId}: ${error}`).join("; ")
+        : undefined;
+      const partialFailure = [failureSummary, result.finalizationError]
+        .filter((message): message is string => Boolean(message))
+        .join("; ") || undefined;
       if (result.bookId === null) {
         setDuplicateError(partialFailure ?? "The duplicate merge could not be finalized. Refresh the page before trying again.");
         return;

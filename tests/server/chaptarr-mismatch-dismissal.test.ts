@@ -1,58 +1,71 @@
 import assert from "node:assert/strict";
+import express from "express";
+import type { AddressInfo } from "node:net";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
-import { createTestDatabase } from "./test-db.js";
 
-/**
- * Mirrors the dismissal-join fragment in routes/books.ts: a dismissal only
- * suppresses the mismatch it was raised against, by signature
- * (chaptarr_external_id, dismissed_hardcover_book_id, dismissed_goodreads_book_id).
- */
-function isDismissed(
-  db: ReturnType<typeof createTestDatabase>["db"],
-  chaptarrExternalId: string
-): boolean {
-  const row = db.prepare(`
-    SELECT CASE WHEN chap_dismiss.id IS NULL THEN 0 ELSE 1 END AS dismissed
-    FROM book_sources chap_src
-    LEFT JOIN chaptarr_id_mismatch_dismissals chap_dismiss
-      ON chap_dismiss.chaptarr_external_id = chap_src.external_id
-      AND chap_dismiss.dismissed_hardcover_book_id IS chap_src.source_hardcover_book_id
-      AND chap_dismiss.dismissed_goodreads_book_id IS chap_src.source_goodreads_book_id
-    WHERE chap_src.source_type = 'chaptarr' AND chap_src.external_id = ?
-  `).get(chaptarrExternalId) as { dismissed: number };
-  return row.dismissed === 1;
+// The Books route reads the db/index.ts singleton. Use an isolated data
+// directory so this test exercises the actual dismissal endpoint and list
+// query rather than reimplementing its JOIN locally.
+const dataDir = mkdtempSync(path.join(os.tmpdir(), "shelfbridge-chaptarr-dismissal-test-"));
+process.env["DATA_DIR"] = dataDir;
+
+const booksRouter = (await import("../../src/server/routes/books.js")).default;
+const { getDb } = await import("../../src/server/db/index.js");
+const { seedProfile } = await import("./test-helpers.js");
+
+const db = getDb();
+
+test.after(() => {
+  db.close();
+  rmSync(dataDir, { recursive: true, force: true });
+});
+
+async function withServer(run: (baseUrl: string) => Promise<void>): Promise<void> {
+  const app = express();
+  app.use(express.json());
+  app.use(booksRouter);
+  const server = await new Promise<ReturnType<typeof app.listen>>((resolve) => {
+    const listener = app.listen(0, "127.0.0.1", () => resolve(listener));
+  });
+  try {
+    const address = server.address() as AddressInfo;
+    await run(`http://127.0.0.1:${address.port}`);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 }
 
-test("a Chaptarr ID mismatch dismissal re-arms once the observed mismatch changes", () => {
-  const { db, cleanup } = createTestDatabase();
-  try {
-    const bookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Book')").run().lastInsertRowid);
-    db.prepare(`
-      INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, chaptarr_id_mismatch, source_hardcover_book_id)
-      VALUES (?, 'chaptarr', 0, 'chap-1', 'Book', 1, 'hc-old')
-    `).run(bookId);
+async function fixChaptarrIdCount(baseUrl: string): Promise<number> {
+  const response = await fetch(`${baseUrl}/?action=fix-chaptarr-id`);
+  assert.equal(response.status, 200);
+  const body = await response.json() as { facets: { fixChaptarrIdCount: number } };
+  return body.facets.fixChaptarrIdCount;
+}
 
-    // Dismiss the mismatch as it stands today (hc-old).
-    db.prepare(`
-      INSERT INTO chaptarr_id_mismatch_dismissals (chaptarr_external_id, dismissed_hardcover_book_id, dismissed_goodreads_book_id)
-      VALUES ('chap-1', 'hc-old', NULL)
-    `).run();
-    assert.equal(isDismissed(db, "chap-1"), true, "the dismissal should suppress the mismatch it was raised against");
+test("a Chaptarr ID mismatch dismissal re-arms once the observed mismatch changes", async () => {
+  const profileId = seedProfile(db);
+  const bookId = Number(db.prepare("INSERT INTO books (title, media_type) VALUES ('Book', 'book')").run().lastInsertRowid);
+  db.prepare("INSERT INTO user_book_states (book_id, profile_id, source_type, status) VALUES (?, ?, 'grimmory', 'UNREAD')")
+    .run(bookId, profileId);
+  db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title) VALUES (?, 'grimmory', ?, 'grim-1', 'Book')")
+    .run(bookId, profileId);
+  db.prepare(`
+    INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, chaptarr_id_mismatch, source_hardcover_book_id)
+    VALUES (?, 'chaptarr', 0, 'chap-1', 'Book', 1, 'hc-old')
+  `).run(bookId);
+
+  await withServer(async (baseUrl) => {
+    assert.equal(await fixChaptarrIdCount(baseUrl), 1, "the original mismatch must be actionable");
+
+    const dismiss = await fetch(`${baseUrl}/${bookId}/chaptarr-id-mismatch/dismiss`, { method: "POST" });
+    assert.equal(dismiss.status, 200);
+    assert.equal(await fixChaptarrIdCount(baseUrl), 0, "the dismissal should suppress the mismatch it was raised against");
 
     // A later Chaptarr sync reports a different upstream Hardcover id.
     db.prepare("UPDATE book_sources SET source_hardcover_book_id = 'hc-new' WHERE external_id = 'chap-1'").run();
-    assert.equal(isDismissed(db, "chap-1"), false, "a changed upstream id must re-arm the mismatch instead of staying silently dismissed");
-
-    // Re-dismissing the new mismatch suppresses it again.
-    db.prepare(`
-      INSERT INTO chaptarr_id_mismatch_dismissals (chaptarr_external_id, dismissed_hardcover_book_id, dismissed_goodreads_book_id)
-      VALUES ('chap-1', 'hc-new', NULL)
-      ON CONFLICT(chaptarr_external_id) DO UPDATE SET
-        dismissed_hardcover_book_id = excluded.dismissed_hardcover_book_id,
-        dismissed_goodreads_book_id = excluded.dismissed_goodreads_book_id
-    `).run();
-    assert.equal(isDismissed(db, "chap-1"), true, "re-dismissing against the new mismatch should suppress it again");
-  } finally {
-    cleanup();
-  }
+    assert.equal(await fixChaptarrIdCount(baseUrl), 1, "a changed upstream id must re-arm the mismatch instead of staying silently dismissed");
+  });
 });

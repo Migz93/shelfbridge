@@ -327,7 +327,7 @@ Hardcover fetches and writes during sync.
 **Response**
 
 Returns `{ "ok": true }` on full success. If disabling Hardcover or Goodreads
-partially completes but its source cleanup fails, returns HTTP 207 with
+partially completes but its source cleanup fails, the endpoint returns HTTP 207 with
 `{ "ok": false, "cleanupFailures": ["..."] }`; all other requested updates
 have still been applied.
 

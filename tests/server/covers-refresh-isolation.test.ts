@@ -78,7 +78,7 @@ test("refreshStaleGrimmoryCovers isolates a per-source failure so later sources 
   const originalPrepare = db.prepare.bind(db);
   db.prepare = ((sql: string) => {
     const stmt = originalPrepare(sql);
-    if (sql === "UPDATE book_sources SET cover_cache_path = ? WHERE id = ? AND cover_cache_path IS NOT ?") {
+    if (sql.includes("UPDATE book_sources SET cover_cache_path = ? WHERE id = ? AND cover_cache_path IS NOT ?")) {
       const originalRun = stmt.run.bind(stmt);
       // @ts-expect-error -- intentionally overriding a native binding for this test only
       stmt.run = (webPath: unknown, sourceId: unknown, currentPath: unknown) => {

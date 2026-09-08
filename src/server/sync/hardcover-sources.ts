@@ -28,6 +28,7 @@ export interface HardcoverSourcesContext {
   cacheSourceCover: typeof cacheSourceCover;
   sqliteNow: typeof sqliteNow;
   hasHardcover: boolean;
+  hasGrimmory: boolean;
   grimmoryAvailable: boolean;
   sharedHardcoverOwnership: SharedHardcoverOwnership;
   inferHardcoverMediaType: typeof inferHardcoverMediaType;
@@ -47,7 +48,7 @@ export interface PersistHardcoverSourcesResult {
 
 export async function persistHardcoverSources(context: HardcoverSourcesContext): Promise<PersistHardcoverSourcesResult> {
   const { db, profileId, hcBooks, hcEditions, hcLists, ownedImportEnabled, upsertBookSource, cacheSourceCover, sqliteNow,
-    hasHardcover, grimmoryAvailable, sharedHardcoverOwnership,
+    hasHardcover, hasGrimmory, grimmoryAvailable, sharedHardcoverOwnership,
     inferHardcoverMediaType, firstHardcoverSeries, normalizeEditionFormat, enqueueImageCacheTask,
     pruneHardcoverUserStatesMissingFromFetch, pruneHardcoverSourcesMissingFromFetch, hardcoverSnapshotStatus } = context;
   const deletedSecondarySourceIds: number[] = [];
@@ -227,7 +228,7 @@ if (hasHardcover) {
       // Left alone, it's correctly re-evaluated the next time Grimmory data
       // is actually available.
       const existingShared = getBookSource(db, "hardcover", profileId, hcBook.book.id, "shared");
-      if (grimmoryAvailable) {
+      if (grimmoryAvailable || !hasGrimmory) {
         if (existingShared) {
           deleteBookSource.run(existingShared.id);
           deletedSecondarySourceIds.push(existingShared.id);

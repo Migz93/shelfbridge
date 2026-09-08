@@ -451,11 +451,11 @@ also supporting Grimmory + Goodreads-only profiles. Each run:
    - Finally by relaxed title + first author name, which receives low confidence
      and appears in the "Needs ID Review" filter
 
-Numeric Grimmory cross-reference IDs are canonicalised before comparison, so
-decorated Goodreads or Hardcover IDs still match their plain numeric source IDs.
-   - Title/author fallbacks use Hardcover `book_series` data as a guardrail
-     when Grimmory has `seriesName` / `seriesNumber`; conflicting series names
-     or numbers prevent a fallback match.
+   Numeric Grimmory cross-reference IDs are canonicalised before comparison, so
+   decorated Goodreads or Hardcover IDs still match their plain numeric source IDs.
+   Title/author fallbacks use Hardcover `book_series` data as a guardrail when
+   Grimmory has `seriesName` / `seriesNumber`; conflicting series names or
+   numbers prevent a fallback match.
 5. **Upserts `book_sources` rows** for every source (Phases B+C): one
    `source_type='hardcover'` row per fetched Hardcover book, one
    `source_type='grimmory'` row per Grimmory book. These are book-level writes

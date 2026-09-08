@@ -72,14 +72,13 @@ test("integration requests reject a cross-origin redirect", async () => {
 });
 
 test("cover image requests are rejected for private targets before any fetch happens", async () => {
-  const originalFetch = globalThis.fetch;
   let called = false;
-  globalThis.fetch = async () => { called = true; return new Response(null, { status: 204 }); };
+  const restoreCoverFetch = setCoverFetchForTesting((async () => { called = true; return new Response(null, { status: 204 }); }) as never);
 
   try {
     await assert.rejects(fetchCoverImage("http://127.0.0.1/cover.jpg"), UnsafeIntegrationUrlError);
   } finally {
-    globalThis.fetch = originalFetch;
+    restoreCoverFetch();
   }
   assert.equal(called, false);
 });
@@ -133,13 +132,12 @@ test("isPrivateAddress classifies NAT64 addresses (64:ff9b::/96)", () => {
 
 test("cover image requests reject a hostname that resolves to a private address via DNS, even though the hostname string itself isn't a private literal", async () => {
   const originalLookup = dns.lookup;
-  const originalFetch = globalThis.fetch;
   let fetchCalled = false;
   (dns as unknown as { lookup: typeof dns.lookup }).lookup = (async (hostname: string) => {
     assert.equal(hostname, "attacker-controlled.example.test");
     return [{ address: "127.0.0.1", family: 4 }];
   }) as typeof dns.lookup;
-  globalThis.fetch = async () => { fetchCalled = true; return new Response(null, { status: 204 }); };
+  const restoreCoverFetch = setCoverFetchForTesting((async () => { fetchCalled = true; return new Response(null, { status: 204 }); }) as never);
 
   try {
     await assert.rejects(
@@ -148,7 +146,7 @@ test("cover image requests reject a hostname that resolves to a private address 
     );
   } finally {
     (dns as unknown as { lookup: typeof dns.lookup }).lookup = originalLookup;
-    globalThis.fetch = originalFetch;
+    restoreCoverFetch();
   }
   assert.equal(fetchCalled, false, "the fetch must not happen once DNS resolves to a private address");
 });

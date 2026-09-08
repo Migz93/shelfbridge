@@ -434,23 +434,6 @@ export function UserDetailPage() {
   const [hardcoverSyncListName, setHardcoverSyncListName] = useState<string | null>(null);
   const [hardcoverTargetShelfName, setHardcoverTargetShelfName] = useState<string | null>(null);
   const [hardcoverOwnedImportEnabled, setHardcoverOwnedImportEnabled] = useState(false);
-  // Tracks the user's own latest toggle intent, independent of React state
-  // updates, so testConnection() can restore it after a test-triggered
-  // loadProfile() reload without losing a change made while that request
-  // was still in flight (testConnection's own closure only sees whatever
-  // hardcoverOwnedImportEnabled was at the moment Test was clicked). Updated
-  // synchronously by the toggle's own handler below
-  // (setHardcoverOwnedImportEnabledFromToggle) — not by a useEffect, since
-  // an effect only runs after the next render commits, which is still late
-  // enough for the test request to resolve first and read a stale .current.
-  // An ordinary loadProfile() call (initial mount, after Save) instead
-  // brings the ref back in sync with the real persisted value, same as the
-  // state — see loadProfile's own preserveOwnedImportToggle parameter.
-  const hardcoverOwnedImportEnabledRef = useRef(hardcoverOwnedImportEnabled);
-  const setHardcoverOwnedImportEnabledFromToggle = useCallback((v: boolean) => {
-    hardcoverOwnedImportEnabledRef.current = v;
-    setHardcoverOwnedImportEnabled(v);
-  }, []);
   const [hardcoverListMappings, setHardcoverListMappings] = useState<Record<string, string>>({});
   const [hardcoverListNames, setHardcoverListNames] = useState<Record<string, string>>({});
   const [hardcoverMappingsLoaded, setHardcoverMappingsLoaded] = useState(false);
@@ -464,15 +447,7 @@ export function UserDetailPage() {
   const [absEnabled, setAbsEnabled] = useState(false);
   const [syncSettings, setSyncSettings] = useState<Partial<SyncSettings>>({});
 
-  // preserveOwnedImportToggle: true only for the reload testConnection()
-  // triggers after successfully testing an already-persisted connection —
-  // that reload must keep whatever the user's own last toggle interaction
-  // set (tracked in the ref, updated synchronously by the toggle's own
-  // handler) rather than overwrite it with the just-fetched persisted
-  // value. Every other call site (initial mount, after Save) is an
-  // ordinary load: the ref is brought back in sync with the real persisted
-  // value there, same as the state.
-  async function loadProfile(preserveOwnedImportToggle = false) {
+  async function loadProfile() {
     if (!Number.isFinite(profileId)) {
       setError("User not found");
       setLoading(false);
@@ -493,12 +468,7 @@ export function UserDetailPage() {
       setHardcoverSyncListId(p.hardcover?.syncListId ?? null);
       setHardcoverSyncListName(p.hardcover?.syncListName ?? null);
       setHardcoverTargetShelfName(p.hardcover?.targetShelfName ?? null);
-      if (preserveOwnedImportToggle) {
-        setHardcoverOwnedImportEnabled(hardcoverOwnedImportEnabledRef.current);
-      } else {
-        hardcoverOwnedImportEnabledRef.current = p.hardcover?.ownedImportEnabled ?? false;
-        setHardcoverOwnedImportEnabled(p.hardcover?.ownedImportEnabled ?? false);
-      }
+      setHardcoverOwnedImportEnabled(p.hardcover?.ownedImportEnabled ?? false);
       setGoodreadsId(p.goodreads?.goodreadsUserId ?? "");
       setGoodreadsEnabled(p.goodreads?.enabled ?? false);
       setGoodreadsSyncShelfName(p.goodreads?.syncShelfName ?? null);
@@ -593,7 +563,12 @@ export function UserDetailPage() {
       }
       setSuccess(true);
       await loadProfile();
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    } catch (e) {
+      // A 207 PATCH has applied the non-cleanup fields; refresh those values
+      // before surfacing the cleanup error so the form cannot remain stale.
+      await loadProfile().catch(() => null);
+      setError(e instanceof Error ? e.message : String(e));
+    }
     finally { setSaving(false); }
   }
 
@@ -729,7 +704,7 @@ export function UserDetailPage() {
               targetShelfName={hardcoverTargetShelfName}
               setTargetShelfName={setHardcoverTargetShelfName}
               ownedImportEnabled={hardcoverOwnedImportEnabled}
-              setOwnedImportEnabled={setHardcoverOwnedImportEnabledFromToggle}
+              setOwnedImportEnabled={setHardcoverOwnedImportEnabled}
               listMappings={hardcoverListMappings}
               setListMappings={setHardcoverListMappings}
               setListNames={setHardcoverListNames}
