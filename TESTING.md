@@ -30,22 +30,9 @@ between tests.
 `chaptarr-orphan-cleanup.test.ts`, `covers-refresh-isolation.test.ts`,
 `image-cache-refresh-propagation.test.ts`, `profiles-hardcover-disable.test.ts`,
 and `chaptarr-mismatch-dismissal.test.ts`
-are the exceptions: each operates on the
-`db/index.ts` singleton rather than an injected database, so each points
-`DATA_DIR` at its own private temp dir (via a dynamic `import()` of the
-singleton after setting the env var — a static `import` would evaluate the
-singleton too early, since ESM hoists imports ahead of the rest of the
-importing module) instead of sharing `./.test-data` with each other. Node's test
-runner runs each file in its own process, so two files racing to initialize the
-same fresh `./.test-data/shelfbridge.db` — both seeing no pending migrations, both
-running migration 1's non-`IF NOT EXISTS` `CREATE TABLE` statements — could
-otherwise intermittently fail with `table already exists`; isolating each of
-these files removes the shared state the race depends on. `sync-engine.test.ts`
-additionally seeds its own profile per test and scopes assertions to that
-profile's id, since it shares one database across many tests within the file.
-Each of these nine files waits for the logger to flush (`logger.end()` +
-`"finish"` event) before deleting its temp dir in `test.after`, since the
-logger also writes into `DATA_DIR`.
+operate on the `db/index.ts` singleton rather than an injected database. Each
+sets a private `DATA_DIR` before dynamically importing that singleton. Tests
+that import the logger flush it before deleting their temporary directory.
 
 ## Playwright End-To-End Tests
 

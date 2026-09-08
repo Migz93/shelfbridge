@@ -62,7 +62,9 @@ function isPrivateIPv4(address: string): boolean {
   if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT (RFC 6598)
   if (a === 169 && b === 254) return true; // link-local
   if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && (b === 0 || b === 168)) return true; // IETF protocol assignments (also covers TEST-NET-1, 192.0.2.0/24) + private
+  if (a === 192 && b === 168) return true; // private (RFC 1918)
+  if (a === 192 && b === 0 && (c === 0 || c === 2)) return true; // IETF protocol assignments + TEST-NET-1
+  if (a === 192 && b === 88 && c === 99) return true; // deprecated 6to4 relay anycast (RFC 7526)
   if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking (RFC 2544)
   if (a === 198 && b === 51 && c === 100) return true; // TEST-NET-2 (RFC 5737, not globally reachable)
   if (a === 203 && b === 0 && c === 113) return true; // TEST-NET-3 (RFC 5737, not globally reachable)

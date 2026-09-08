@@ -19,7 +19,7 @@ import { useLiveRefresh } from "../lib/useLiveRefresh";
 import { formatRelativeTime, formatDateShort, hardcoverStatusLabel, statusLabel } from "../lib/utils";
 import { RunSyncButton } from "../components/RunSyncButton";
 import { SearchBar } from "../components/SearchBar";
-import type { AppSettings, BookDetail, BookDuplicateCandidate, BookFacets, BookRelationship, BookSummary, BooksPageResponse } from "../../shared/types";
+import type { AppSettings, BookDetail, BookDuplicateCandidate, BookFacets, BookRelationship, BookSummary, BooksPageResponse, DuplicateMergeResponse } from "../../shared/types";
 
 const PAGE_SIZE = 48;
 const BOOKS_REFRESH_MS = 30_000;
@@ -706,12 +706,7 @@ export function BookDetailPage() {
     setMergingDuplicateId(duplicateId);
     setDuplicateError(null);
     try {
-      const result = await apiPost<{
-        ok: true;
-        bookId: number | null;
-        failures?: Array<{ profileId: number; error: string }>;
-        finalizationError?: string;
-      }>(`/api/books/${bookId}/duplicates/${duplicateId}/merge`, {});
+      const result = await apiPost<DuplicateMergeResponse>(`/api/books/${bookId}/duplicates/${duplicateId}/merge`, {});
       const failureSummary = result.failures?.length
         ? result.failures.map(({ profileId, error }) => `Profile ${profileId}: ${error}`).join("; ")
         : undefined;

@@ -159,9 +159,10 @@ export type ValidationErrorResponse = {
 };
 
 export function validationErrorResponse(error: z.ZodError): ValidationErrorResponse {
+  const flattened = z.flattenError(error);
   return {
     error: "Invalid request",
-    fieldErrors: z.flattenError(error).fieldErrors,
-    formErrors: z.flattenError(error).formErrors
+    fieldErrors: flattened.fieldErrors,
+    formErrors: flattened.formErrors
   };
 }
