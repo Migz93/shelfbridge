@@ -324,12 +324,13 @@ export function persistResolvedHardcoverAudioEdition(
   editionId: number | null
 ): number[] {
   if (!editionId || editionId <= 0) return [];
-  // Scoped to this profile's own Hardcover instance — each profile can track a
-  // different edition of the same shared book.
+  // Scoped to this profile's own primary Hardcover instance — owned/shared
+  // secondary rows represent other editions and must not be rewritten from an
+  // Audiobookshelf match for the canonical work.
   const rows = db.prepare(`
     UPDATE book_sources
     SET source_edition_id = ?, source_media_type = 'audiobook', last_modified_at = datetime('now')
-    WHERE source_type = 'hardcover' AND source_instance_id = ? AND book_id = ?
+    WHERE source_type = 'hardcover' AND source_instance_id = ? AND book_id = ? AND source_bucket = 'primary'
       AND (source_edition_id IS NULL OR source_edition_id != ? OR source_media_type IS NULL OR source_media_type != 'audiobook')
     RETURNING id
   `).all(String(editionId), profileId, bookId, String(editionId)) as { id: number }[];
