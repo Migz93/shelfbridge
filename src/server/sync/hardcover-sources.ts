@@ -228,7 +228,8 @@ if (hasHardcover) {
       // Left alone, it's correctly re-evaluated the next time Grimmory data
       // is actually available.
       const existingShared = getBookSource(db, "hardcover", profileId, hcBook.book.id, "shared");
-      if (grimmoryAvailable || !hasGrimmory) {
+      const canReevaluateGrimmoryDependentRows = grimmoryAvailable || !hasGrimmory;
+      if (canReevaluateGrimmoryDependentRows) {
         if (existingShared) {
           deleteBookSource.run(existingShared.id);
           deletedSecondarySourceIds.push(existingShared.id);
@@ -291,7 +292,7 @@ if (hasHardcover) {
             await cacheSourceCover(db, ownedSourceId, "hardcover", ownedCoverUrl);
           });
         }
-      } else if (grimmoryAvailable || !hasGrimmory) {
+      } else {
         // Not (or no longer) justified — the setting was turned off, the Owned
         // entry/edition disappeared, or its format now matches the primary
         // edition. Remove any previously-written 'owned' row rather than

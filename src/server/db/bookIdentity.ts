@@ -88,6 +88,7 @@ function clean(value: string | number | null | undefined): string | null {
 
 function normalizeTitle(value: string | null | undefined): string | null {
   const text = clean(value)
+    ?.normalize("NFC")
     ?.toLowerCase()
     .replace(/\s*\(.*?\)\s*/g, " ")
     // Unicode-aware: an ASCII-only character class would strip a non-Latin
@@ -608,7 +609,7 @@ export function expandScopeToRows(
     // iteration cap below) means the closure might still be incomplete, so
     // it must return null and let the caller fall back to a full reconcile
     // rather than silently return a partial scope.
-    const bridgeEditionIds = Array.from(new Set(Array.from(rowsById.values())
+    const bridgeEditionIds = Array.from(new Set(newlyKeyedRows
       .filter((row) => row.source_type === "chaptarr")
       .map((row) => normalizeExternalId(row.source_goodreads_edition_id))
       .filter((id): id is string => id !== null && !processedBridgeEditionIds.has(id))));

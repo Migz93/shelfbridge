@@ -36,6 +36,7 @@ const insertSourceSql = `
  */
 export function seedLibrary(db: Database.Database, size: LibrarySize): { workCount: number; sourceCount: number } {
   const workCount = WORK_COUNTS[size];
+  const sourceCountBefore = (db.prepare("SELECT COUNT(*) AS count FROM book_sources").get() as { count: number }).count;
   const insert = db.prepare(insertSourceSql);
   const insertChaptarr = db.prepare(`
     INSERT INTO book_sources (source_type, source_instance_id, external_id, title, author, source_media_type, chaptarr_primary_file_path)
@@ -61,7 +62,6 @@ export function seedLibrary(db: Database.Database, size: LibrarySize): { workCou
     }
   });
   transaction();
-  // Each work inserted by this fixture has one row per source: Hardcover,
-  // Grimmory, and Chaptarr. Do not count the table: callers can share a DB.
-  return { workCount, sourceCount: workCount * 3 };
+  const sourceCountAfter = (db.prepare("SELECT COUNT(*) AS count FROM book_sources").get() as { count: number }).count;
+  return { workCount, sourceCount: sourceCountAfter - sourceCountBefore };
 }
