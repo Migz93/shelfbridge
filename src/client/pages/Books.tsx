@@ -715,7 +715,9 @@ export function BookDetailPage() {
       const failureSummary = result.failures?.length
         ? result.failures.map(({ profileId, error }) => `Profile ${profileId}: ${error}`).join("; ")
         : undefined;
-      const partialFailure = result.finalizationError || failureSummary;
+      const partialFailure = [failureSummary, result.finalizationError]
+        .filter((message): message is string => Boolean(message))
+        .join("; ") || undefined;
       if (result.bookId === null) {
         setDuplicateError(partialFailure ?? "The duplicate merge could not be finalized. Refresh the page before trying again.");
         return;

@@ -27,8 +27,8 @@ function ownershipCheckBook(book: OwnershipFixture): GrimmoryBook {
 }
 
 test("an active book sibling always outranks an active audiobook sibling", () => {
-  const book = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READING" };
-  const audiobook = { id: 2, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "READING" };
+  const book: OwnershipFixture = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READING" };
+  const audiobook: OwnershipFixture = { id: 2, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "READING" };
   const ownership = ownershipFor([book, audiobook], new Set());
 
   const record = sharedHardcoverRecordFor(ownership, "42");
@@ -42,8 +42,8 @@ test("a runtime-validated audiobook match with no listening activity does not ow
   // confirms the file matches ("validated"), but nothing — not Grimmory, not
   // ABS — reports the user has ever opened it. A finished sibling must be
   // free to sync.
-  const finishedEbook = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READ" };
-  const untouchedAudiobook = { id: 2, hardcoverBookId: "42", mediaType: "audiobook", readStatus: null };
+  const finishedEbook: OwnershipFixture = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READ" };
+  const untouchedAudiobook: OwnershipFixture = { id: 2, hardcoverBookId: "42", mediaType: "audiobook", readStatus: null };
   // absOwnedHardcoverBookIds intentionally does NOT include "42" here — the
   // caller (source-snapshots.ts) is responsible for only including a
   // Hardcover ID once real ABS listening activity is on record, which is
@@ -54,8 +54,8 @@ test("a runtime-validated audiobook match with no listening activity does not ow
 });
 
 test("real ABS listening activity blocks a finished ebook sibling from overwriting it", () => {
-  const finishedEbook = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READ" };
-  const untouchedAudiobook = { id: 2, hardcoverBookId: "42", mediaType: "audiobook", readStatus: null };
+  const finishedEbook: OwnershipFixture = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READ" };
+  const untouchedAudiobook: OwnershipFixture = { id: 2, hardcoverBookId: "42", mediaType: "audiobook", readStatus: null };
   const ownership = ownershipFor([finishedEbook, untouchedAudiobook], new Set(["42"]));
 
   const record = sharedHardcoverRecordFor(ownership, "42");
@@ -72,8 +72,8 @@ test("two genuinely finished siblings with no active owner: the unmatched one de
   // matchedGrimmoryIds, outside this module's scope); the other must not
   // independently push a second, competing write into the same Hardcover
   // record just because neither is "actively reading" right now.
-  const finishedBook = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READ" };
-  const finishedAudiobook = { id: 2, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "READ" };
+  const finishedBook: OwnershipFixture = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READ" };
+  const finishedAudiobook: OwnershipFixture = { id: 2, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "READ" };
   const ownership = ownershipFor([finishedBook, finishedAudiobook], new Set());
 
   const record = sharedHardcoverRecordFor(ownership, "42");
@@ -90,9 +90,9 @@ test("a duplicate untouched sibling of the same format must not mask a different
   // no-active-owner activity check relied on that single representative, it
   // would wrongly conclude "the ebook side has no activity" and fail to
   // suppress the competing finished-audiobook write.
-  const finishedEbook = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READ" };
-  const untouchedDuplicateEbook = { id: 2, hardcoverBookId: "42", mediaType: "ebook", readStatus: null };
-  const finishedAudiobook = { id: 3, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "READ" };
+  const finishedEbook: OwnershipFixture = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READ" };
+  const untouchedDuplicateEbook: OwnershipFixture = { id: 2, hardcoverBookId: "42", mediaType: "ebook", readStatus: null };
+  const finishedAudiobook: OwnershipFixture = { id: 3, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "READ" };
   const ownership = ownershipFor(
     [finishedEbook, untouchedDuplicateEbook, finishedAudiobook],
     new Set()
@@ -106,21 +106,21 @@ test("a duplicate untouched sibling of the same format must not mask a different
 });
 
 test("bookOwnsSharedHardcoverRecord requires a distinct audiobook sibling to exist", () => {
-  const soloBook = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READING" };
-  const audiobook = { id: 2, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "UNREAD" };
+  const soloBook: OwnershipFixture = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READING" };
+  const audiobook: OwnershipFixture = { id: 2, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "UNREAD" };
 
   assert.equal(bookOwnsSharedHardcoverRecord(ownershipFor([soloBook], new Set()), "42"), false);
   assert.equal(bookOwnsSharedHardcoverRecord(ownershipFor([soloBook, audiobook], new Set()), "42"), true);
 });
 
 test("hasActiveOwningBook ignores whether an audiobook sibling exists", () => {
-  const book = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READING" };
+  const book: OwnershipFixture = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READING" };
   assert.equal(hasActiveOwningBook(ownershipFor([book], new Set()), "42"), true);
 });
 
 test("absOwnsSharedHardcoverRecord is true whenever ABS owns and no book sibling is active, regardless of audiobook activity", () => {
-  const inactiveBook = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READ" };
-  const activeAudiobook = { id: 2, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "READING" };
+  const inactiveBook: OwnershipFixture = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READ" };
+  const activeAudiobook: OwnershipFixture = { id: 2, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "READING" };
   const ownership = ownershipFor([inactiveBook, activeAudiobook], new Set(["42"]));
 
   assert.equal(absOwnsSharedHardcoverRecord(ownership, "42"), true);
@@ -133,8 +133,8 @@ test("no record exists for a Hardcover ID nobody references", () => {
 });
 
 test("two active siblings of the same format tie-break on recency, independent of input order", () => {
-  const older = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READING", lastReadTime: "2026-01-01T00:00:00Z" };
-  const newer = { id: 2, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READING", lastReadTime: "2026-06-01T00:00:00Z" };
+  const older: OwnershipFixture = { id: 1, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READING", lastReadTime: "2026-01-01T00:00:00Z" };
+  const newer: OwnershipFixture = { id: 2, hardcoverBookId: "42", mediaType: "ebook", readStatus: "READING", lastReadTime: "2026-06-01T00:00:00Z" };
 
   const forward = ownershipFor([older, newer], new Set());
   const reversed = ownershipFor([newer, older], new Set());
@@ -144,8 +144,8 @@ test("two active siblings of the same format tie-break on recency, independent o
 });
 
 test("a tie-break with no usable lastReadTime falls back to the higher Grimmory book id, independent of input order", () => {
-  const a = { id: 5, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "READING", lastReadTime: null };
-  const b = { id: 9, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "READING", lastReadTime: "not-a-date" };
+  const a: OwnershipFixture = { id: 5, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "READING", lastReadTime: null };
+  const b: OwnershipFixture = { id: 9, hardcoverBookId: "42", mediaType: "audiobook", readStatus: "READING", lastReadTime: "not-a-date" };
 
   const forward = ownershipFor([a, b], new Set());
   const reversed = ownershipFor([b, a], new Set());

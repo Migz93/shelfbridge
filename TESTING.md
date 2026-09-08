@@ -43,7 +43,7 @@ otherwise intermittently fail with `table already exists`; isolating each of
 these files removes the shared state the race depends on. `sync-engine.test.ts`
 additionally seeds its own profile per test and scopes assertions to that
 profile's id, since it shares one database across many tests within the file.
-Each of these eight files waits for the logger to flush (`logger.end()` +
+Each of these nine files waits for the logger to flush (`logger.end()` +
 `"finish"` event) before deleting its temp dir in `test.after`, since the
 logger also writes into `DATA_DIR`.
 
