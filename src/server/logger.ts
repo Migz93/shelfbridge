@@ -79,6 +79,7 @@ class RingTransport extends TransportStream {
 }
 
 function clampLimit(limit: number): number {
+  if (limit === Infinity) return Number.MAX_SAFE_INTEGER;
   return Number.isFinite(limit) ? Math.max(0, Math.trunc(limit)) : 0;
 }
 

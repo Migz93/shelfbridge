@@ -13,7 +13,7 @@ import {
   X,
   XCircle
 } from "lucide-react";
-import { apiGet, apiPatch, apiPost } from "../lib/api";
+import { ApiError, apiGet, apiPatch, apiPost } from "../lib/api";
 import { useLiveRefresh } from "../lib/useLiveRefresh";
 import { useModalA11y } from "../lib/useModalA11y";
 import { formatRelativeTime } from "../lib/utils";
@@ -566,7 +566,10 @@ export function UserDetailPage() {
     } catch (e) {
       // A 207 PATCH has applied the non-cleanup fields; refresh those values
       // before surfacing the cleanup error so the form cannot remain stale.
-      await loadProfile().catch(() => null);
+      // Other failures leave the user's unsaved edits intact for correction.
+      if (e instanceof ApiError && e.method === "PATCH" && e.status === 207) {
+        await loadProfile().catch(() => null);
+      }
       setError(e instanceof Error ? e.message : String(e));
     }
     finally { setSaving(false); }

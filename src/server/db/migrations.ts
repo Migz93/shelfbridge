@@ -498,7 +498,10 @@ const migration6: Migration = {
       "audiobookshelf_runtime_validated", "audiobookshelf_runtime_delta",
       "last_sync_at", "last_sync_decision", "last_modified_at", "created_at"
     ];
-    const droppedColumns = [...existingColumns].filter((column) => !copyColumns.includes(column));
+    // source_bucket is intentionally recreated with its default below rather
+    // than copied, so it is not a genuinely unrecognised dropped column.
+    const preservedByRebuild = new Set(["source_bucket"]);
+    const droppedColumns = [...existingColumns].filter((column) => !copyColumns.includes(column) && !preservedByRebuild.has(column));
     if (droppedColumns.length > 0) {
       // Not necessarily a bug — this rebuild's target shape is the flattened
       // v14 baseline, so an old column genuinely retired since then is

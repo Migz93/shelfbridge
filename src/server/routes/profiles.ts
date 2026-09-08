@@ -373,11 +373,11 @@ router.patch("/:id", async (req, res) => {
       // queue — see that function's docs for why.
       try {
         await cleanupHardcoverSourceData(id);
+        logger.info("Removed Hardcover connection", { profileId: id });
       } catch (err) {
         logger.warn("Failed to disable Hardcover connection", { profileId: id, error: err });
         cleanupFailures.push(`Hardcover cleanup: ${err instanceof Error ? err.message : String(err)}`);
       }
-      logger.info("Removed Hardcover connection", { profileId: id });
     } else {
     const existing = db.prepare("SELECT id FROM hardcover_connections WHERE profile_id = ?").get(id);
     if (existing) {

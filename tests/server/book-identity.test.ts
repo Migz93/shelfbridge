@@ -579,6 +579,33 @@ test("scoped reconcileBookIdentities bridges two previously-separate existing bo
   }
 });
 
+test("scoped reconciliation includes a Goodreads edition reachable only through the corroborated Chaptarr bridge", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const goodreadsBookId = Number(db.prepare("INSERT INTO books (title, media_type) VALUES ('Goodreads Edition', 'book')").run().lastInsertRowid);
+    db.prepare(`
+      INSERT INTO book_sources (book_id, source_type, external_id, title, source_media_type)
+      VALUES (?, 'goodreads', 'edition-1', 'Goodreads Edition', 'book')
+    `).run(goodreadsBookId);
+
+    const localBookId = Number(db.prepare("INSERT INTO books (title, media_type) VALUES ('Local Copy', 'book')").run().lastInsertRowid);
+    const chaptarrSourceId = Number(db.prepare(`
+      INSERT INTO book_sources (book_id, source_type, external_id, title, source_media_type, source_goodreads_edition_id, chaptarr_primary_file_path)
+      VALUES (?, 'chaptarr', 'chap-1', 'Local Copy', 'book', 'edition-1', '/library/local-copy.epub')
+    `).run(localBookId).lastInsertRowid);
+    db.prepare(`
+      INSERT INTO book_sources (book_id, source_type, external_id, title, source_media_type, grimmory_primary_file_path)
+      VALUES (?, 'grimmory', 'gr-1', 'Local Copy', 'book', '/library/local-copy.epub')
+    `).run(localBookId);
+
+    reconcileBookIdentities(db, { sourceIds: [chaptarrSourceId] });
+
+    assert.equal(booksByTitle(db).length, 1, "the scoped bridge must discover and merge the Goodreads edition");
+  } finally {
+    cleanup();
+  }
+});
+
 test("scoped reconcileBookIdentities does not touch or merge an unrelated existing book outside the scope", () => {
   const { db, cleanup } = createTestDatabase();
   try {

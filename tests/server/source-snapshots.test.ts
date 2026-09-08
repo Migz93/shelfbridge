@@ -73,7 +73,7 @@ test("the per-book Grimmory progress fetch refreshes a stale readStatus from the
   try {
     const profileId = seedProfile(db);
     const adapters: Partial<SyncAdapters> = {
-      testGrimmoryLogin: async () => ({ ok: true, accessToken: "token" }),
+      testGrimmoryLogin: async () => ({ ok: true, message: "ok", accessToken: "token" }),
       fetchGrimmoryBooks: async () => [{
         id: 1, title: "Stale Status Book", hardcoverBookId: "42", mediaType: "ebook", readStatus: "UNREAD"
       }],

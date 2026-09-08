@@ -61,6 +61,7 @@ export function seedLibrary(db: Database.Database, size: LibrarySize): { workCou
     }
   });
   transaction();
-  const sourceCount = (db.prepare("SELECT COUNT(*) AS count FROM book_sources").get() as { count: number }).count;
-  return { workCount, sourceCount };
+  // Each work inserted by this fixture has one row per source: Hardcover,
+  // Grimmory, and Chaptarr. Do not count the table: callers can share a DB.
+  return { workCount, sourceCount: workCount * 3 };
 }

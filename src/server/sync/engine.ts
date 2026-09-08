@@ -156,10 +156,10 @@ export async function runSyncImpl(
     // so wrapping it here needs no changes to either. Must forward every
     // parameter, including bucket — dropping it would silently collapse
     // hardcover-sources.ts's 'owned' bucket writes onto the 'primary' row.
-    const phaseDTouchedSourceIds: number[] = [];
+    const phaseDTouchedSourceIds = new Set<number>();
     const trackingUpsertBookSource: typeof upsertBookSource = (db, sourceType, instanceId, externalId, fields, bucket) => {
       const id = upsertBookSource(db, sourceType, instanceId, externalId, fields, bucket);
-      phaseDTouchedSourceIds.push(id);
+      phaseDTouchedSourceIds.add(id);
       return id;
     };
 
@@ -221,7 +221,7 @@ export async function runSyncImpl(
     // Now that both Grimmory and HC sources are written, reconcile so every
     // book_sources row gets a book_id. This is what links HC sources to
     // Grimmory sources for the HC sync loop below.
-    reconcileBookIdentities(db, { sourceIds: phaseDTouchedSourceIds });
+    reconcileBookIdentities(db, { sourceIds: Array.from(phaseDTouchedSourceIds) });
     if (hasHardcover) pruneOrphanedHardcoverUserStates(db, profileId);
 
     // ── Phase E: Build Grimmory in-memory match index (for HC loop) ─────────

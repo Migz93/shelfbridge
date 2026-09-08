@@ -68,7 +68,9 @@ test("a cover finishing to cache after Phase D's own reconcile still propagates 
 });
 
 test("a replaced Grimmory cover retains its old file until path propagation succeeds", () => {
-  const sourceId = 9876;
+  // image_cache keys normally use positive SQLite source ids; a negative id
+  // cannot collide with rows auto-inserted by the other shared-DB tests.
+  const sourceId = -1;
   const oldFilePath = path.join(cacheDir, "old-grimmory-cover.jpg");
   writeFileSync(oldFilePath, Buffer.from([0xff, 0xd8, 0xff, 0x00]));
   db.prepare(`

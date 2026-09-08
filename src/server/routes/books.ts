@@ -21,7 +21,7 @@ import { runExclusiveOfSyncs } from "../sync/sync-queue.js";
 import { normalizeExternalId, identifiersEqual } from "../identifiers.js";
 import { parsePositiveId, validationErrorResponse, writeGrimmoryIdSchema } from "../validation.js";
 import { hasIdentityReviewConflict } from "../sync/identity-review.js";
-import { normalizeReviewText, probableDuplicateTitleKey, normalizeDuplicateSeriesNumber } from "../db/duplicateKeys.js";
+import { normalizeReviewText, probableDuplicateAuthorKey, probableDuplicateTitleKey, normalizeDuplicateSeriesNumber } from "../db/duplicateKeys.js";
 
 const router = Router();
 
@@ -255,7 +255,7 @@ function probableDuplicateBookIds(rows: DuplicateMatchRow[], dismissedPairs = di
   for (const group of groupByBook(rows)) {
     const row = group[0]!;
     const title = probableDuplicateTitleKey(row.book_title);
-    const author = normalizeReviewText(row.book_author);
+    const author = probableDuplicateAuthorKey(row.book_author);
     if (!title || !author) continue;
     const key = `${title}||${author}||${row.book_media_type}`;
     const candidates = byKey.get(key) ?? [];
@@ -276,7 +276,7 @@ function probableDuplicateCandidateIds(rows: DuplicateMatchRow[], bookId: number
   if (!current) return new Set();
 
   const title = probableDuplicateTitleKey(current.book_title);
-  const author = normalizeReviewText(current.book_author);
+  const author = probableDuplicateAuthorKey(current.book_author);
   if (!title || !author) return new Set();
 
   const candidates = new Set<number>();
@@ -285,7 +285,7 @@ function probableDuplicateCandidateIds(rows: DuplicateMatchRow[], bookId: number
     if (row.book_id === bookId) continue;
     if (row.book_media_type !== current.book_media_type) continue;
     if (probableDuplicateTitleKey(row.book_title) !== title) continue;
-    if (normalizeReviewText(row.book_author) !== author) continue;
+    if (probableDuplicateAuthorKey(row.book_author) !== author) continue;
     if (hasDistinctSeriesPosition(current, row)) continue;
     if (!dismissedPairs.has(duplicatePairKey(bookId, row.book_id))) candidates.add(row.book_id);
   }
@@ -1185,7 +1185,8 @@ router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
       const response: DuplicateMergeResponse = { ok: true, bookId: reconciled.book_id, succeededProfileIds, failures };
       res.status(207).json(response);
     } else {
-      res.json({ ok: true, bookId: reconciled.book_id });
+      const response: DuplicateMergeResponse = { ok: true, bookId: reconciled.book_id, succeededProfileIds };
+      res.json(response);
     }
   } catch (err) { logger.warn("Failed duplicate merge", { bookId, duplicateId, error: err }); res.status(502).json({ error: err instanceof Error ? err.message : String(err) }); }
 });

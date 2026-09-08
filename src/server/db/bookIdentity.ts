@@ -519,14 +519,11 @@ function expansionKeyValues(row: BookSourceRow): string[] {
 // on one iteration have their own rows re-scanned for further candidates on
 // the next, until a fixed point is reached.
 //
-// Known gap: the "corroborated Chaptarr->Goodreads bridge" merge pass further
-// below keys off a Chaptarr row's own (possibly stale) source_goodreads_edition_id
-// field, which is never persisted to book_identity_keys — Chaptarr's IDs aren't
-// trusted as identity keys. A brand-new row that could *only* reach its match
-// through that specific bridge, with no shared ISBN/high-key/file-path/title-
-// author to ride along on, will not be discovered here. That bridge is already
-// a narrow fallback for stale/conflicting data, and the daily full-reconcile
-// maintenance job (scheduler.ts) closes any such gap within 24 hours.
+// The corroborated Chaptarr->Goodreads bridge below uses a Chaptarr row's
+// source_goodreads_edition_id, which deliberately is not a normal identity
+// key. Scoped expansion nevertheless follows it to include the Goodreads
+// candidate; the bridge itself still performs the stricter same-format/path
+// corroboration before any merge is allowed.
 //
 // Returns null if the closure grows past a safety cap — the caller should fall
 // back to a full reconcile in that case rather than silently truncate it.
@@ -543,6 +540,8 @@ export function expandScopeToRows(
   const rowsById = new Map<number, BookSourceRow>();
   const visitedBookIds = new Set<number>();
   const processedKeyValues = new Set<string>();
+  const keyedRowIds = new Set<number>();
+  const processedBridgeEditionIds = new Set<string>();
 
   const fetchByIds = (column: "id" | "book_id", ids: number[]): BookSourceRow[] => {
     const unique = Array.from(new Set(ids));
@@ -560,6 +559,20 @@ export function expandScopeToRows(
     for (const batch of chunk(values, 500)) {
       const placeholders = batch.map(() => "?").join(",");
       for (const row of db.prepare(`SELECT DISTINCT book_id FROM book_identity_keys WHERE key_value IN (${placeholders})`).all(...batch) as { book_id: number }[]) {
+        results.add(row.book_id);
+      }
+    }
+    return Array.from(results);
+  };
+
+  const candidateBookIdsForBridgeEditions = (editionIds: string[]): number[] => {
+    const results = new Set<number>();
+    for (const batch of chunk(editionIds, 500)) {
+      const placeholders = batch.map(() => "?").join(",");
+      for (const row of db.prepare(`
+        SELECT DISTINCT book_id FROM book_sources
+        WHERE source_type = 'goodreads' AND external_id IN (${placeholders}) AND book_id IS NOT NULL
+      `).all(...batch) as { book_id: number }[]) {
         results.add(row.book_id);
       }
     }
@@ -586,17 +599,27 @@ export function expandScopeToRows(
     for (const id of newBookIds) visitedBookIds.add(id);
     if (addRows(fetchByIds("book_id", newBookIds))) return null;
 
-    const keyValues = Array.from(new Set(Array.from(rowsById.values()).flatMap(expansionKeyValues)))
+    const newlyKeyedRows = Array.from(rowsById.values()).filter((row) => !keyedRowIds.has(row.id));
+    for (const row of newlyKeyedRows) keyedRowIds.add(row.id);
+    const keyValues = Array.from(new Set(newlyKeyedRows.flatMap(expansionKeyValues)))
       .filter((value) => !processedKeyValues.has(value));
     // Fixed point: nothing new to expand from. This is the only path that
     // returns a result — every other exit (including exhausting the
     // iteration cap below) means the closure might still be incomplete, so
     // it must return null and let the caller fall back to a full reconcile
     // rather than silently return a partial scope.
-    if (keyValues.length === 0) return Array.from(rowsById.values()).sort((a, b) => a.id - b.id);
+    const bridgeEditionIds = Array.from(new Set(Array.from(rowsById.values())
+      .filter((row) => row.source_type === "chaptarr")
+      .map((row) => normalizeExternalId(row.source_goodreads_edition_id))
+      .filter((id): id is string => id !== null && !processedBridgeEditionIds.has(id))));
+    for (const id of bridgeEditionIds) processedBridgeEditionIds.add(id);
+    if (keyValues.length === 0 && bridgeEditionIds.length === 0) return Array.from(rowsById.values()).sort((a, b) => a.id - b.id);
     for (const value of keyValues) processedKeyValues.add(value);
 
-    const newCandidateBookIds = candidateBookIdsForKeys(keyValues).filter((id) => !visitedBookIds.has(id));
+    const newCandidateBookIds = Array.from(new Set([
+      ...candidateBookIdsForKeys(keyValues),
+      ...candidateBookIdsForBridgeEditions(bridgeEditionIds)
+    ])).filter((id) => !visitedBookIds.has(id));
     if (newCandidateBookIds.length === 0) return Array.from(rowsById.values()).sort((a, b) => a.id - b.id);
 
     if (addRows(fetchByIds("book_id", newCandidateBookIds))) return null;
@@ -778,12 +801,14 @@ export function reconcileBookIdentities(db: Database.Database, scope?: Reconcile
         // confirm the conflict is actually confined to these two rows —
         // otherwise an unrelated conflicting member already in one of the
         // clusters would get pulled into the merge on this pair's coattails.
-        const residualKeysA = new Set([...keysA].filter((key) => !new Set(highIdentityKeys(firstRow!)).has(key)));
-        const residualKeysB = new Set([...keysB].filter((key) => !new Set(highIdentityKeys(secondRow!)).has(key)));
+        const firstRowKeys = new Set(highIdentityKeys(firstRow!));
+        const secondRowKeys = new Set(highIdentityKeys(secondRow!));
+        const residualKeysA = new Set([...keysA].filter((key) => !firstRowKeys.has(key)));
+        const residualKeysB = new Set([...keysB].filter((key) => !secondRowKeys.has(key)));
         const conflictConfinedToThisPair = sameTitle && corroboratedPath
           && !highKeyConflict(residualKeysA, residualKeysB)
-          && !highKeyConflict(residualKeysA, new Set(highIdentityKeys(secondRow!)))
-          && !highKeyConflict(new Set(highIdentityKeys(firstRow!)), residualKeysB);
+          && !highKeyConflict(residualKeysA, secondRowKeys)
+          && !highKeyConflict(firstRowKeys, residualKeysB);
         if (conflictConfinedToThisPair) {
           unionRoots(rootA, rootB);
           logger.info("Merged ISBN match despite stale Grimmory identifier", {

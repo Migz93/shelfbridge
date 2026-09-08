@@ -1,6 +1,9 @@
 /** Strip parenthetical series info, then lowercase and keep alphanumeric words. */
 export function normalizeTitle(title: string): string {
   return title
+    // Sources can use NFC or NFD for the same text. Compose before removing
+    // punctuation so an NFD combining mark is not treated differently.
+    .normalize("NFC")
     .replace(/\s*\(.*?\)\s*/g, " ")
     .toLowerCase()
     // Unicode-aware: an ASCII-only character class would strip every letter

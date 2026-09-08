@@ -291,7 +291,7 @@ if (hasHardcover) {
             await cacheSourceCover(db, ownedSourceId, "hardcover", ownedCoverUrl);
           });
         }
-      } else {
+      } else if (grimmoryAvailable || !hasGrimmory) {
         // Not (or no longer) justified — the setting was turned off, the Owned
         // entry/edition disappeared, or its format now matches the primary
         // edition. Remove any previously-written 'owned' row rather than
