@@ -3,6 +3,7 @@ import { getDb, getSetting } from "../db/index.js";
 import type {
   BookDetail,
   BookDuplicateCandidate,
+  DuplicateMergeResponse,
   BookFacets,
   BookRelationship,
   BookSummary,
@@ -1174,13 +1175,15 @@ router.post("/:bookId/duplicates/:duplicateId/merge", async (req, res) => {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn("Duplicate merge finalization failed after partial success", { bookId, duplicateId, succeededProfileIds, failures, error: err });
-      res.status(207).json({ ok: true, bookId: null, succeededProfileIds, failures, finalizationError: message });
+      const response: DuplicateMergeResponse = { ok: true, bookId: null, succeededProfileIds, failures, finalizationError: message };
+      res.status(207).json(response);
       return;
     }
 
     logger.info("Merged duplicate by repairing Grimmory authoritative IDs", { bookId, duplicateId, succeededProfileIds, failures, plans: plans.map((plan) => ({ authoritativeBookId: plan.authoritativeBookId, grimmoryBookId: plan.grimmoryBookId, profileId: plan.profileId, goodreads: Boolean(plan.goodreads), hardcover: Boolean(plan.hardcover) })) });
     if (failures.length > 0) {
-      res.status(207).json({ ok: true, bookId: reconciled.book_id, succeededProfileIds, failures });
+      const response: DuplicateMergeResponse = { ok: true, bookId: reconciled.book_id, succeededProfileIds, failures };
+      res.status(207).json(response);
     } else {
       res.json({ ok: true, bookId: reconciled.book_id });
     }

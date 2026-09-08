@@ -159,6 +159,19 @@ export type BookDuplicateCandidate = Pick<BookSummary,
   mergeEligible: boolean;
 };
 
+export interface DuplicateMergeFailure {
+  profileId: number;
+  error: string;
+}
+
+export interface DuplicateMergeResponse {
+  ok: true;
+  bookId: number | null;
+  succeededProfileIds: number[];
+  failures?: DuplicateMergeFailure[];
+  finalizationError?: string;
+}
+
 export interface BookRelationship {
   id: number;
   bookId: number;

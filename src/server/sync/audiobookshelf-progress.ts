@@ -97,6 +97,7 @@ if (hasAbs && absApiKey && (hasHardcover || grimmoryAvailable)) {
         SELECT external_id, source_edition_id, source_media_type, source_audible_asin, hardcover_audio_seconds
         FROM book_sources
         WHERE source_type = 'hardcover' AND source_instance_id = ? AND book_id = ?
+          AND source_bucket = 'primary'
       `).get(profileId, absSource.book_id) as {
         external_id: string;
         source_edition_id: string | number | null;

@@ -88,11 +88,11 @@ test("isPrivateAddress classifies IPv4 ranges", () => {
     "127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.1.1", "100.64.0.1", "0.0.0.0", "224.0.0.1",
     // RFC 5737 documentation ranges (TEST-NET-1/2/3) are IANA special-purpose,
     // not-globally-reachable addresses — not real public destinations.
-    "192.0.2.5", "198.51.100.5", "203.0.113.5"
+    "192.0.2.5", "192.88.99.5", "198.51.100.5", "203.0.113.5"
   ]) {
     assert.equal(isPrivateAddress(address), true, `${address} should be private`);
   }
-  for (const address of ["8.8.8.8", "1.1.1.1", "172.32.0.1", "172.15.255.255"]) {
+  for (const address of ["8.8.8.8", "1.1.1.1", "172.32.0.1", "172.15.255.255", "192.0.1.1"]) {
     assert.equal(isPrivateAddress(address), false, `${address} should be public`);
   }
 });
@@ -118,7 +118,7 @@ test("isPrivateAddress classifies alternate IPv6 compressions of a mapped addres
 
 test("isPrivateAddress classifies IPv4-compatible IPv6 addresses (::/96)", () => {
   assert.equal(isPrivateAddress("::10.0.0.1"), true);
-  assert.equal(isPrivateAddress("::000a:0001"), true);
+  assert.equal(isPrivateAddress("::0a00:0001"), true);
   assert.equal(isPrivateAddress("::8.8.8.8"), false);
   assert.equal(isPrivateAddress("::0808:0808"), false);
 });
