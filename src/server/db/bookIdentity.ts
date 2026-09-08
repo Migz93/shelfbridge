@@ -568,13 +568,21 @@ export function expandScopeToRows(
 
   const candidateBookIdsForBridgeEditions = (editionIds: string[]): number[] => {
     const results = new Set<number>();
-    for (const batch of chunk(editionIds, 500)) {
-      const placeholders = batch.map(() => "?").join(",");
+    // normalizeExternalId accepts a numeric Goodreads id with a human-readable
+    // suffix, while the database stores the source's raw external_id. Query
+    // the raw spellings it recognizes, then normalize again before accepting
+    // a candidate so scoped expansion agrees with the actual bridge pass.
+    for (const batch of chunk(editionIds, 200)) {
+      const clauses = batch.map(() => "(TRIM(external_id) = ? OR TRIM(external_id) LIKE ? ESCAPE '\\' OR TRIM(external_id) LIKE ? ESCAPE '\\' OR TRIM(external_id) LIKE ? ESCAPE '\\')").join(" OR ");
+      const values = batch.flatMap((id) => {
+        const escaped = id.replace(/[\\%_]/g, "\\$&");
+        return [id, `${escaped}-%`, `${escaped}.%`, `${escaped}\\_%`];
+      });
       for (const row of db.prepare(`
-        SELECT DISTINCT book_id FROM book_sources
-        WHERE source_type = 'goodreads' AND external_id IN (${placeholders}) AND book_id IS NOT NULL
-      `).all(...batch) as { book_id: number }[]) {
-        results.add(row.book_id);
+        SELECT DISTINCT book_id, external_id FROM book_sources
+        WHERE source_type = 'goodreads' AND book_id IS NOT NULL AND (${clauses})
+      `).all(...values) as { book_id: number; external_id: string }[]) {
+        if (editionIds.includes(normalizeExternalId(row.external_id) ?? "")) results.add(row.book_id);
       }
     }
     return Array.from(results);
