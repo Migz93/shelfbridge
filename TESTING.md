@@ -150,6 +150,7 @@ so all tests start already authenticated.
 | Backup directory permissions | `backupBeforeMigrating` locks `<data dir>/backups/` down to owner-only (`0o700`) even when the directory already existed with looser permissions from before this hardening shipped — `mkdirSync`'s `mode` alone is a no-op on an existing directory, so this is only correct if it's backed by an explicit `chmodSync` |
 | Downgrade guard | `getPendingMigrations`/`runMigrations` reject a database whose `user_version` is newer than this build's `LATEST_MIGRATION_VERSION`, instead of silently seeing nothing pending and booting into an unknown schema |
 | Schema equivalence | The flattened baseline (migration 1, a fresh install) and a full legacy `v3`→`v14` chain plus handover produce the same set of tables, columns (including primary-key ordinal), indexes (including implicit ones from inline `UNIQUE`/PK constraints, compared by shape rather than their creation-order-dependent name), foreign keys, and views/triggers — order-independent, so this catches the baseline silently drifting from what the legacy chain actually produces |
+| Duplicate-key normalization migration | Migration 7 rebuilds existing persisted duplicate keys with NFC-normalized text, so decomposed and composed Unicode titles continue to match |
 
 ### `tests/server/book-identity.test.ts` — Identity reconciliation
 
@@ -171,6 +172,7 @@ so all tests start already authenticated.
 | Chaptarr reassignment state preservation | User state is retained when a cross-profile Chaptarr path makes reassignment unsafe |
 | Scoped merge via shared ISBN | A scoped reconcile discovers an existing, unrelated-looking book through a shared ISBN and merges the new source into it |
 | Scoped bridge across two existing books | A single new source that shares a key with each of two previously-separate existing books merges all three into one |
+| Scoped corroborated Chaptarr bridge | A scoped Chaptarr or Goodreads reconcile discovers the other side through its corroborated edition-id/file-path bridge |
 | Scoped isolation | A scoped reconcile touching one book does not merge or modify an unrelated existing book outside its scope |
 | Empty scope no-op | `reconcileBookIdentities` with an empty `sourceIds` array makes no changes |
 | Shared identity key, two owners | Two existing books that legitimately share an identity key (e.g. same title/author, kept separate by design) are each still discoverable — a scoped third row merges with the correct one, not the one that happened to claim the key first |
@@ -355,6 +357,8 @@ Runs `runSyncImpl` end-to-end against a real (isolated) SQLite database with fak
 | Two finished siblings with no active owner never both attempt to write Hardcover | When both siblings of a shared Hardcover book are finished (neither actively reading, so there's no active write-back owner), the unmatched sibling still defers to the matched one rather than reaching the Grimmory-only-book-into-Hardcover fallback — `insertHardcoverUserBook`/`updateHardcoverUserBook` calls are recorded and asserted empty, and the run's `sync_runs.status` is asserted `'success'`, since `runSyncImpl` catches and swallows adapter errors rather than rethrowing them (an unstubbed-adapter throw alone would NOT fail the test). |
 | A duplicate untouched sibling must not mask a different sibling's real activity | With two ebook entries sharing one Hardcover book (one untouched, one genuinely finished) plus a finished audiobook sibling, the no-active-owner write-suppression check looks at every ebook sibling's activity, not just the deterministic tie-break representative — which in this setup lands on the untouched one — so the finished audiobook's competing write is still correctly suppressed (`tests/server/hardcover-ownership.test.ts`). |
 | A `'shared'` row survives a Grimmory outage | When a run's Grimmory fetch fails, `grimmoryBooks` (and so the shared-ownership map) is empty for that entire run — a previously-written `'shared'` row must not be treated as "its sibling is gone" and deleted just because this run has no Grimmory data to confirm it with; it's left untouched, to be re-evaluated once Grimmory data is actually available again. |
+| A `'shared'` row survives incomplete Grimmory credentials | A user clearing or partially editing saved Grimmory credentials likewise leaves no trustworthy snapshot; an existing `'shared'` row is preserved rather than treating the incomplete configuration as evidence that its sibling was removed. |
+| A `'shared'` row is cleaned up after Grimmory removal | Deleting the Grimmory connection record is an explicit removal signal, so a later sync can safely prune a previously justified `'shared'` row instead of preserving it indefinitely. |
 | A Grimmory outage defers Owned-list handling only when a `'shared'` row is being preserved | With a preserved `'shared'` row in play, a Grimmory outage that also surfaces a would-be-justified Owned-list entry must not create a competing `'owned'` row alongside it (primary + shared + owned all at once) — Owned-list handling is deferred for that book until Grimmory data is trustworthy again. A profile with no Grimmory connection at all is unaffected, since it never has a `'shared'` row to defer around. |
 | A Grimmory outage does not flip an already-deferred local-only state back to UNREAD | `upsertLocalOnlyHardcoverState`'s `hasOwnActivity` is forced `false` for the whole run whenever Grimmory is unreachable, which is indistinguishable from "genuinely no activity" — without a direct `grimmoryAvailable` check, a finished sibling correctly showing `status = null` (deferring to its own real Grimmory activity) would get flipped to `UNREAD` on every transient outage. An existing state is now left untouched during an outage instead. |
 
@@ -495,8 +499,10 @@ Read-only. Safe to run against a live instance.
 
 ### `tests/playwright/api.spec.ts` — API smoke tests
 
-Read-only. Safe to run against a live instance. Uses the `request` fixture (no
-browser) with the stored session cookie applied automatically via
+Read-only. Safe to run against a live instance. Uses `page.request`, which
+shares the authenticated page context and its session cookie; the bare
+`request` fixture creates a separate API context and cannot access the stored
+browser session.
 `storageState`.
 
 | Test | What it checks |

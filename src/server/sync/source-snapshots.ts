@@ -201,6 +201,7 @@ if (hasGrimmory) {
 // Fetch Grimmory progress (needed for Phase B Grimmory user state)
 const grimmoryProgressById = new Map<number, { readProgress: number | null; lastReadTime: string | null; readStatus: string | null }>();
 if (grimmoryAvailable && grimmoryToken && profile["sync_progress_enabled"] !== 0) {
+  let grimmoryProgressFailures = 0;
   await mapWithConcurrency(grimmoryBooks, GRIMMORY_PROGRESS_FETCH_CONCURRENCY, async (grBook) => {
     try {
       const progress = await adapters.fetchGrimmoryProgress(baseUrl, grimmoryToken, grBook.id);
@@ -213,9 +214,17 @@ if (grimmoryAvailable && grimmoryToken && profile["sync_progress_enabled"] !== 0
       // other consumer of grBook.readStatus see the freshest value.
       grBook.readStatus = progress.readStatus ?? grBook.readStatus ?? null;
     } catch (err) {
+      grimmoryProgressFailures++;
       logger.warn("Failed to fetch Grimmory progress", { profileId, grimmoryBookId: grBook.id, error: err });
     }
   });
+  if (grimmoryProgressFailures > 0) {
+    logger.warn("Some Grimmory progress records could not be refreshed; retaining bulk-library values", {
+      profileId,
+      failures: grimmoryProgressFailures,
+      total: grimmoryBooks.length
+    });
+  }
 }
 
 // Books with a runtime-validated Audiobookshelf link AND at least some

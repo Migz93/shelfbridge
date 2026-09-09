@@ -311,11 +311,16 @@ async function fetchFollowingSameOriginRedirects(url: string, init: RequestInit)
 // it independently passes the cover-specific public-address checks.
 async function fetchFollowingPublicCoverRedirects(url: string, init: RequestInit): Promise<Response> {
   let currentUrl = url;
+  const originalOrigin = new URL(url).origin;
   for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount++) {
     let res: Response;
     try {
       res = await coverFetch(currentUrl, {
         ...init,
+        // Covers may legitimately move to a CDN. Do not carry caller-supplied
+        // headers across that origin boundary: a future authenticated caller
+        // must not leak credentials to an untrusted redirect target.
+        headers: new URL(currentUrl).origin === originalOrigin ? init.headers : undefined,
         dispatcher: coverDispatcher,
         redirect: "manual"
       } as RequestInit);

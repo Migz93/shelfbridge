@@ -1,3 +1,14 @@
+export class ApiError extends Error {
+  constructor(
+    readonly method: string,
+    readonly status: number,
+    message: string
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, {
     method,
@@ -12,7 +23,7 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
       const parsed = JSON.parse(text) as { fieldErrors?: Record<string, string[]>; formErrors?: string[] };
       detail = parsed.formErrors?.[0] ?? Object.values(parsed.fieldErrors ?? {}).flat()[0] ?? text;
     } catch { /* preserve non-JSON API errors */ }
-    throw new Error(`${method} ${url} → ${res.status}${detail ? `: ${detail}` : ""}`);
+    throw new ApiError(method, res.status, `${method} ${url} → ${res.status}${detail ? `: ${detail}` : ""}`);
   }
   if (res.status === 204) {
     return undefined as T;
@@ -22,7 +33,7 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
   if (typeof result === "object" && result !== null && "ok" in result) {
     const partial = result as { ok?: unknown; cleanupFailures?: unknown };
     if (partial.ok === false && Array.isArray(partial.cleanupFailures)) {
-      throw new Error(`${method} ${url} → ${res.status}: ${partial.cleanupFailures.join("; ")}`);
+      throw new ApiError(method, res.status, `${method} ${url} → ${res.status}: ${partial.cleanupFailures.join("; ")}`);
     }
   }
   return result;

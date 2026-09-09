@@ -55,6 +55,8 @@ test("connection tests, jobs, and book actions reject malformed request bodies",
   assert.equal(profileGrimmoryTestSchema.safeParse({ username: true }).success, false);
   assert.deepEqual(profileGrimmoryTestSchema.parse({ baseUrl: "" }), { baseUrl: undefined });
   assert.equal(jobIntervalSchema.safeParse({ intervalMinutes: 1.5 }).success, false);
+  assert.equal(jobIntervalSchema.safeParse({ intervalMinutes: -1 }).success, false);
+  assert.equal(jobIntervalSchema.safeParse({ intervalMinutes: 0 }).success, true);
   assert.equal(writeGrimmoryIdSchema.safeParse({ source: "audiobookshelf" }).success, false);
   assert.equal(writeGrimmoryIdSchema.safeParse({ source: "goodreads" }).success, true);
 });

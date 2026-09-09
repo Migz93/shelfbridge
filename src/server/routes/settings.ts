@@ -238,7 +238,7 @@ router.patch("/jobs/:id", (req, res) => {
     }
     res.json({ updated: true });
   } else {
-    res.status(404).json({ error: "Unknown job or missing intervalMinutes." });
+    res.status(404).json({ error: "Unknown job." });
   }
 });
 

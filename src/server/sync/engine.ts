@@ -100,7 +100,7 @@ export async function runSyncImpl(
     logger.info("Sync started", { profileId, runId, dryRun });
 
     const profile = db.prepare(`
-      SELECT p.*, g.username, g.password, g.base_url as grimmory_base_url,
+      SELECT p.*, g.id AS grimmory_connection_id, g.username, g.password, g.base_url as grimmory_base_url,
              h.api_token as hardcover_token,
              h.sync_list_id as hardcover_sync_list_id,
              h.sync_list_name as hardcover_sync_list_name,
@@ -137,6 +137,7 @@ export async function runSyncImpl(
     const writeTagName = sourceTagName(username, profile["display_name"] as string | null);
 
     const hasGrimmory = !!(baseUrl && username && password);
+    const hasGrimmoryConnection = profile["grimmory_connection_id"] !== null;
     const hasHardcover = !!hardcoverToken;
 
     const absBaseUrl = getSetting("audiobookshelf.baseUrl", "");
@@ -156,17 +157,17 @@ export async function runSyncImpl(
     // so wrapping it here needs no changes to either. Must forward every
     // parameter, including bucket — dropping it would silently collapse
     // hardcover-sources.ts's 'owned' bucket writes onto the 'primary' row.
-    const phaseDTouchedSourceIds: number[] = [];
+    const phaseDTouchedSourceIds = new Set<number>();
     const trackingUpsertBookSource: typeof upsertBookSource = (db, sourceType, instanceId, externalId, fields, bucket) => {
       const id = upsertBookSource(db, sourceType, instanceId, externalId, fields, bucket);
-      phaseDTouchedSourceIds.push(id);
+      phaseDTouchedSourceIds.add(id);
       return id;
     };
 
     await persistGrimmorySources({ db, profileId, grimmoryAvailable, grimmoryBooks, upsertBookSource: trackingUpsertBookSource, enqueueImageCacheTask, cacheSourceCover, sqliteNow, grimmoryToken, cacheGrimmoryCover, baseUrl });
 
     const hardcoverSourcesResult = await persistHardcoverSources({ db, profileId, hcBooks, hcEditions, hcLists, ownedImportEnabled, upsertBookSource: trackingUpsertBookSource, cacheSourceCover, sqliteNow,
-      hasHardcover, hasGrimmory, grimmoryAvailable, sharedHardcoverOwnership,
+      hasHardcover, hasGrimmoryConnection, grimmoryAvailable, sharedHardcoverOwnership,
       inferHardcoverMediaType, firstHardcoverSeries, normalizeEditionFormat, enqueueImageCacheTask,
       pruneHardcoverUserStatesMissingFromFetch, pruneHardcoverSourcesMissingFromFetch, hardcoverSnapshotStatus });
 
@@ -221,7 +222,7 @@ export async function runSyncImpl(
     // Now that both Grimmory and HC sources are written, reconcile so every
     // book_sources row gets a book_id. This is what links HC sources to
     // Grimmory sources for the HC sync loop below.
-    reconcileBookIdentities(db, { sourceIds: phaseDTouchedSourceIds });
+    reconcileBookIdentities(db, { sourceIds: Array.from(phaseDTouchedSourceIds) });
     if (hasHardcover) pruneOrphanedHardcoverUserStates(db, profileId);
 
     // ── Phase E: Build Grimmory in-memory match index (for HC loop) ─────────

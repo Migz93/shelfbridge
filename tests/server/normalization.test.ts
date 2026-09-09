@@ -34,6 +34,10 @@ test("normalizeTitle preserves non-Latin scripts instead of stripping them to an
   assert.equal(normalizeTitle("三体"), "三体");
 });
 
+test("normalizeTitle treats NFC and NFD input as the same title", () => {
+  assert.equal(normalizeTitle("Café"), normalizeTitle("Cafe\u0301"));
+});
+
 test("normalizeSeriesNumber extracts the leading numeric portion", () => {
   assert.equal(normalizeSeriesNumber("Book 2.5"), "2.5");
   assert.equal(normalizeSeriesNumber(3), "3");

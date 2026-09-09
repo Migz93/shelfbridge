@@ -84,7 +84,8 @@ export const profileGoodreadsTestSchema = z.object({ goodreadsUserId: z.string()
 export const profileAudiobookshelfTestSchema = z.object({ apiKey: z.string().optional() }).strict();
 
 export const jobIntervalSchema = z.object({
-  intervalMinutes: z.number().int()
+  // Zero disables the job; a negative interval has no useful scheduler meaning.
+  intervalMinutes: z.number().int().min(0)
 }).strict();
 
 export const writeGrimmoryIdSchema = z.object({

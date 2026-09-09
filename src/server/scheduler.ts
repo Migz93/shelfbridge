@@ -1,7 +1,8 @@
 import { JobScheduler } from "./job-scheduler.js";
 import { getDb, getSetting } from "./db/index.js";
 import { logger } from "./logger.js";
-import { getActiveSyncStatus, runSync, runExclusiveOfSyncs } from "./sync/engine.js";
+import { getActiveSyncStatus, runSync } from "./sync/engine.js";
+import { runExclusiveOfSyncs } from "./sync/sync-queue.js";
 import { refreshStaleCachedCovers } from "./image-cache.js";
 import { refreshStaleGrimmoryCovers } from "./sync/engine.js";
 import { reconcileBookIdentities, type ReconcileProgressPhase } from "./db/bookIdentity.js";

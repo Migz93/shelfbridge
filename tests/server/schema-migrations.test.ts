@@ -593,6 +593,24 @@ test("getPendingMigrations/runMigrations reject a database newer than this build
   }
 });
 
+test("migration 7 rebuilds duplicate keys using NFC-normalized text", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const bookId = Number(db.prepare("INSERT INTO books (title, author, duplicate_title_key, duplicate_author_key) VALUES (?, ?, ?, ?)")
+      .run("Cafe\u0301", "Auteur", "stale-title", "stale-author").lastInsertRowid);
+    db.pragma("user_version = 6");
+
+    runMigrations(db);
+
+    const row = db.prepare("SELECT duplicate_title_key, duplicate_author_key FROM books WHERE id = ?").get(bookId) as
+      { duplicate_title_key: string | null; duplicate_author_key: string | null };
+    assert.equal(row.duplicate_title_key, "café");
+    assert.equal(row.duplicate_author_key, "auteur");
+  } finally {
+    cleanup();
+  }
+});
+
 test("legacy handover is not re-run: a database already at user_version >= 1 is left alone", () => {
   const { db, dataDir, cleanup } = openRawDb();
   try {
