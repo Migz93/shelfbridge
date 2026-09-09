@@ -523,8 +523,11 @@ function expansionKeyValues(row: BookSourceRow): string[] {
 // The corroborated Chaptarr<->Goodreads bridge below uses a Chaptarr row's
 // source_goodreads_edition_id, which deliberately is not a normal identity
 // key. Scoped expansion follows that relation in both directions, so either
-// source's sync includes the other candidate; the bridge itself still performs
-// the stricter same-format/path corroboration before any merge is allowed.
+// source's sync includes the other candidate. This can grow a Goodreads-wide
+// scope; exceeding either cap deliberately falls back to a complete reconcile
+// rather than deferring a valid bridge until the maintenance job. The bridge
+// itself still performs the stricter same-format/path corroboration before any
+// merge is allowed.
 //
 // Returns null if the closure grows past a safety cap — the caller should fall
 // back to a full reconcile in that case rather than silently truncate it.
@@ -574,6 +577,8 @@ export function expandScopeToRows(
   ): number[] => {
     const results = new Set<number>();
     const normalizedIds = new Set(editionIds);
+    // `column` is intentionally interpolated: its narrow union is only called
+    // with these two internal book_sources column names, never user input.
     // normalizeExternalId accepts a numeric Goodreads id with a human-readable
     // suffix, while the database stores the source's raw external_id. Query
     // the raw spellings it recognizes, then normalize again before accepting
