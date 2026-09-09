@@ -28,7 +28,6 @@ export interface HardcoverSourcesContext {
   cacheSourceCover: typeof cacheSourceCover;
   sqliteNow: typeof sqliteNow;
   hasHardcover: boolean;
-  hasGrimmory: boolean;
   grimmoryAvailable: boolean;
   sharedHardcoverOwnership: SharedHardcoverOwnership;
   inferHardcoverMediaType: typeof inferHardcoverMediaType;
@@ -48,7 +47,7 @@ export interface PersistHardcoverSourcesResult {
 
 export async function persistHardcoverSources(context: HardcoverSourcesContext): Promise<PersistHardcoverSourcesResult> {
   const { db, profileId, hcBooks, hcEditions, hcLists, ownedImportEnabled, upsertBookSource, cacheSourceCover, sqliteNow,
-    hasHardcover, hasGrimmory, grimmoryAvailable, sharedHardcoverOwnership,
+    hasHardcover, grimmoryAvailable, sharedHardcoverOwnership,
     inferHardcoverMediaType, firstHardcoverSeries, normalizeEditionFormat, enqueueImageCacheTask,
     pruneHardcoverUserStatesMissingFromFetch, pruneHardcoverSourcesMissingFromFetch, hardcoverSnapshotStatus } = context;
   const deletedSecondarySourceIds: number[] = [];
@@ -228,8 +227,7 @@ if (hasHardcover) {
       // Left alone, it's correctly re-evaluated the next time Grimmory data
       // is actually available.
       const existingShared = getBookSource(db, "hardcover", profileId, hcBook.book.id, "shared");
-      const canReevaluateGrimmoryDependentRows = grimmoryAvailable || !hasGrimmory;
-      if (canReevaluateGrimmoryDependentRows) {
+      if (grimmoryAvailable) {
         if (existingShared) {
           deleteBookSource.run(existingShared.id);
           deletedSecondarySourceIds.push(existingShared.id);
@@ -242,10 +240,9 @@ if (hasHardcover) {
         // with the Owned-list logic below could create a competing 'owned'
         // row right alongside the preserved 'shared' one (primary + shared +
         // owned all at once). Defer Owned-list handling too, until Grimmory
-        // data is trustworthy again. This only applies when a 'shared' row
-        // is actually in play — a profile with no Grimmory connection at all
-        // (also grimmoryAvailable === false, but never has a 'shared' row to
-        // begin with) is unaffected and keeps working exactly as before.
+        // data is trustworthy again. This also preserves a row created before
+        // a user clears or partially edits their Grimmory credentials: an
+        // incomplete configuration is not evidence that its sibling vanished.
         continue;
       }
 

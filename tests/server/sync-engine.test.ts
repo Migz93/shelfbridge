@@ -717,6 +717,49 @@ test("a 'shared' row survives a sync where Grimmory is temporarily unavailable",
   assert.equal(sharedAfter!.id, sharedBefore!.id, "must be the same row, untouched — not deleted and recreated");
 });
 
+test("a 'shared' row survives a sync with incomplete Grimmory credentials", async () => {
+  // A user can clear or partially edit the saved credentials after a previous
+  // successful sync created a shared row. That leaves no trustworthy snapshot,
+  // just like a transient outage; it must not be interpreted as removing the
+  // real sibling that justified the row.
+  const profileId = seedProfile(db);
+  seedHardcoverConnection(db, profileId);
+  seedGrimmoryConnection(db, profileId);
+  seedSyncSettings(db, profileId);
+
+  const editionsMap = async () => new Map([[100, { id: 100, edition_format: "Hardcover", reading_format_id: 1, isbn_13: null, isbn_10: null, asin: null, pages: null, audio_seconds: null, image: null }]]);
+  await runSyncImpl(profileId, insertSyncRun(db, profileId), false, createFakeAdapters({
+    fetchHardcoverUserId: async () => 42,
+    fetchHardcoverLibrary: async () => [hcBook({ status_id: 2, edition_id: 100 })],
+    fetchHardcoverEditions: editionsMap,
+    fetchHardcoverLists: async () => [],
+    testGrimmoryLogin: async () => ({ ok: true, message: "ok", accessToken: "grim-token" }),
+    fetchGrimmoryBooks: async () => [
+      grBook({ id: 1, hardcoverBookId: "555", readStatus: "READING", mediaType: "physical", isbn13: "9780000000003" }),
+      grBook({ id: 2, hardcoverBookId: "555", readStatus: null, mediaType: "audiobook", isbn13: "9780000000004" })
+    ]
+  }));
+
+  const sharedBefore = db.prepare(
+    "SELECT id FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ? AND source_bucket = 'shared'"
+  ).get(profileId) as { id: number } | undefined;
+  assert.ok(sharedBefore, "setup: the 'shared' row must exist before clearing credentials");
+
+  db.prepare("UPDATE grimmory_connections SET password = '' WHERE profile_id = ?").run(profileId);
+  await runSyncImpl(profileId, insertSyncRun(db, profileId), false, createFakeAdapters({
+    fetchHardcoverUserId: async () => 42,
+    fetchHardcoverLibrary: async () => [hcBook({ status_id: 2, edition_id: 100 })],
+    fetchHardcoverEditions: editionsMap,
+    fetchHardcoverLists: async () => []
+  }));
+
+  const sharedAfter = db.prepare(
+    "SELECT id FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ? AND source_bucket = 'shared'"
+  ).get(profileId) as { id: number } | undefined;
+  assert.ok(sharedAfter, "incomplete credentials must not delete a previously justified 'shared' row");
+  assert.equal(sharedAfter!.id, sharedBefore!.id);
+});
+
 test("a Grimmory outage does not flip an already-deferred local-only state back to UNREAD", async () => {
   // Mirrors the 'shared' row survival test above, but at the state layer:
   // hasOwnActivity inside upsertLocalOnlyHardcoverState is forced false for
