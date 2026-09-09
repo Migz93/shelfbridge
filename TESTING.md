@@ -269,7 +269,7 @@ so all tests start already authenticated.
 
 | Test | What it checks |
 |---|---|
-| Settings, profiles, and sync request schemas | Invalid booleans, retention values, conflict strategies, malformed connections, and profile IDs are rejected before a route can access the database |
+| Settings, profiles, and sync request schemas | Invalid booleans, retention values, conflict strategies, malformed connections, and profile IDs are rejected before a route can access the database; accepted integration URLs are returned in canonical form while blanks still clear saved values |
 | Connection tests, job controls, and book actions | Malformed test payloads, schedule intervals, and external-ID write sources are rejected |
 | Mutating route IDs | Book-action IDs must be complete positive integers, not permissive `parseInt` prefixes |
 | Route validation contract | A malformed settings mutation returns the documented structured 400 response before database access |
