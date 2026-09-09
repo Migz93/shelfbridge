@@ -100,7 +100,7 @@ export async function runSyncImpl(
     logger.info("Sync started", { profileId, runId, dryRun });
 
     const profile = db.prepare(`
-      SELECT p.*, g.username, g.password, g.base_url as grimmory_base_url,
+      SELECT p.*, g.id AS grimmory_connection_id, g.username, g.password, g.base_url as grimmory_base_url,
              h.api_token as hardcover_token,
              h.sync_list_id as hardcover_sync_list_id,
              h.sync_list_name as hardcover_sync_list_name,
@@ -137,6 +137,7 @@ export async function runSyncImpl(
     const writeTagName = sourceTagName(username, profile["display_name"] as string | null);
 
     const hasGrimmory = !!(baseUrl && username && password);
+    const hasGrimmoryConnection = profile["grimmory_connection_id"] !== null;
     const hasHardcover = !!hardcoverToken;
 
     const absBaseUrl = getSetting("audiobookshelf.baseUrl", "");
@@ -166,7 +167,7 @@ export async function runSyncImpl(
     await persistGrimmorySources({ db, profileId, grimmoryAvailable, grimmoryBooks, upsertBookSource: trackingUpsertBookSource, enqueueImageCacheTask, cacheSourceCover, sqliteNow, grimmoryToken, cacheGrimmoryCover, baseUrl });
 
     const hardcoverSourcesResult = await persistHardcoverSources({ db, profileId, hcBooks, hcEditions, hcLists, ownedImportEnabled, upsertBookSource: trackingUpsertBookSource, cacheSourceCover, sqliteNow,
-      hasHardcover, grimmoryAvailable, sharedHardcoverOwnership,
+      hasHardcover, hasGrimmoryConnection, grimmoryAvailable, sharedHardcoverOwnership,
       inferHardcoverMediaType, firstHardcoverSeries, normalizeEditionFormat, enqueueImageCacheTask,
       pruneHardcoverUserStatesMissingFromFetch, pruneHardcoverSourcesMissingFromFetch, hardcoverSnapshotStatus });
 

@@ -760,6 +760,39 @@ test("a 'shared' row survives a sync with incomplete Grimmory credentials", asyn
   assert.equal(sharedAfter!.id, sharedBefore!.id);
 });
 
+test("a 'shared' row is cleaned up after the Grimmory connection is removed", async () => {
+  const profileId = seedProfile(db);
+  seedHardcoverConnection(db, profileId);
+  seedGrimmoryConnection(db, profileId);
+  seedSyncSettings(db, profileId);
+
+  const editionsMap = async () => new Map([[100, { id: 100, edition_format: "Hardcover", reading_format_id: 1, isbn_13: null, isbn_10: null, asin: null, pages: null, audio_seconds: null, image: null }]]);
+  await runSyncImpl(profileId, insertSyncRun(db, profileId), false, createFakeAdapters({
+    fetchHardcoverUserId: async () => 42,
+    fetchHardcoverLibrary: async () => [hcBook({ status_id: 2, edition_id: 100 })],
+    fetchHardcoverEditions: editionsMap,
+    fetchHardcoverLists: async () => [],
+    testGrimmoryLogin: async () => ({ ok: true, message: "ok", accessToken: "grim-token" }),
+    fetchGrimmoryBooks: async () => [
+      grBook({ id: 1, hardcoverBookId: "555", readStatus: "READING", mediaType: "physical", isbn13: "9780000000003" }),
+      grBook({ id: 2, hardcoverBookId: "555", readStatus: null, mediaType: "audiobook", isbn13: "9780000000004" })
+    ]
+  }));
+
+  db.prepare("DELETE FROM grimmory_connections WHERE profile_id = ?").run(profileId);
+  await runSyncImpl(profileId, insertSyncRun(db, profileId), false, createFakeAdapters({
+    fetchHardcoverUserId: async () => 42,
+    fetchHardcoverLibrary: async () => [hcBook({ status_id: 2, edition_id: 100 })],
+    fetchHardcoverEditions: editionsMap,
+    fetchHardcoverLists: async () => []
+  }));
+
+  const sharedAfter = db.prepare(
+    "SELECT id FROM book_sources WHERE source_type = 'hardcover' AND source_instance_id = ? AND source_bucket = 'shared'"
+  ).get(profileId);
+  assert.equal(sharedAfter, undefined, "removing the connection explicitly makes the stale 'shared' row safe to prune");
+});
+
 test("a Grimmory outage does not flip an already-deferred local-only state back to UNREAD", async () => {
   // Mirrors the 'shared' row survival test above, but at the state layer:
   // hasOwnActivity inside upsertLocalOnlyHardcoverState is forced false for
