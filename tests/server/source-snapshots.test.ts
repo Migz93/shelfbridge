@@ -122,6 +122,31 @@ test("a selected Hardcover list produces a partial snapshot", async () => {
   } finally { cleanup(); }
 });
 
+test("Owned-list-only books survive a selected Hardcover sync-list filter", async () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const selected = { id: 1, title: "Selected", slug: null, image: null, contributions: null, default_physical_edition: null, default_ebook_edition: null, default_audio_edition: null, book_series: null };
+    const ownedOnly = { id: 2, title: "Owned only", slug: null, image: null, contributions: null, default_physical_edition: null, default_ebook_edition: null, default_audio_edition: null, book_series: null };
+    const libraryBook = { id: 1, edition_id: null, status_id: null, rating: null, updated_at: null, first_started_reading_date: null, last_read_date: null, book: selected, user_book_reads: null };
+    const adapters = {
+      fetchHardcoverUserId: async () => 1,
+      fetchHardcoverLibrary: async () => [libraryBook],
+      fetchHardcoverLists: async () => [
+        { id: 7, name: "Selected", slug: null, bookIds: [1], books: [selected], entries: [] },
+        { id: 8, name: "Owned", slug: "owned", bookIds: [2], books: [ownedOnly], entries: [{ book: ownedOnly, editionId: null, edition: null }] }
+      ],
+      fetchHardcoverEditions: async () => new Map()
+    };
+    const result = await fetchSourceSnapshots(context(db, profileId, {
+      profile: { hardcover_sync_list_id: "7", hardcover_sync_list_name: "Selected", hardcover_owned_import_enabled: 1 },
+      hasHardcover: true, hardcoverToken: "token", adapters
+    }));
+    assert.deepEqual(result.hcBooks.map((book) => book.book.id).sort(), [1, 2]);
+    assert.equal(result.hcBooks.find((book) => book.book.id === 2)?.status_id, 1);
+  } finally { cleanup(); }
+});
+
 test("ABS ownership snapshot batches a large audiobook library", async () => {
   const { db, cleanup } = createTestDatabase();
   try {

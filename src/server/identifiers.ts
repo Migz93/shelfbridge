@@ -31,16 +31,24 @@ function isbn13ChecksumValid(isbn: string): boolean {
   return sum % 10 === 0;
 }
 
-// A checksum-invalid ISBN is most likely a typo in source metadata. Treat it
-// like a missing ISBN (return null) rather than throwing, so it falls back to
-// other identity signals instead of becoming a bad merge key.
+// Canonical metadata should retain a structurally valid ISBN even when a
+// source reports a bad check digit. Identity reconciliation applies the
+// stricter checksum gate below, so a likely metadata typo cannot become a
+// merge key.
 export function normalizeIsbn(value: string | number | null | undefined): string | null {
   const text = cleanIdentifier(value);
   if (!text) return null;
   const normalized = text.replace(/[\s\-\u2010-\u2015]/g, "").toUpperCase();
-  if (/^\d{9}[\dX]$/.test(normalized)) return isbn10ChecksumValid(normalized) ? normalized : null;
-  if (/^\d{13}$/.test(normalized)) return isbn13ChecksumValid(normalized) ? normalized : null;
+  if (/^\d{9}[\dX]$/.test(normalized) || /^\d{13}$/.test(normalized)) return normalized;
   return null;
+}
+
+/** Returns an ISBN only when its check digit is valid enough for identity matching. */
+export function normalizeValidIsbn(value: string | number | null | undefined): string | null {
+  const normalized = normalizeIsbn(value);
+  if (!normalized) return null;
+  if (normalized.length === 10) return isbn10ChecksumValid(normalized) ? normalized : null;
+  return isbn13ChecksumValid(normalized) ? normalized : null;
 }
 
 export function identifierVariants(value: string | number | null | undefined): string[] {

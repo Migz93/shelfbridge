@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { cleanupOrphanedImageCache } from "./imageCacheMaintenance.js";
 import { logger } from "../logger.js";
-import { normalizeExternalId, normalizeIsbn } from "../identifiers.js";
+import { normalizeExternalId, normalizeIsbn, normalizeValidIsbn } from "../identifiers.js";
 import { probableDuplicateTitleKey, probableDuplicateAuthorKey } from "./duplicateKeys.js";
 
 interface BookSourceRow {
@@ -281,8 +281,8 @@ function highIdentityKeys(row: BookSourceRow): IdentityKey[] {
 // a shared ISBN alone can never override a genuinely conflicting authoritative ID.
 function isbnIdentityKeys(row: BookSourceRow): IdentityKey[] {
   const pairs: Array<[string, string | null]> = [
-    ["isbn13", normalizeIsbn(row.isbn13)],
-    ["isbn10", normalizeIsbn(row.isbn10)],
+    ["isbn13", normalizeValidIsbn(row.isbn13)],
+    ["isbn10", normalizeValidIsbn(row.isbn10)],
   ];
 
   return Array.from(new Set(

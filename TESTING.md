@@ -269,7 +269,7 @@ so all tests start already authenticated.
 
 | Test | What it checks |
 |---|---|
-| Settings, profiles, and sync request schemas | Invalid booleans, retention values, conflict strategies, malformed connections, and profile IDs are rejected before a route can access the database |
+| Settings, profiles, and sync request schemas | Invalid booleans, retention values, conflict strategies, malformed connections, and profile IDs are rejected before a route can access the database; accepted integration URLs are returned in canonical form while blanks still clear saved values |
 | Connection tests, job controls, and book actions | Malformed test payloads, schedule intervals, and external-ID write sources are rejected |
 | Mutating route IDs | Book-action IDs must be complete positive integers, not permissive `parseInt` prefixes |
 | Route validation contract | A malformed settings mutation returns the documented structured 400 response before database access |
@@ -289,7 +289,7 @@ Also covers `cleanupAfterSourceRemoval` (shared with Chaptarr's own source remov
 
 ### `tests/server/normalization.test.ts` — Title/date helpers
 
-`normalizeTitle`, `normalizeSeriesNumber`, strict ISBN-10/ISBN-13 normalization, `newerSource`, selected-read Hardcover progress calculation (including duplicate blank reads), shared Hardcover book/audiobook precedence (including preventing inactive siblings from overwriting the active record without affecting ordinary books), cross-media Hardcover identity validation, `shouldGoodreadsOverwriteGrimmory`.
+`normalizeTitle`, `normalizeSeriesNumber`, ISBN-10/ISBN-13 structural normalization plus checksum-gated identity normalization, `newerSource`, selected-read Hardcover progress calculation (including duplicate blank reads), shared Hardcover book/audiobook precedence (including preventing inactive siblings from overwriting the active record without affecting ordinary books), cross-media Hardcover identity validation, `shouldGoodreadsOverwriteGrimmory`.
 
 ### `tests/server/repository.test.ts` — Source persistence
 
@@ -330,6 +330,7 @@ Also covers `cleanupAfterSourceRemoval` (shared with Chaptarr's own source remov
 | Test | What it checks |
 |---|---|
 | Large reverse shelf lookup | A 500-book Grimmory shelf is processed in SQLite-safe batches while preserving all membership and Hardcover-list updates. |
+| Invalid ISBN shelf isolation | A checksum-invalid ISBN cannot route an unrelated Goodreads shelf book to a Grimmory shelf. |
 
 ### `tests/server/sync-engine.test.ts` — Sync engine integration
 
@@ -371,6 +372,7 @@ Adapters not relevant to a given test are left unimplemented via `createFakeAdap
 | ABS ownership scope | Runtime-validated Audiobookshelf ownership and its Grimmory Hardcover IDs never leak between profiles. |
 | Hardcover list editions | Partial edition-detail fetches preserve metadata already obtained for list-only books. |
 | Selected Hardcover list snapshot | A list-filtered Hardcover fetch is marked partial, so it cannot prune records outside the list. |
+| Owned-list-only book with selected list | Enabling Owned Import retains an Owned-list-only stub even when it is outside the selected normal sync list. |
 | Large ABS ownership snapshot | Runtime ownership lookup batches a 500-book ABS library below SQLite's parameter limit. |
 | ABS without Hardcover | An ABS audiobook linked to Grimmory remains runtime-validated when the optional Hardcover integration is absent. |
 
@@ -380,6 +382,7 @@ Adapters not relevant to a given test are left unimplemented via `createFakeAdap
 |---|---|
 | Changed Goodreads shelf | A changed Goodreads shelf writes its mapped status to the matched Grimmory book and persists local state. |
 | Matched-book ISBN update reconciled | A matched Goodreads book's newly-reported ISBN — not just newly-created sources — is reconciled, merging it with the existing book that now shares that ISBN. |
+| Invalid ISBN enrichment isolation | A checksum-invalid ISBN cannot attach an incoming Goodreads book to an unrelated existing source. |
 
 ### `tests/server/chaptarr-orphan-cleanup.test.ts` — Chaptarr source removal cleanup
 

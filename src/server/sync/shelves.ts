@@ -1,7 +1,7 @@
 import type { getDb } from "../db/index.js";
 import { logger } from "../logger.js";
 import type { SyncAdapters } from "./adapters.js";
-import { identifierVariants, normalizeIsbn } from "../identifiers.js";
+import { identifierVariants, normalizeValidIsbn } from "../identifiers.js";
 import { normalizeTitle } from "./normalization.js";
 
 type Db = ReturnType<typeof getDb>;
@@ -59,8 +59,8 @@ export async function syncGoodreadsShelvesToGrimmory(
 
   for (const pair of sourcePairs) {
     for (const id of identifierVariants(pair.goodreads_id)) grimmoryByGoodreadsId[id] ??= pair.grimmory_book_id;
-    const isbn13 = normalizeIsbn(pair.go_isbn13);
-    const isbn10 = normalizeIsbn(pair.go_isbn10);
+    const isbn13 = normalizeValidIsbn(pair.go_isbn13);
+    const isbn10 = normalizeValidIsbn(pair.go_isbn10);
     if (isbn13) grimmoryByIsbn13[isbn13] ??= pair.grimmory_book_id;
     if (isbn10) grimmoryByIsbn10[isbn10] ??= pair.grimmory_book_id;
     const norm = pair.go_title ? normalizeTitle(pair.go_title) : "";
@@ -79,8 +79,8 @@ export async function syncGoodreadsShelvesToGrimmory(
         for (const book of books) {
           let gId: number | undefined;
           const goodreadsId = identifierVariants(book.goodreadsId).find((id) => grimmoryByGoodreadsId[id] !== undefined);
-          const isbn13 = normalizeIsbn(book.isbn13);
-          const isbn10 = normalizeIsbn(book.isbn10);
+          const isbn13 = normalizeValidIsbn(book.isbn13);
+          const isbn10 = normalizeValidIsbn(book.isbn10);
           if (goodreadsId) gId = grimmoryByGoodreadsId[goodreadsId];
           else if (isbn13 && grimmoryByIsbn13[isbn13]) gId = grimmoryByIsbn13[isbn13];
           else if (isbn10 && grimmoryByIsbn10[isbn10]) gId = grimmoryByIsbn10[isbn10];

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { syncListsToShelves } from "../../src/server/sync/shelves.js";
+import { syncGoodreadsShelvesToGrimmory, syncListsToShelves } from "../../src/server/sync/shelves.js";
 import { createTestDatabase } from "./test-db.js";
 import { createFakeAdapters, seedProfile } from "./test-helpers.js";
 
@@ -56,6 +56,29 @@ test("Grimmory shelf membership cache only reflects books confirmed added, not e
 
     const state = db.prepare("SELECT grimmory_shelves FROM user_book_states WHERE book_id = ? AND profile_id = ? AND source_type = 'grimmory'").get(bookId, profileId) as { grimmory_shelves: string | null };
     assert.equal(state.grimmory_shelves, null, "a failed Grimmory write must not be recorded as shelf membership");
+  } finally {
+    cleanup();
+  }
+});
+
+test("Goodreads shelf sync does not match books solely through an invalid ISBN", async () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    db.prepare(`INSERT INTO shelf_mappings
+      (profile_id, source, source_status, source_list_name, grimmory_shelf_name, grimmory_shelf_id, enabled)
+      VALUES (?, 'goodreads', '', 'Reading', 'Reading', 9, 1)`).run(profileId);
+    const bookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Stored title')").run().lastInsertRowid);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, isbn13) VALUES (?, 'goodreads', ?, 'stored-id', 'Stored title', '9781402894629')").run(bookId, profileId);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id) VALUES (?, 'grimmory', ?, '42')").run(bookId, profileId);
+
+    const added: number[][] = [];
+    await syncGoodreadsShelvesToGrimmory(db, profileId, "reader", "https://grim", "token", false, createFakeAdapters({
+      fetchShelfPage: async () => ({ books: [{ goodreadsId: "other-id", title: "Unrelated title", author: null, isbn13: "9781402894629", isbn10: null, seriesName: null, seriesNumber: null }], hasMore: false }),
+      fetchGrimmoryShelfBookIds: async () => [],
+      addBooksToGrimmoryShelf: async (_base, _token, ids) => { added.push(ids); }
+    }));
+    assert.deepEqual(added, [], "a checksum-invalid ISBN must not route an unrelated Goodreads book to Grimmory");
   } finally {
     cleanup();
   }
