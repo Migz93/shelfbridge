@@ -606,6 +606,33 @@ test("scoped reconciliation includes a Goodreads edition reachable only through 
   }
 });
 
+test("scoped reconciliation follows the corroborated Chaptarr bridge from a Goodreads-originated scope", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const goodreadsBookId = Number(db.prepare("INSERT INTO books (title, media_type) VALUES ('Goodreads Origin', 'book')").run().lastInsertRowid);
+    const goodreadsSourceId = Number(db.prepare(`
+      INSERT INTO book_sources (book_id, source_type, external_id, title, source_media_type)
+      VALUES (?, 'goodreads', '88129-Killing_Floor', 'Goodreads Origin', 'book')
+    `).run(goodreadsBookId).lastInsertRowid);
+
+    const localBookId = Number(db.prepare("INSERT INTO books (title, media_type) VALUES ('Local Origin', 'book')").run().lastInsertRowid);
+    db.prepare(`
+      INSERT INTO book_sources (book_id, source_type, external_id, title, source_media_type, source_goodreads_edition_id, chaptarr_primary_file_path)
+      VALUES (?, 'chaptarr', 'chap-2', 'Local Origin', 'book', '88129', '/library/local-origin.epub')
+    `).run(localBookId);
+    db.prepare(`
+      INSERT INTO book_sources (book_id, source_type, external_id, title, source_media_type, grimmory_primary_file_path)
+      VALUES (?, 'grimmory', 'gr-2', 'Local Origin', 'book', '/library/local-origin.epub')
+    `).run(localBookId);
+
+    reconcileBookIdentities(db, { sourceIds: [goodreadsSourceId] });
+
+    assert.equal(booksByTitle(db).length, 1, "a Goodreads-originated scope must discover the corroborated Chaptarr bridge");
+  } finally {
+    cleanup();
+  }
+});
+
 test("scoped reconcileBookIdentities does not touch or merge an unrelated existing book outside the scope", () => {
   const { db, cleanup } = createTestDatabase();
   try {

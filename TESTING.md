@@ -172,7 +172,7 @@ so all tests start already authenticated.
 | Chaptarr reassignment state preservation | User state is retained when a cross-profile Chaptarr path makes reassignment unsafe |
 | Scoped merge via shared ISBN | A scoped reconcile discovers an existing, unrelated-looking book through a shared ISBN and merges the new source into it |
 | Scoped bridge across two existing books | A single new source that shares a key with each of two previously-separate existing books merges all three into one |
-| Scoped corroborated Chaptarr bridge | A scoped Chaptarr reconcile discovers the Goodreads edition reachable only via its corroborated edition-id/file-path bridge |
+| Scoped corroborated Chaptarr bridge | A scoped Chaptarr or Goodreads reconcile discovers the other side through its corroborated edition-id/file-path bridge |
 | Scoped isolation | A scoped reconcile touching one book does not merge or modify an unrelated existing book outside its scope |
 | Empty scope no-op | `reconcileBookIdentities` with an empty `sourceIds` array makes no changes |
 | Shared identity key, two owners | Two existing books that legitimately share an identity key (e.g. same title/author, kept separate by design) are each still discoverable — a scoped third row merges with the correct one, not the one that happened to claim the key first |

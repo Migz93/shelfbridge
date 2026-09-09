@@ -520,11 +520,11 @@ function expansionKeyValues(row: BookSourceRow): string[] {
 // on one iteration have their own rows re-scanned for further candidates on
 // the next, until a fixed point is reached.
 //
-// The corroborated Chaptarr->Goodreads bridge below uses a Chaptarr row's
+// The corroborated Chaptarr<->Goodreads bridge below uses a Chaptarr row's
 // source_goodreads_edition_id, which deliberately is not a normal identity
-// key. Scoped expansion nevertheless follows it to include the Goodreads
-// candidate; the bridge itself still performs the stricter same-format/path
-// corroboration before any merge is allowed.
+// key. Scoped expansion follows that relation in both directions, so either
+// source's sync includes the other candidate; the bridge itself still performs
+// the stricter same-format/path corroboration before any merge is allowed.
 //
 // Returns null if the closure grows past a safety cap — the caller should fall
 // back to a full reconcile in that case rather than silently truncate it.
@@ -542,7 +542,8 @@ export function expandScopeToRows(
   const visitedBookIds = new Set<number>();
   const processedKeyValues = new Set<string>();
   const keyedRowIds = new Set<number>();
-  const processedBridgeEditionIds = new Set<string>();
+  const processedChaptarrBridgeIds = new Set<string>();
+  const processedGoodreadsBridgeIds = new Set<string>();
 
   const fetchByIds = (column: "id" | "book_id", ids: number[]): BookSourceRow[] => {
     const unique = Array.from(new Set(ids));
@@ -566,23 +567,28 @@ export function expandScopeToRows(
     return Array.from(results);
   };
 
-  const candidateBookIdsForBridgeEditions = (editionIds: string[]): number[] => {
+  const candidateBookIdsForBridgeIds = (
+    editionIds: string[],
+    sourceType: "goodreads" | "chaptarr",
+    column: "external_id" | "source_goodreads_edition_id"
+  ): number[] => {
     const results = new Set<number>();
+    const normalizedIds = new Set(editionIds);
     // normalizeExternalId accepts a numeric Goodreads id with a human-readable
     // suffix, while the database stores the source's raw external_id. Query
     // the raw spellings it recognizes, then normalize again before accepting
     // a candidate so scoped expansion agrees with the actual bridge pass.
     for (const batch of chunk(editionIds, 200)) {
-      const clauses = batch.map(() => "(TRIM(external_id) = ? OR TRIM(external_id) LIKE ? ESCAPE '\\' OR TRIM(external_id) LIKE ? ESCAPE '\\' OR TRIM(external_id) LIKE ? ESCAPE '\\')").join(" OR ");
+      const clauses = batch.map(() => `(TRIM(${column}) = ? OR TRIM(${column}) LIKE ? ESCAPE '\\' OR TRIM(${column}) LIKE ? ESCAPE '\\' OR TRIM(${column}) LIKE ? ESCAPE '\\')`).join(" OR ");
       const values = batch.flatMap((id) => {
         const escaped = id.replace(/[\\%_]/g, "\\$&");
         return [id, `${escaped}-%`, `${escaped}.%`, `${escaped}\\_%`];
       });
       for (const row of db.prepare(`
-        SELECT DISTINCT book_id, external_id FROM book_sources
-        WHERE source_type = 'goodreads' AND book_id IS NOT NULL AND (${clauses})
-      `).all(...values) as { book_id: number; external_id: string }[]) {
-        if (editionIds.includes(normalizeExternalId(row.external_id) ?? "")) results.add(row.book_id);
+        SELECT DISTINCT book_id, ${column} AS bridge_id FROM book_sources
+        WHERE source_type = ? AND book_id IS NOT NULL AND (${clauses})
+      `).all(sourceType, ...values) as { book_id: number; bridge_id: string }[]) {
+        if (normalizedIds.has(normalizeExternalId(row.bridge_id) ?? "")) results.add(row.book_id);
       }
     }
     return Array.from(results);
@@ -620,14 +626,20 @@ export function expandScopeToRows(
     const bridgeEditionIds = Array.from(new Set(newlyKeyedRows
       .filter((row) => row.source_type === "chaptarr")
       .map((row) => normalizeExternalId(row.source_goodreads_edition_id))
-      .filter((id): id is string => id !== null && !processedBridgeEditionIds.has(id))));
-    for (const id of bridgeEditionIds) processedBridgeEditionIds.add(id);
-    if (keyValues.length === 0 && bridgeEditionIds.length === 0) return Array.from(rowsById.values()).sort((a, b) => a.id - b.id);
+      .filter((id): id is string => id !== null && !processedChaptarrBridgeIds.has(id))));
+    for (const id of bridgeEditionIds) processedChaptarrBridgeIds.add(id);
+    const goodreadsBridgeIds = Array.from(new Set(newlyKeyedRows
+      .filter((row) => row.source_type === "goodreads")
+      .map((row) => normalizeExternalId(row.external_id))
+      .filter((id): id is string => id !== null && !processedGoodreadsBridgeIds.has(id))));
+    for (const id of goodreadsBridgeIds) processedGoodreadsBridgeIds.add(id);
+    if (keyValues.length === 0 && bridgeEditionIds.length === 0 && goodreadsBridgeIds.length === 0) return Array.from(rowsById.values()).sort((a, b) => a.id - b.id);
     for (const value of keyValues) processedKeyValues.add(value);
 
     const newCandidateBookIds = Array.from(new Set([
       ...candidateBookIdsForKeys(keyValues),
-      ...candidateBookIdsForBridgeEditions(bridgeEditionIds)
+      ...candidateBookIdsForBridgeIds(bridgeEditionIds, "goodreads", "external_id"),
+      ...candidateBookIdsForBridgeIds(goodreadsBridgeIds, "chaptarr", "source_goodreads_edition_id")
     ])).filter((id) => !visitedBookIds.has(id));
     if (newCandidateBookIds.length === 0) return Array.from(rowsById.values()).sort((a, b) => a.id - b.id);
 
