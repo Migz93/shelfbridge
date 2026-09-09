@@ -19,7 +19,7 @@ import { useLiveRefresh } from "../lib/useLiveRefresh";
 import { formatRelativeTime, formatDateShort, hardcoverStatusLabel, statusLabel } from "../lib/utils";
 import { RunSyncButton } from "../components/RunSyncButton";
 import { SearchBar } from "../components/SearchBar";
-import type { AppSettings, BookDetail, BookDuplicateCandidate, BookFacets, BookRelationship, BookSummary, BooksPageResponse } from "../../shared/types";
+import type { AppSettings, BookDetail, BookDuplicateCandidate, BookFacets, BookRelationship, BookSummary, BooksPageResponse, DuplicateMergeResponse } from "../../shared/types";
 
 const PAGE_SIZE = 48;
 const BOOKS_REFRESH_MS = 30_000;
@@ -31,6 +31,7 @@ type ActionFilter = "add-to-chaptarr" | "grab-in-chaptarr" | "review-in-grimmory
 type SourceKey = "GR" | "HA" | "GO" | "CH" | "AB";
 type BookDetailLocationState = {
   returnTo?: string;
+  mergeWarning?: string;
 };
 
 const SOURCE_BADGE_STYLE: Record<SourceKey, string> = {
@@ -610,6 +611,14 @@ export function BookDetailPage() {
   const returnTo = locationState?.returnTo ?? fallbackListPath;
 
   useEffect(() => {
+    setDuplicateError(null);
+  }, [bookId]);
+
+  useEffect(() => {
+    setDuplicateError(locationState?.mergeWarning ?? null);
+  }, [location.key, locationState?.mergeWarning]);
+
+  useEffect(() => {
     setCoverFailed(false);
   }, [detail?.coverUrl]);
 
@@ -697,7 +706,33 @@ export function BookDetailPage() {
     setMergingDuplicateId(duplicateId);
     setDuplicateError(null);
     try {
-      await apiPost<{ ok: true; bookId: number }>(`/api/books/${bookId}/duplicates/${duplicateId}/merge`, {});
+      const result = await apiPost<DuplicateMergeResponse>(`/api/books/${bookId}/duplicates/${duplicateId}/merge`, {});
+      const failureSummary = result.failures?.length
+        ? result.failures.map(({ profileId, error }) => `Profile ${profileId}: ${error}`).join("; ")
+        : undefined;
+      const partialFailure = [failureSummary, result.finalizationError]
+        .filter((message): message is string => Boolean(message))
+        .join("; ") || undefined;
+      if (result.bookId === null) {
+        setDuplicateError(partialFailure ?? "The duplicate merge could not be finalized. Refresh the page before trying again.");
+        return;
+      }
+      if (partialFailure) {
+        // The local merge completed, so leave the stale duplicate detail and
+        // load the canonical book while retaining the profile-write warning.
+        // Navigating to the same route does not re-run the [bookId] load
+        // effect, so refresh explicitly when this book remains canonical.
+        if (result.bookId === bookId) {
+          await loadDetail();
+          setDuplicateError(partialFailure);
+          return;
+        }
+        void navigate(`${isAudiobookDetail ? "/audiobooks" : "/books"}/${result.bookId}`, {
+          replace: true,
+          state: { returnTo, mergeWarning: partialFailure }
+        });
+        return;
+      }
       void navigate(returnTo, { replace: true });
     } catch (err) {
       setDuplicateError(err instanceof Error ? err.message : String(err));
@@ -890,6 +925,12 @@ export function BookDetailPage() {
                 </section>
               )}
 
+              {duplicateError && (
+                <div className="rounded-md border border-error/25 bg-error/10 px-3 py-2 text-xs text-error">
+                  {duplicateError}
+                </div>
+              )}
+
               {detail.duplicateCandidates.length > 0 && (
                 <DuplicateReviewSection
                   bookId={detail.id}
@@ -897,7 +938,6 @@ export function BookDetailPage() {
                   dismissingId={dismissingDuplicateId}
                   mergingId={mergingDuplicateId}
                   confirmingAction={confirmingDuplicateAction}
-                  error={duplicateError}
                   onDismiss={(candidateId) => requestDuplicateAction(candidateId, "dismiss")}
                   onMerge={(candidateId) => requestDuplicateAction(candidateId, "merge")}
                 />
@@ -1097,7 +1137,6 @@ function DuplicateReviewSection({
   dismissingId,
   mergingId,
   confirmingAction,
-  error,
   onDismiss,
   onMerge
 }: {
@@ -1106,7 +1145,6 @@ function DuplicateReviewSection({
   dismissingId: number | null;
   mergingId: number | null;
   confirmingAction: { id: number; action: "dismiss" | "merge" } | null;
-  error: string | null;
   onDismiss: (candidateId: number) => void;
   onMerge: (candidateId: number) => void;
 }) {
@@ -1179,12 +1217,6 @@ function DuplicateReviewSection({
           </div>
         ))}
       </div>
-
-      {error && (
-        <div className="mt-3 rounded-md border border-error/25 bg-error/10 px-3 py-2 text-xs text-error">
-          {error}
-        </div>
-      )}
     </section>
   );
 }

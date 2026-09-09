@@ -48,8 +48,11 @@ def repair_tree(directory_fd: int, node_uid: int, node_gid: int) -> None:
             child_names = []
             for entry in entries:
                 repair_entry(entry.name, current_fd, node_uid, node_gid)
-                if entry.is_dir(follow_symlinks=False):
-                    child_names.append(entry.name)
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        child_names.append(entry.name)
+                except OSError as err:
+                    print(f"warning: unable to inspect {entry.name!r}: {err}", file=sys.stderr)
             stack[-1] = (current_fd, close_after, child_names, 0)
             continue
 
@@ -67,7 +70,7 @@ def repair_tree(directory_fd: int, node_uid: int, node_gid: int) -> None:
                 os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                 dir_fd=current_fd,
             )
-        except (FileNotFoundError, NotADirectoryError, PermissionError):
+        except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
             continue
         stack.append((child_fd, True, None, 0))
 

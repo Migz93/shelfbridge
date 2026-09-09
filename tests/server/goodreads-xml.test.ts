@@ -23,6 +23,7 @@ test("decodeXmlEntities leaves XML-invalid numeric entities unescaped instead of
   // Tab, LF, CR are explicitly valid XML control characters.
   assert.equal(decodeXmlEntities("a&#9;b"), "a\tb");
   assert.equal(decodeXmlEntities("a&#10;b"), "a\nb");
+  assert.equal(decodeXmlEntities("a&#13;b"), "a\rb");
 });
 
 test("decodeXmlEntities rejects an out-of-range codepoint", () => {

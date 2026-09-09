@@ -89,6 +89,32 @@ test("a matched Goodreads book's updated ISBN is reconciled, merging it with the
   } finally { cleanup(); }
 });
 
+test("Goodreads enrichment does not match a stored source through an invalid ISBN", async () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const profileId = seedProfile(db);
+    const existingBookId = Number(db.prepare("INSERT INTO books (title) VALUES ('Stored title')").run().lastInsertRowid);
+    db.prepare("INSERT INTO book_sources (book_id, source_type, source_instance_id, external_id, title, isbn13) VALUES (?, 'hardcover', ?, 'hc-1', 'Stored title', '9781402894629')").run(existingBookId, profileId);
+
+    await syncGoodreadsEnrichment({
+      db, profileId, runId: 1,
+      profile: { goodreads_enabled: 1, goodreads_user_id: "user", sync_goodreads_status_enabled: 0 },
+      adapters: {
+        fetchAllGoodreadsBooks: async () => [{ goodreadsId: "gr-1", title: "Unrelated title", author: null, coverUrl: null, isbn13: "9781402894629", isbn10: null, seriesName: null, seriesNumber: null, shelf: "to-read", rating: 0, readAt: null, updatedAt: null, bookLink: null }],
+        updateGrimmoryStatus: async () => {}
+      },
+      counters: { written: 0, skipped: 0 }, dryRun: false, grimmoryAvailable: false, hasGrimmory: false, baseUrl: "https://grim", grimmoryToken: null,
+      recordEvent: () => {}, pruneGoodreadsUserStatesMissingFromFetch, getUserState, hardcoverToGrimmoryRating,
+      writeTagEnabled: false, taggedSourceGrimmoryIds: new Set(), taggedSourceTitles: new Map(), goodreadsSourceGrimmoryIds: new Set(),
+      hasMeaningfulGoodreadsChange, upsertBookSource, sqliteNow, cacheSourceCover, shouldGoodreadsOverwriteGrimmory, sameNumber,
+      syncGoodreadsShelvesToGrimmory: async () => false
+    });
+
+    const goodreadsSource = db.prepare("SELECT book_id FROM book_sources WHERE source_type = 'goodreads' AND source_instance_id = ?").get(profileId) as { book_id: number };
+    assert.notEqual(goodreadsSource.book_id, existingBookId, "an invalid ISBN must not match an unrelated stored source");
+  } finally { cleanup(); }
+});
+
 test("multiple unmatched Goodreads books each become their own canonical book in one batched reconcile", async () => {
   const { db, cleanup } = createTestDatabase();
   try {
@@ -133,9 +159,9 @@ test("one book throwing during processing does not abort the rest of the Goodrea
     // upsertBookSource throws for the first (poisoned) book's external id and
     // succeeds normally for everything else, simulating an unexpected failure
     // isolated to one book's write rather than the whole Goodreads source.
-    const flakyUpsertBookSource: typeof upsertBookSource = (db_, sourceType, instanceId, externalId, fields) => {
-      if (externalId === "gr-poison") throw new Error("simulated write failure");
-      return upsertBookSource(db_, sourceType, instanceId, externalId, fields);
+    const flakyUpsertBookSource: typeof upsertBookSource = (...args) => {
+      if (args[3] === "gr-poison") throw new Error("simulated write failure");
+      return upsertBookSource(...args);
     };
 
     await syncGoodreadsEnrichment({

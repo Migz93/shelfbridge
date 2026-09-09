@@ -109,7 +109,9 @@ export function resolveSharedHardcoverOwnership(
 
   for (const book of grimmoryBooks) {
     const hardcoverBookId = hardcoverIdForGrimmoryBook(book);
-    if (!hardcoverBookId) continue;
+    // Unknown format cannot safely participate in a book-vs-audiobook
+    // ownership decision; treating it as a book can cross-contaminate buckets.
+    if (!hardcoverBookId || !book.mediaType) continue;
     const record = recordFor(hardcoverBookId);
     if (book.mediaType === "audiobook") {
       record.hasAudiobookSibling = true;

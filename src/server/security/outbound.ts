@@ -1,5 +1,6 @@
 import dns from "node:dns/promises";
 import net from "node:net";
+import { Agent, fetch as undiciFetch } from "undici";
 
 export class UnsafeIntegrationUrlError extends Error {
   constructor(message: string) {
@@ -44,23 +45,10 @@ export function validateOutboundUrl(value: unknown): string {
 // are allowed to target these — LAN-hosted services are a supported setup.
 // Remote cover URLs come from third-party source metadata instead, so they
 // get the stricter check below to reduce SSRF exposure.
-const PRIVATE_HOSTNAME_PATTERNS = [
-  /^localhost$/i,
-  /^127\./,
-  /^0\.0\.0\.0$/,
-  /^10\./,
-  /^192\.168\./,
-  /^172\.(1[6-9]|2\d|3[01])\./,
-  /^169\.254\./,
-  /^\[?::1\]?$/,
-  /^\[?fe80:/i,
-  /^\[?f[cd][0-9a-f]{2}:/i
-];
-
 export function validateCoverUrl(value: unknown): string {
   const url = validateOutboundUrl(value);
-  const hostname = new URL(url).hostname;
-  if (PRIVATE_HOSTNAME_PATTERNS.some((pattern) => pattern.test(hostname))) {
+  const hostname = new URL(url).hostname.replace(/^\[(.*)\]$/, "$1");
+  if (hostname.toLowerCase() === "localhost" || (net.isIP(hostname) && isPrivateAddress(hostname))) {
     throw new UnsafeIntegrationUrlError("Cover URL must not target a private network address");
   }
   return url;
@@ -74,7 +62,9 @@ function isPrivateIPv4(address: string): boolean {
   if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT (RFC 6598)
   if (a === 169 && b === 254) return true; // link-local
   if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && (b === 0 || b === 168)) return true; // IETF protocol assignments (also covers TEST-NET-1, 192.0.2.0/24) + private
+  if (a === 192 && b === 168) return true; // private (RFC 1918)
+  if (a === 192 && b === 0 && (c === 0 || c === 2)) return true; // IETF protocol assignments + TEST-NET-1
+  if (a === 192 && b === 88 && c === 99) return true; // deprecated 6to4 relay anycast (RFC 7526)
   if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking (RFC 2544)
   if (a === 198 && b === 51 && c === 100) return true; // TEST-NET-2 (RFC 5737, not globally reachable)
   if (a === 203 && b === 0 && c === 113) return true; // TEST-NET-3 (RFC 5737, not globally reachable)
@@ -161,6 +151,9 @@ function isPrivateIPv6(address: string): boolean {
       (groups[0] === "0064" && groups[1] === "ff9b" && groups.slice(2, 6).every((g) => g === "0000"))) {
     return isPrivateIPv4(ipv4FromGroups(groups[6]!, groups[7]!));
   }
+  // RFC 8215 local-use NAT64. Its embedded IPv4 offset varies, so reject the
+  // whole prefix rather than attempting to extract a potentially private IP.
+  if (groups[0] === "0064" && groups[1] === "ff9b" && groups[2] === "0001") return true;
   // 2002::/16 — 6to4, embeds the IPv4 in bits 16-48 (groups 1-2)
   if (groups[0] === "2002") {
     return isPrivateIPv4(ipv4FromGroups(groups[1]!, groups[2]!));
@@ -188,13 +181,9 @@ export function isPrivateAddress(address: string): boolean {
 // can still resolve to a private/loopback address. Resolve it and reject if
 // any returned address is private, closing that SSRF path.
 //
-// This does not fully close DNS rebinding (the record could theoretically
-// change between this check and the fetch() call below) — that needs pinning
-// the HTTP connection to the exact resolved address, which isn't practical
-// with Node's built-in fetch without pulling in undici as a direct dependency
-// purely for its Agent/dispatcher API. The realistic attack this closes is a
-// malicious hostname resolving to a private address, which is the far more
-// practical exploitation path than a precisely-timed DNS rebind.
+// fetchCoverImage also uses the connector lookup below, which validates the
+// address supplied to the eventual socket and closes the DNS-rebinding window.
+// This initial check still rejects unsafe URLs before they reach that transport.
 async function ensurePublicHostname(url: string): Promise<void> {
   // URL.hostname wraps IPv6 literals in brackets (e.g. "[2606:4700::1111]");
   // net.isIP() and dns.lookup() both expect the bare address.
@@ -214,6 +203,77 @@ async function ensurePublicHostname(url: string): Promise<void> {
   if (addresses.length === 0 || addresses.some((address) => isPrivateAddress(address))) {
     throw new UnsafeIntegrationUrlError("Cover URL must not target a private network address");
   }
+}
+
+// The global fetch performs its own DNS lookup after ensurePublicHostname()
+// returns, leaving a rebinding window. This lookup is passed to Undici's
+// connector, so the address it validates is the address the socket uses.
+type LookupAddress = { address: string; family: number };
+
+type LookupCallback = (
+  error: NodeJS.ErrnoException | null,
+  address?: string | LookupAddress[],
+  family?: number
+) => void;
+
+export function lookupPublicAddress(
+  hostname: string,
+  options: { family?: number; hints?: number; all?: boolean },
+  callback: LookupCallback
+): void {
+  void dns.lookup(hostname, {
+    all: true,
+    verbatim: true,
+    ...(options.family ? { family: options.family } : {}),
+    ...(options.hints ? { hints: options.hints } : {})
+  }).then((addresses) => {
+    if (addresses.length === 0 || addresses.some((entry) => isPrivateAddress(entry.address))) {
+      callback(new UnsafeIntegrationUrlError("Cover URL must not target a private network address") as NodeJS.ErrnoException);
+      return;
+    }
+    // Node 20+ asks custom lookups for all candidates so its connector can
+    // apply Happy Eyeballs. Its callback requires an address array in that
+    // mode; returning the legacy single-address shape makes net.connect()
+    // reject with ERR_INVALID_IP_ADDRESS before opening the socket.
+    if (options.all) {
+      callback(null, addresses.map(({ address, family }) => ({ address, family })));
+      return;
+    }
+    const address = addresses[0]!;
+    callback(null, address.address, address.family);
+  }).catch(() => {
+    callback(new UnsafeIntegrationUrlError("Cover URL hostname could not be resolved") as NodeJS.ErrnoException);
+  });
+}
+
+// Undici's runtime connector supports Node's lookup option, although its v7
+// declaration omits it. Keep this dispatcher limited to untrusted cover URLs.
+const coverDispatcher = new Agent({
+  connect: { lookup: lookupPublicAddress } as never
+});
+
+let coverFetch = undiciFetch;
+
+// Test seam for callers that need to exercise cover-cache handling without
+// opening a real public-network connection.
+export function setCoverFetchForTesting(fetch: typeof undiciFetch): () => void {
+  const previous = coverFetch;
+  coverFetch = fetch;
+  return () => { coverFetch = previous; };
+}
+
+// Fetch implementations can wrap connector failures more than once. Preserve
+// the specific SSRF rejection so callers do not mistake it for a generic
+// network error, regardless of the Undici version supplying fetch.
+function findUnsafeIntegrationUrlError(error: unknown): UnsafeIntegrationUrlError | null {
+  const seen = new Set<Error>();
+  let current = error;
+  while (current instanceof Error && !seen.has(current)) {
+    if (current instanceof UnsafeIntegrationUrlError) return current;
+    seen.add(current);
+    current = current.cause;
+  }
+  return null;
 }
 
 const MAX_REDIRECTS = 5;
@@ -246,6 +306,44 @@ async function fetchFollowingSameOriginRedirects(url: string, init: RequestInit)
   throw new UnsafeIntegrationUrlError("Integration exceeded the maximum number of redirects");
 }
 
+// Cover URLs come from third-party metadata and commonly redirect to a CDN.
+// Unlike configured integration URLs, each cross-origin hop is acceptable if
+// it independently passes the cover-specific public-address checks.
+async function fetchFollowingPublicCoverRedirects(url: string, init: RequestInit): Promise<Response> {
+  let currentUrl = url;
+  const originalOrigin = new URL(url).origin;
+  for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount++) {
+    let res: Response;
+    try {
+      res = await coverFetch(currentUrl, {
+        ...init,
+        // Covers may legitimately move to a CDN. Do not carry caller-supplied
+        // headers across that origin boundary: a future authenticated caller
+        // must not leak credentials to an untrusted redirect target.
+        headers: new URL(currentUrl).origin === originalOrigin ? init.headers : undefined,
+        dispatcher: coverDispatcher,
+        redirect: "manual"
+      } as RequestInit);
+    } catch (error) {
+      const unsafeError = findUnsafeIntegrationUrlError(error);
+      if (unsafeError) throw unsafeError;
+      throw error;
+    }
+    if (res.status < 300 || res.status >= 400) return res;
+    const location = res.headers.get("location");
+    if (!location) return res;
+    try {
+      const nextUrl = new URL(location, currentUrl);
+      const validatedNextUrl = validateCoverUrl(nextUrl.toString());
+      await ensurePublicHostname(validatedNextUrl);
+      currentUrl = validatedNextUrl;
+    } finally {
+      await res.body?.cancel().catch(() => {});
+    }
+  }
+  throw new UnsafeIntegrationUrlError("Cover URL exceeded the maximum number of redirects");
+}
+
 export async function fetchIntegration(url: string, init: RequestInit = {}): Promise<Response> {
   return fetchFollowingSameOriginRedirects(validateOutboundUrl(url), init);
 }
@@ -253,5 +351,5 @@ export async function fetchIntegration(url: string, init: RequestInit = {}): Pro
 export async function fetchCoverImage(url: string, init: RequestInit = {}): Promise<Response> {
   const validated = validateCoverUrl(url);
   await ensurePublicHostname(validated);
-  return fetchFollowingSameOriginRedirects(validated, init);
+  return fetchFollowingPublicCoverRedirects(validated, init);
 }

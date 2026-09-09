@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import dns from "node:dns/promises";
 import test from "node:test";
-import { fetchCoverImage, fetchIntegration, isPrivateAddress, UnsafeIntegrationUrlError, validateCoverUrl, validateIntegrationUrl, validateOutboundUrl } from "../../src/server/security/outbound.js";
+import { fetchCoverImage, fetchIntegration, isPrivateAddress, lookupPublicAddress, setCoverFetchForTesting, UnsafeIntegrationUrlError, validateCoverUrl, validateIntegrationUrl, validateOutboundUrl } from "../../src/server/security/outbound.js";
 
 test("integration URLs allow normal LAN HTTP endpoints", () => {
   assert.equal(validateIntegrationUrl("http://192.168.1.20:9303/api/"), "http://192.168.1.20:9303/api");
@@ -72,14 +72,13 @@ test("integration requests reject a cross-origin redirect", async () => {
 });
 
 test("cover image requests are rejected for private targets before any fetch happens", async () => {
-  const originalFetch = globalThis.fetch;
   let called = false;
-  globalThis.fetch = async () => { called = true; return new Response(null, { status: 204 }); };
+  const restoreCoverFetch = setCoverFetchForTesting((async () => { called = true; return new Response(null, { status: 204 }); }) as never);
 
   try {
     await assert.rejects(fetchCoverImage("http://127.0.0.1/cover.jpg"), UnsafeIntegrationUrlError);
   } finally {
-    globalThis.fetch = originalFetch;
+    restoreCoverFetch();
   }
   assert.equal(called, false);
 });
@@ -89,11 +88,11 @@ test("isPrivateAddress classifies IPv4 ranges", () => {
     "127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.1.1", "100.64.0.1", "0.0.0.0", "224.0.0.1",
     // RFC 5737 documentation ranges (TEST-NET-1/2/3) are IANA special-purpose,
     // not-globally-reachable addresses — not real public destinations.
-    "192.0.2.5", "198.51.100.5", "203.0.113.5"
+    "192.0.2.5", "192.88.99.5", "198.51.100.5", "203.0.113.5"
   ]) {
     assert.equal(isPrivateAddress(address), true, `${address} should be private`);
   }
-  for (const address of ["8.8.8.8", "1.1.1.1", "172.32.0.1", "172.15.255.255"]) {
+  for (const address of ["8.8.8.8", "1.1.1.1", "172.32.0.1", "172.15.255.255", "192.0.1.1"]) {
     assert.equal(isPrivateAddress(address), false, `${address} should be public`);
   }
 });
@@ -119,7 +118,7 @@ test("isPrivateAddress classifies alternate IPv6 compressions of a mapped addres
 
 test("isPrivateAddress classifies IPv4-compatible IPv6 addresses (::/96)", () => {
   assert.equal(isPrivateAddress("::10.0.0.1"), true);
-  assert.equal(isPrivateAddress("::000a:0001"), true);
+  assert.equal(isPrivateAddress("::0a00:0001"), true);
   assert.equal(isPrivateAddress("::8.8.8.8"), false);
   assert.equal(isPrivateAddress("::0808:0808"), false);
 });
@@ -133,13 +132,12 @@ test("isPrivateAddress classifies NAT64 addresses (64:ff9b::/96)", () => {
 
 test("cover image requests reject a hostname that resolves to a private address via DNS, even though the hostname string itself isn't a private literal", async () => {
   const originalLookup = dns.lookup;
-  const originalFetch = globalThis.fetch;
   let fetchCalled = false;
   (dns as unknown as { lookup: typeof dns.lookup }).lookup = (async (hostname: string) => {
     assert.equal(hostname, "attacker-controlled.example.test");
     return [{ address: "127.0.0.1", family: 4 }];
   }) as typeof dns.lookup;
-  globalThis.fetch = async () => { fetchCalled = true; return new Response(null, { status: 204 }); };
+  const restoreCoverFetch = setCoverFetchForTesting((async () => { fetchCalled = true; return new Response(null, { status: 204 }); }) as never);
 
   try {
     await assert.rejects(
@@ -148,24 +146,98 @@ test("cover image requests reject a hostname that resolves to a private address 
     );
   } finally {
     (dns as unknown as { lookup: typeof dns.lookup }).lookup = originalLookup;
-    globalThis.fetch = originalFetch;
+    restoreCoverFetch();
   }
   assert.equal(fetchCalled, false, "the fetch must not happen once DNS resolves to a private address");
 });
 
-test("cover image requests proceed when DNS resolves a hostname to only public addresses", async () => {
+test("cover connector lookup accepts a hostname that resolves only to public addresses", async () => {
   const originalLookup = dns.lookup;
-  const originalFetch = globalThis.fetch;
-  let fetchCalled = false;
   (dns as unknown as { lookup: typeof dns.lookup }).lookup = (async () => [{ address: "8.8.8.8", family: 4 }]) as typeof dns.lookup;
-  globalThis.fetch = async () => { fetchCalled = true; return new Response(null, { status: 204 }); };
 
   try {
-    const res = await fetchCoverImage("http://covers.example.test/cover.jpg");
+    const result = await new Promise<{ address: string; family: number }>((resolve, reject) => {
+      lookupPublicAddress("covers.example.test", {}, (error, address, family) => {
+        if (error || typeof address !== "string" || family === undefined) reject(error ?? new Error("Expected one address"));
+        else resolve({ address, family });
+      });
+    });
+    assert.deepEqual(result, { address: "8.8.8.8", family: 4 });
+  } finally {
+    (dns as unknown as { lookup: typeof dns.lookup }).lookup = originalLookup;
+  }
+});
+
+test("cover image redirects retain the secure dispatcher and validate each destination", async () => {
+  const originalLookup = dns.lookup;
+  const requested: Array<{ url: string; redirect: unknown; dispatcher: unknown }> = [];
+  (dns as unknown as { lookup: typeof dns.lookup }).lookup = (async () => [{ address: "8.8.8.8", family: 4 }]) as typeof dns.lookup;
+  const restoreCoverFetch = setCoverFetchForTesting((async (url, init) => {
+    requested.push({
+      url: String(url),
+      redirect: init?.redirect,
+      dispatcher: (init as { dispatcher?: unknown } | undefined)?.dispatcher
+    });
+    if (String(url) === "https://covers.example.test/book.jpg") {
+      return new Response(null, { status: 302, headers: { location: "https://cdn.example.test/book.jpg" } });
+    }
+    return new Response(null, { status: 204 });
+  }) as never);
+
+  try {
+    const res = await fetchCoverImage("https://covers.example.test/book.jpg");
     assert.equal(res.status, 204);
   } finally {
     (dns as unknown as { lookup: typeof dns.lookup }).lookup = originalLookup;
-    globalThis.fetch = originalFetch;
+    restoreCoverFetch();
   }
-  assert.equal(fetchCalled, true);
+
+  assert.deepEqual(requested.map((request) => request.url), [
+    "https://covers.example.test/book.jpg",
+    "https://cdn.example.test/book.jpg"
+  ]);
+  assert.ok(requested.every((request) => request.redirect === "manual" && request.dispatcher !== undefined));
+});
+
+test("cover image requests reject a DNS rebind before the connector can reach a private address", async () => {
+  const originalLookup = dns.lookup;
+  let lookupCount = 0;
+  (dns as unknown as { lookup: typeof dns.lookup }).lookup = (async () => {
+    lookupCount++;
+    return [{ address: lookupCount === 1 ? "8.8.8.8" : "127.0.0.1", family: 4 }];
+  }) as typeof dns.lookup;
+
+  try {
+    await assert.rejects(
+      fetchCoverImage("http://rebind.example.test/cover.jpg"),
+      UnsafeIntegrationUrlError
+    );
+  } finally {
+    (dns as unknown as { lookup: typeof dns.lookup }).lookup = originalLookup;
+  }
+
+  assert.equal(lookupCount, 2, "the connector must resolve independently and reject the rebinding result");
+});
+
+test("cover connector lookup returns address candidates when Node requests all addresses", async () => {
+  const originalLookup = dns.lookup;
+  (dns as unknown as { lookup: typeof dns.lookup }).lookup = (async () => [
+    { address: "8.8.8.8", family: 4 },
+    { address: "2001:4860:4860::8888", family: 6 }
+  ]) as typeof dns.lookup;
+
+  try {
+    const addresses = await new Promise<Array<{ address: string; family: number }>>((resolve, reject) => {
+      lookupPublicAddress("covers.example.test", { all: true }, (error, result) => {
+        if (error) reject(error);
+        else resolve(result as Array<{ address: string; family: number }>);
+      });
+    });
+    assert.deepEqual(addresses, [
+      { address: "8.8.8.8", family: 4 },
+      { address: "2001:4860:4860::8888", family: 6 }
+    ]);
+  } finally {
+    (dns as unknown as { lookup: typeof dns.lookup }).lookup = originalLookup;
+  }
 });

@@ -28,23 +28,11 @@ between tests.
 
 `sync-engine.test.ts`, `auth.test.ts`, `settings.test.ts`, `covers-reconcile.test.ts`,
 `chaptarr-orphan-cleanup.test.ts`, `covers-refresh-isolation.test.ts`,
-`image-cache-refresh-propagation.test.ts`, and `profiles-hardcover-disable.test.ts`
-are the exceptions: each operates on the
-`db/index.ts` singleton rather than an injected database, so each points
-`DATA_DIR` at its own private temp dir (via a dynamic `import()` of the
-singleton after setting the env var — a static `import` would evaluate the
-singleton too early, since ESM hoists imports ahead of the rest of the
-importing module) instead of sharing `./.test-data` with each other. Node's test
-runner runs each file in its own process, so two files racing to initialize the
-same fresh `./.test-data/shelfbridge.db` — both seeing no pending migrations, both
-running migration 1's non-`IF NOT EXISTS` `CREATE TABLE` statements — could
-otherwise intermittently fail with `table already exists`; isolating each of
-these files removes the shared state the race depends on. `sync-engine.test.ts`
-additionally seeds its own profile per test and scopes assertions to that
-profile's id, since it shares one database across many tests within the file.
-Each of these eight files waits for the logger to flush (`logger.end()` +
-`"finish"` event) before deleting its temp dir in `test.after`, since the
-logger also writes into `DATA_DIR`.
+`image-cache-refresh-propagation.test.ts`, `profiles-hardcover-disable.test.ts`,
+and `chaptarr-mismatch-dismissal.test.ts`
+operate on the `db/index.ts` singleton rather than an injected database. Each
+sets a private `DATA_DIR` before dynamically importing that singleton. Tests
+that import the logger flush it before deleting their temporary directory.
 
 ## Playwright End-To-End Tests
 
@@ -162,6 +150,7 @@ so all tests start already authenticated.
 | Backup directory permissions | `backupBeforeMigrating` locks `<data dir>/backups/` down to owner-only (`0o700`) even when the directory already existed with looser permissions from before this hardening shipped — `mkdirSync`'s `mode` alone is a no-op on an existing directory, so this is only correct if it's backed by an explicit `chmodSync` |
 | Downgrade guard | `getPendingMigrations`/`runMigrations` reject a database whose `user_version` is newer than this build's `LATEST_MIGRATION_VERSION`, instead of silently seeing nothing pending and booting into an unknown schema |
 | Schema equivalence | The flattened baseline (migration 1, a fresh install) and a full legacy `v3`→`v14` chain plus handover produce the same set of tables, columns (including primary-key ordinal), indexes (including implicit ones from inline `UNIQUE`/PK constraints, compared by shape rather than their creation-order-dependent name), foreign keys, and views/triggers — order-independent, so this catches the baseline silently drifting from what the legacy chain actually produces |
+| Duplicate-key normalization migration | Migration 7 rebuilds existing persisted duplicate keys with NFC-normalized text, so decomposed and composed Unicode titles continue to match |
 
 ### `tests/server/book-identity.test.ts` — Identity reconciliation
 
@@ -183,6 +172,7 @@ so all tests start already authenticated.
 | Chaptarr reassignment state preservation | User state is retained when a cross-profile Chaptarr path makes reassignment unsafe |
 | Scoped merge via shared ISBN | A scoped reconcile discovers an existing, unrelated-looking book through a shared ISBN and merges the new source into it |
 | Scoped bridge across two existing books | A single new source that shares a key with each of two previously-separate existing books merges all three into one |
+| Scoped corroborated Chaptarr bridge | A scoped Chaptarr or Goodreads reconcile discovers the other side through its corroborated edition-id/file-path bridge |
 | Scoped isolation | A scoped reconcile touching one book does not merge or modify an unrelated existing book outside its scope |
 | Empty scope no-op | `reconcileBookIdentities` with an empty `sourceIds` array makes no changes |
 | Shared identity key, two owners | Two existing books that legitimately share an identity key (e.g. same title/author, kept separate by design) are each still discoverable — a scoped third row merges with the correct one, not the one that happened to claim the key first |
@@ -237,12 +227,49 @@ so all tests start already authenticated.
 | URL validation | HTTP/HTTPS LAN URLs work; relative URLs, non-HTTP schemes, and embedded credentials are rejected |
 | Redirect handling | Integration requests disable automatic redirects |
 | Empty URL rejection | A blank configured URL cannot reach `fetch` |
+| Cover DNS binding and redirects | Cover requests reject a hostname that rebinds from a public address to a private one before a socket is opened, return Node's required all-address callback shape for Happy Eyeballs connections, and retain the secure dispatcher across validated redirects |
+
+### `tests/server/hardcover-auth.test.ts` — Hardcover authentication
+
+| Test | What it checks |
+|---|---|
+| PAT and legacy authorization | Bare `hc_pat_` values are sent as Bearer tokens; existing JWT/header values remain unchanged; connection-test and every mutation API error remain useful without echoing the supplied token. |
+
+### `tests/server/hardcover-ownership.test.ts` — Shared Hardcover ownership
+
+| Test | What it checks |
+|---|---|
+| Ownership resolution | Active, finished, and Audiobookshelf-owned siblings select one safe owner for a shared Hardcover record without input-order dependence. |
+
+### `tests/server/goodreads-xml.test.ts` — Goodreads XML decoding
+
+| Test | What it checks |
+|---|---|
+| XML entities | Named and numeric XML entities decode once while invalid or out-of-range code points stay safe. |
+
+### `tests/server/grimmory-state.test.ts` — Grimmory state ownership conflicts
+
+| Test | What it checks |
+|---|---|
+| Ownership conflict reporting | A shared-record ownership conflict is reported only when a write would otherwise be eligible. |
+
+### `tests/server/identity-review.test.ts` — Identity-review conflicts
+
+| Test | What it checks |
+|---|---|
+| Cross-reference comparison | Goodreads and Hardcover cross-reference IDs flag only real same-profile disagreements. |
+
+### `tests/server/chaptarr-mismatch-dismissal.test.ts` — Chaptarr mismatch dismissals
+
+| Test | What it checks |
+|---|---|
+| Dismissal signature | The live Books API's dismissal endpoint suppresses its current mismatch, then the `fix-chaptarr-id` action re-arms when Chaptarr reports a different upstream identifier. |
 
 ### `tests/server/validation.test.ts` — Request validation and atomic replacements
 
 | Test | What it checks |
 |---|---|
-| Settings, profiles, and sync request schemas | Invalid booleans, retention values, conflict strategies, malformed connections, and profile IDs are rejected before a route can access the database |
+| Settings, profiles, and sync request schemas | Invalid booleans, retention values, conflict strategies, malformed connections, and profile IDs are rejected before a route can access the database; accepted integration URLs are returned in canonical form while blanks still clear saved values |
 | Connection tests, job controls, and book actions | Malformed test payloads, schedule intervals, and external-ID write sources are rejected |
 | Mutating route IDs | Book-action IDs must be complete positive integers, not permissive `parseInt` prefixes |
 | Route validation contract | A malformed settings mutation returns the documented structured 400 response before database access |
@@ -262,7 +289,7 @@ Also covers `cleanupAfterSourceRemoval` (shared with Chaptarr's own source remov
 
 ### `tests/server/normalization.test.ts` — Title/date helpers
 
-`normalizeTitle`, `normalizeSeriesNumber`, strict ISBN-10/ISBN-13 normalization, `newerSource`, selected-read Hardcover progress calculation (including duplicate blank reads), shared Hardcover book/audiobook precedence (including preventing inactive siblings from overwriting the active record without affecting ordinary books), cross-media Hardcover identity validation, `shouldGoodreadsOverwriteGrimmory`.
+`normalizeTitle`, `normalizeSeriesNumber`, ISBN-10/ISBN-13 structural normalization plus checksum-gated identity normalization, `newerSource`, selected-read Hardcover progress calculation (including duplicate blank reads), shared Hardcover book/audiobook precedence (including preventing inactive siblings from overwriting the active record without affecting ordinary books), cross-media Hardcover identity validation, `shouldGoodreadsOverwriteGrimmory`.
 
 ### `tests/server/repository.test.ts` — Source persistence
 
@@ -303,6 +330,7 @@ Also covers `cleanupAfterSourceRemoval` (shared with Chaptarr's own source remov
 | Test | What it checks |
 |---|---|
 | Large reverse shelf lookup | A 500-book Grimmory shelf is processed in SQLite-safe batches while preserving all membership and Hardcover-list updates. |
+| Invalid ISBN shelf isolation | A checksum-invalid ISBN cannot route an unrelated Goodreads shelf book to a Grimmory shelf. |
 
 ### `tests/server/sync-engine.test.ts` — Sync engine integration
 
@@ -330,6 +358,8 @@ Runs `runSyncImpl` end-to-end against a real (isolated) SQLite database with fak
 | Two finished siblings with no active owner never both attempt to write Hardcover | When both siblings of a shared Hardcover book are finished (neither actively reading, so there's no active write-back owner), the unmatched sibling still defers to the matched one rather than reaching the Grimmory-only-book-into-Hardcover fallback — `insertHardcoverUserBook`/`updateHardcoverUserBook` calls are recorded and asserted empty, and the run's `sync_runs.status` is asserted `'success'`, since `runSyncImpl` catches and swallows adapter errors rather than rethrowing them (an unstubbed-adapter throw alone would NOT fail the test). |
 | A duplicate untouched sibling must not mask a different sibling's real activity | With two ebook entries sharing one Hardcover book (one untouched, one genuinely finished) plus a finished audiobook sibling, the no-active-owner write-suppression check looks at every ebook sibling's activity, not just the deterministic tie-break representative — which in this setup lands on the untouched one — so the finished audiobook's competing write is still correctly suppressed (`tests/server/hardcover-ownership.test.ts`). |
 | A `'shared'` row survives a Grimmory outage | When a run's Grimmory fetch fails, `grimmoryBooks` (and so the shared-ownership map) is empty for that entire run — a previously-written `'shared'` row must not be treated as "its sibling is gone" and deleted just because this run has no Grimmory data to confirm it with; it's left untouched, to be re-evaluated once Grimmory data is actually available again. |
+| A `'shared'` row survives incomplete Grimmory credentials | A user clearing or partially editing saved Grimmory credentials likewise leaves no trustworthy snapshot; an existing `'shared'` row is preserved rather than treating the incomplete configuration as evidence that its sibling was removed. |
+| A `'shared'` row is cleaned up after Grimmory removal | Deleting the Grimmory connection record is an explicit removal signal, so a later sync can safely prune a previously justified `'shared'` row instead of preserving it indefinitely. |
 | A Grimmory outage defers Owned-list handling only when a `'shared'` row is being preserved | With a preserved `'shared'` row in play, a Grimmory outage that also surfaces a would-be-justified Owned-list entry must not create a competing `'owned'` row alongside it (primary + shared + owned all at once) — Owned-list handling is deferred for that book until Grimmory data is trustworthy again. A profile with no Grimmory connection at all is unaffected, since it never has a `'shared'` row to defer around. |
 | A Grimmory outage does not flip an already-deferred local-only state back to UNREAD | `upsertLocalOnlyHardcoverState`'s `hasOwnActivity` is forced `false` for the whole run whenever Grimmory is unreachable, which is indistinguishable from "genuinely no activity" — without a direct `grimmoryAvailable` check, a finished sibling correctly showing `status = null` (deferring to its own real Grimmory activity) would get flipped to `UNREAD` on every transient outage. An existing state is now left untouched during an outage instead. |
 
@@ -342,6 +372,7 @@ Adapters not relevant to a given test are left unimplemented via `createFakeAdap
 | ABS ownership scope | Runtime-validated Audiobookshelf ownership and its Grimmory Hardcover IDs never leak between profiles. |
 | Hardcover list editions | Partial edition-detail fetches preserve metadata already obtained for list-only books. |
 | Selected Hardcover list snapshot | A list-filtered Hardcover fetch is marked partial, so it cannot prune records outside the list. |
+| Owned-list-only book with selected list | Enabling Owned Import retains an Owned-list-only stub even when it is outside the selected normal sync list. |
 | Large ABS ownership snapshot | Runtime ownership lookup batches a 500-book ABS library below SQLite's parameter limit. |
 | ABS without Hardcover | An ABS audiobook linked to Grimmory remains runtime-validated when the optional Hardcover integration is absent. |
 
@@ -351,6 +382,7 @@ Adapters not relevant to a given test are left unimplemented via `createFakeAdap
 |---|---|
 | Changed Goodreads shelf | A changed Goodreads shelf writes its mapped status to the matched Grimmory book and persists local state. |
 | Matched-book ISBN update reconciled | A matched Goodreads book's newly-reported ISBN — not just newly-created sources — is reconciled, merging it with the existing book that now shares that ISBN. |
+| Invalid ISBN enrichment isolation | A checksum-invalid ISBN cannot attach an incoming Goodreads book to an unrelated existing source. |
 
 ### `tests/server/chaptarr-orphan-cleanup.test.ts` — Chaptarr source removal cleanup
 
@@ -366,6 +398,7 @@ Adapters not relevant to a given test are left unimplemented via `createFakeAdap
 | Test | What it checks |
 |---|---|
 | Delayed cache propagation | A cover that finishes caching (via `cacheSourceCover`, the same path a background cover-cache task uses) after a book's own reconcile has already run still updates the canonical `books.cover_cache_path`, instead of only `book_sources.cover_cache_path`. |
+| Retained-cover retry safety | Replacing a Grimmory cover keeps the old cache record and file until the source/canonical propagation transaction commits, so a failed propagation can retry without leaking the superseded file. |
 
 ### `tests/server/covers-refresh-isolation.test.ts` — Scheduled Grimmory cover refresh
 
@@ -399,7 +432,7 @@ Informational timing at small/medium/large synthetic library sizes (documents re
 
 ### Known gaps
 
-- No coverage yet for Goodreads/Chaptarr/Audiobookshelf sync paths or shelf/list syncing.
+- Focused server tests cover Goodreads, Chaptarr, and Audiobookshelf sync paths, but there is no end-to-end sync coverage for those integrations or for shelf/list syncing.
 - The Grimmory cover-caching path (`cacheGrimmoryCover` in `covers.ts`) makes a real `fetch()` call outside the adapter seam — `sync-engine.test.ts` stubs `globalThis.fetch` globally so it never hits the network. `covers-reconcile.test.ts` covers the reconcile-on-cache-completion behavior directly (via the cache-hit path, no network involved), and `covers-refresh-isolation.test.ts` covers `refreshStaleGrimmoryCovers`'s network fetch/store path (via a local Express server standing in for Grimmory) — but `cacheGrimmoryCover`'s own live network path still has no dedicated test.
 - No forced mid-transaction failure test for `reconcileBookIdentities`'s rollback behaviour.
 - No expired-session cleanup or expiry-boundary coverage.
@@ -469,8 +502,10 @@ Read-only. Safe to run against a live instance.
 
 ### `tests/playwright/api.spec.ts` — API smoke tests
 
-Read-only. Safe to run against a live instance. Uses the `request` fixture (no
-browser) with the stored session cookie applied automatically via
+Read-only. Safe to run against a live instance. Uses `page.request`, which
+shares the authenticated page context and its session cookie; the bare
+`request` fixture creates a separate API context and cannot access the stored
+browser session.
 `storageState`.
 
 | Test | What it checks |

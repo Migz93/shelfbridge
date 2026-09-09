@@ -30,6 +30,17 @@ test("settings patches reject malformed values and unsupported conflict strategi
   assert.equal(settingsPatchSchema.safeParse({ sync: { historyRetentionDays: 7 } }).success, true);
 });
 
+test("URL schemas return canonical URLs while preserving blank integration URLs", () => {
+  assert.deepEqual(
+    settingsPatchSchema.parse({ grimmory: { baseUrl: "HTTPS://Integration.Example.Test:443/path" } }),
+    { grimmory: { baseUrl: "https://integration.example.test/path" } }
+  );
+  assert.deepEqual(profilePatchSchema.parse({ grimmory: { baseUrl: "" } }), { grimmory: { baseUrl: "" } });
+  assert.deepEqual(integrationTestSchema.parse({ baseUrl: "HTTPS://Integration.Example.Test:443/path" }), {
+    baseUrl: "https://integration.example.test/path"
+  });
+});
+
 test("manual sync requires a positive integer profile id", () => {
   assert.equal(syncRunSchema.safeParse({ profileId: 0 }).success, false);
   assert.equal(syncRunSchema.safeParse({ profileId: 1.5 }).success, false);
@@ -55,6 +66,8 @@ test("connection tests, jobs, and book actions reject malformed request bodies",
   assert.equal(profileGrimmoryTestSchema.safeParse({ username: true }).success, false);
   assert.deepEqual(profileGrimmoryTestSchema.parse({ baseUrl: "" }), { baseUrl: undefined });
   assert.equal(jobIntervalSchema.safeParse({ intervalMinutes: 1.5 }).success, false);
+  assert.equal(jobIntervalSchema.safeParse({ intervalMinutes: -1 }).success, false);
+  assert.equal(jobIntervalSchema.safeParse({ intervalMinutes: 0 }).success, true);
   assert.equal(writeGrimmoryIdSchema.safeParse({ source: "audiobookshelf" }).success, false);
   assert.equal(writeGrimmoryIdSchema.safeParse({ source: "goodreads" }).success, true);
 });

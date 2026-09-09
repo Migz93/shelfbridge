@@ -140,7 +140,13 @@ if (hasHardcover) {
 
   if (hardcoverSyncListId?.trim()) {
     const selectedList = listsForListOnlyBooks[0]!;
-    const allowedBookIds = new Set(selectedList.bookIds);
+    // Owned-list-only stubs deliberately bypass a selected reading list: the
+    // Owned Import setting is an explicit request to track them even when
+    // they do not belong to the list that filters normal library entries.
+    const allowedBookIds = new Set([
+      ...selectedList.bookIds,
+      ...(ownedImportEnabled ? listOnlyBooksById.keys() : [])
+    ]);
     const beforeCount = hcBooks.length;
     hcBooks = hcBooks.filter((book) => allowedBookIds.has(book.book.id));
     logger.info("Hardcover sync list applied", {
@@ -201,9 +207,11 @@ if (hasGrimmory) {
 // Fetch Grimmory progress (needed for Phase B Grimmory user state)
 const grimmoryProgressById = new Map<number, { readProgress: number | null; lastReadTime: string | null; readStatus: string | null }>();
 if (grimmoryAvailable && grimmoryToken && profile["sync_progress_enabled"] !== 0) {
+  const token = grimmoryToken;
+  let grimmoryProgressFailures = 0;
   await mapWithConcurrency(grimmoryBooks, GRIMMORY_PROGRESS_FETCH_CONCURRENCY, async (grBook) => {
     try {
-      const progress = await adapters.fetchGrimmoryProgress(baseUrl, grimmoryToken, grBook.id);
+      const progress = await adapters.fetchGrimmoryProgress(baseUrl, token, grBook.id);
       grimmoryProgressById.set(grBook.id, progress);
       grBook.readProgress = progress.readProgress;
       grBook.lastReadTime = progress.lastReadTime ?? grBook.lastReadTime ?? null;
@@ -213,9 +221,17 @@ if (grimmoryAvailable && grimmoryToken && profile["sync_progress_enabled"] !== 0
       // other consumer of grBook.readStatus see the freshest value.
       grBook.readStatus = progress.readStatus ?? grBook.readStatus ?? null;
     } catch (err) {
+      grimmoryProgressFailures++;
       logger.warn("Failed to fetch Grimmory progress", { profileId, grimmoryBookId: grBook.id, error: err });
     }
   });
+  if (grimmoryProgressFailures > 0) {
+    logger.warn("Some Grimmory progress records could not be refreshed; retaining bulk-library values", {
+      profileId,
+      failures: grimmoryProgressFailures,
+      total: grimmoryBooks.length
+    });
+  }
 }
 
 // Books with a runtime-validated Audiobookshelf link AND at least some

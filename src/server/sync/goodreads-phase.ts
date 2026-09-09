@@ -1,6 +1,6 @@
 import { logger } from "../logger.js";
 import { reconcileBookIdentities } from "../db/bookIdentity.js";
-import { identifierVariants, normalizeExternalId, normalizeIsbn } from "../identifiers.js";
+import { identifierVariants, normalizeExternalId, normalizeValidIsbn } from "../identifiers.js";
 import { enqueueImageCacheTask } from "../image-cache.js";
 import { GOODREADS_TO_GRIMMORY } from "./matcher.js";
 import { normalizeTitle, normalizeSeriesNumber } from "./normalization.js";
@@ -128,8 +128,8 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
       addGoodreadsLookup(src.source_goodreads_book_id, lookup);
       addGoodreadsLookup(src.source_goodreads_work_id, lookup);
       addGoodreadsLookup(src.source_goodreads_edition_id, lookup);
-      const isbn13 = normalizeIsbn(src.isbn13);
-      const isbn10 = normalizeIsbn(src.isbn10);
+      const isbn13 = normalizeValidIsbn(src.isbn13);
+      const isbn10 = normalizeValidIsbn(src.isbn10);
       if (isbn13) existingByIsbn13[isbn13] ??= lookup;
       if (isbn10) existingByIsbn10[isbn10] ??= lookup;
       const norm = src.title ? normalizeTitle(src.title) : "";
@@ -171,8 +171,8 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
       let matchType: string | null = null;
 
       const normalizedGoodreadsId = normalizeExternalId(grBook.goodreadsId);
-      const normalizedIsbn13 = normalizeIsbn(grBook.isbn13);
-      const normalizedIsbn10 = normalizeIsbn(grBook.isbn10);
+      const normalizedIsbn13 = normalizeValidIsbn(grBook.isbn13);
+      const normalizedIsbn10 = normalizeValidIsbn(grBook.isbn10);
       if (normalizedGoodreadsId && existingByGoodreadsId[normalizedGoodreadsId]) {
         matched = existingByGoodreadsId[normalizedGoodreadsId];
         matchType = "goodreads_id";
@@ -390,10 +390,16 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
     // updates (identity data on an existing book can change) and newly
     // created rows (book_id assigned by this call) — then write new books'
     // user states now that their book_id is known.
+    let reconciled = true;
     if (touchedGoodreadsSourceIds.length > 0) {
-      reconcileBookIdentities(db, { sourceIds: touchedGoodreadsSourceIds });
+      try { reconcileBookIdentities(db, { sourceIds: touchedGoodreadsSourceIds }); }
+      catch (err) {
+        reconciled = false;
+        logger.warn("Failed to reconcile Goodreads identities; skipping deferred Goodreads-only user states", { profileId, error: err });
+      }
     }
-    for (const pending of pendingGoodreadsOnly) {
+    if (reconciled) for (const pending of pendingGoodreadsOnly) {
+      try {
       const newSource = db.prepare("SELECT book_id FROM book_sources WHERE id = ?").get(pending.newSourceId) as { book_id: number } | undefined;
       if (!newSource?.book_id) {
         logger.warn("Goodreads-only book has no book_id after reconcile; skipping its user state", {
@@ -414,6 +420,9 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
         pending.matchType, pending.bookLink
       );
       logger.info("Created Goodreads-only book", { profileId, goodreadsId: pending.goodreadsId, title: pending.title, bookId: newSource.book_id });
+      } catch (err) {
+        logger.warn("Failed to create one deferred Goodreads-only user state; continuing", { profileId, goodreadsId: pending.goodreadsId, error: err });
+      }
     }
     logger.info("Goodreads enrichment complete", { profileId, goodreadsMatched, goodreadsUnmatched });
 

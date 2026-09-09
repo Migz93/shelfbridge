@@ -32,7 +32,11 @@ test("upsertBookSource refreshes sync time without changing modification time", 
       "SELECT last_sync_at, last_modified_at FROM book_sources WHERE source_type = 'grimmory'"
     ).get() as { last_sync_at: string; last_modified_at: string };
     assert.equal(changed.last_sync_at, "2026-01-03T00:00:00.000Z");
-    assert.notEqual(changed.last_modified_at, "2020-01-01 00:00:00");
+    assert.ok(changed.last_modified_at, "a changed source must receive a last_modified_at timestamp");
+    assert.ok(
+      Date.parse(changed.last_modified_at) > Date.parse("2020-01-01 00:00:00Z"),
+      "a changed source must advance last_modified_at beyond its previous value"
+    );
   } finally {
     cleanup();
   }

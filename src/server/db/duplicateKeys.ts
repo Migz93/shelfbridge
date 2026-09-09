@@ -10,6 +10,7 @@
 
 export function normalizeReviewText(value: string | null | undefined): string | null {
   const text = value
+    ?.normalize("NFC")
     ?.toLowerCase()
     .replace(/\s*\(.*?\)\s*/g, " ")
     // Unicode-aware for the same reason as normalizeTitle in bookIdentity.ts:

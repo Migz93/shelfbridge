@@ -78,8 +78,8 @@ test("GET /api/books/:id scopes fetchRows to the requested book and its duplicat
 
 test("DELETE /api/books/:id cleans up only the deleted book's own image_cache rows, not the whole cache", async () => {
   const profileId = seedProfile(db);
-  const target = insertBook("Dune", "Frank Herbert");
-  const survivor = insertBook("Neuromancer", "William Gibson");
+  const target = insertBook("Delete Target", "Delete Author");
+  const survivor = insertBook("Delete Survivor", "Delete Author");
   insertGrimmorySource(target, profileId, "300");
   insertGrimmorySource(survivor, profileId, "301");
 
@@ -110,8 +110,8 @@ test("DELETE /api/books/:id cleans up only the deleted book's own image_cache ro
 
 test("POST /api/books/:bookId/duplicates/:duplicateId/merge rejects a pair that is not a live probable duplicate", async () => {
   const profileId = seedProfile(db);
-  const first = insertBook("Dune", "Frank Herbert");
-  const second = insertBook("Neuromancer", "William Gibson");
+  const first = insertBook("Merge First", "Merge Author");
+  const second = insertBook("Merge Second", "Merge Author");
   insertGrimmorySource(first, profileId, "200");
   insertGrimmorySource(second, profileId, "201");
 

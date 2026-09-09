@@ -36,6 +36,7 @@ const insertSourceSql = `
  */
 export function seedLibrary(db: Database.Database, size: LibrarySize): { workCount: number; sourceCount: number } {
   const workCount = WORK_COUNTS[size];
+  const sourceCountBefore = (db.prepare("SELECT COUNT(*) AS count FROM book_sources").get() as { count: number }).count;
   const insert = db.prepare(insertSourceSql);
   const insertChaptarr = db.prepare(`
     INSERT INTO book_sources (source_type, source_instance_id, external_id, title, author, source_media_type, chaptarr_primary_file_path)
@@ -61,6 +62,6 @@ export function seedLibrary(db: Database.Database, size: LibrarySize): { workCou
     }
   });
   transaction();
-  const sourceCount = (db.prepare("SELECT COUNT(*) AS count FROM book_sources").get() as { count: number }).count;
-  return { workCount, sourceCount };
+  const sourceCountAfter = (db.prepare("SELECT COUNT(*) AS count FROM book_sources").get() as { count: number }).count;
+  return { workCount, sourceCount: sourceCountAfter - sourceCountBefore };
 }

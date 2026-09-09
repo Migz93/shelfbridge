@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { cleanupOrphanedImageCache } from "./imageCacheMaintenance.js";
 import { logger } from "../logger.js";
-import { normalizeExternalId, normalizeIsbn } from "../identifiers.js";
+import { normalizeExternalId, normalizeIsbn, normalizeValidIsbn } from "../identifiers.js";
 import { probableDuplicateTitleKey, probableDuplicateAuthorKey } from "./duplicateKeys.js";
 
 interface BookSourceRow {
@@ -88,6 +88,7 @@ function clean(value: string | number | null | undefined): string | null {
 
 function normalizeTitle(value: string | null | undefined): string | null {
   const text = clean(value)
+    ?.normalize("NFC")
     ?.toLowerCase()
     .replace(/\s*\(.*?\)\s*/g, " ")
     // Unicode-aware: an ASCII-only character class would strip a non-Latin
@@ -280,8 +281,8 @@ function highIdentityKeys(row: BookSourceRow): IdentityKey[] {
 // a shared ISBN alone can never override a genuinely conflicting authoritative ID.
 function isbnIdentityKeys(row: BookSourceRow): IdentityKey[] {
   const pairs: Array<[string, string | null]> = [
-    ["isbn13", normalizeIsbn(row.isbn13)],
-    ["isbn10", normalizeIsbn(row.isbn10)],
+    ["isbn13", normalizeValidIsbn(row.isbn13)],
+    ["isbn10", normalizeValidIsbn(row.isbn10)],
   ];
 
   return Array.from(new Set(
@@ -519,14 +520,14 @@ function expansionKeyValues(row: BookSourceRow): string[] {
 // on one iteration have their own rows re-scanned for further candidates on
 // the next, until a fixed point is reached.
 //
-// Known gap: the "corroborated Chaptarr->Goodreads bridge" merge pass further
-// below keys off a Chaptarr row's own (possibly stale) source_goodreads_edition_id
-// field, which is never persisted to book_identity_keys — Chaptarr's IDs aren't
-// trusted as identity keys. A brand-new row that could *only* reach its match
-// through that specific bridge, with no shared ISBN/high-key/file-path/title-
-// author to ride along on, will not be discovered here. That bridge is already
-// a narrow fallback for stale/conflicting data, and the daily full-reconcile
-// maintenance job (scheduler.ts) closes any such gap within 24 hours.
+// The corroborated Chaptarr<->Goodreads bridge below uses a Chaptarr row's
+// source_goodreads_edition_id, which deliberately is not a normal identity
+// key. Scoped expansion follows that relation in both directions, so either
+// source's sync includes the other candidate. This can grow a Goodreads-wide
+// scope; exceeding either cap deliberately falls back to a complete reconcile
+// rather than deferring a valid bridge until the maintenance job. The bridge
+// itself still performs the stricter same-format/path corroboration before any
+// merge is allowed.
 //
 // Returns null if the closure grows past a safety cap — the caller should fall
 // back to a full reconcile in that case rather than silently truncate it.
@@ -543,6 +544,9 @@ export function expandScopeToRows(
   const rowsById = new Map<number, BookSourceRow>();
   const visitedBookIds = new Set<number>();
   const processedKeyValues = new Set<string>();
+  const keyedRowIds = new Set<number>();
+  const processedChaptarrBridgeIds = new Set<string>();
+  const processedGoodreadsBridgeIds = new Set<string>();
 
   const fetchByIds = (column: "id" | "book_id", ids: number[]): BookSourceRow[] => {
     const unique = Array.from(new Set(ids));
@@ -561,6 +565,35 @@ export function expandScopeToRows(
       const placeholders = batch.map(() => "?").join(",");
       for (const row of db.prepare(`SELECT DISTINCT book_id FROM book_identity_keys WHERE key_value IN (${placeholders})`).all(...batch) as { book_id: number }[]) {
         results.add(row.book_id);
+      }
+    }
+    return Array.from(results);
+  };
+
+  const candidateBookIdsForBridgeIds = (
+    editionIds: string[],
+    sourceType: "goodreads" | "chaptarr",
+    column: "external_id" | "source_goodreads_edition_id"
+  ): number[] => {
+    const results = new Set<number>();
+    const normalizedIds = new Set(editionIds);
+    // `column` is intentionally interpolated: its narrow union is only called
+    // with these two internal book_sources column names, never user input.
+    // normalizeExternalId accepts a numeric Goodreads id with a human-readable
+    // suffix, while the database stores the source's raw external_id. Query
+    // the raw spellings it recognizes, then normalize again before accepting
+    // a candidate so scoped expansion agrees with the actual bridge pass.
+    for (const batch of chunk(editionIds, 200)) {
+      const clauses = batch.map(() => `(TRIM(${column}) = ? OR TRIM(${column}) LIKE ? ESCAPE '\\' OR TRIM(${column}) LIKE ? ESCAPE '\\' OR TRIM(${column}) LIKE ? ESCAPE '\\')`).join(" OR ");
+      const values = batch.flatMap((id) => {
+        const escaped = id.replace(/[\\%_]/g, "\\$&");
+        return [id, `${escaped}-%`, `${escaped}.%`, `${escaped}\\_%`];
+      });
+      for (const row of db.prepare(`
+        SELECT DISTINCT book_id, ${column} AS bridge_id FROM book_sources
+        WHERE source_type = ? AND book_id IS NOT NULL AND (${clauses})
+      `).all(sourceType, ...values) as { book_id: number; bridge_id: string }[]) {
+        if (normalizedIds.has(normalizeExternalId(row.bridge_id) ?? "")) results.add(row.book_id);
       }
     }
     return Array.from(results);
@@ -586,17 +619,33 @@ export function expandScopeToRows(
     for (const id of newBookIds) visitedBookIds.add(id);
     if (addRows(fetchByIds("book_id", newBookIds))) return null;
 
-    const keyValues = Array.from(new Set(Array.from(rowsById.values()).flatMap(expansionKeyValues)))
+    const newlyKeyedRows = Array.from(rowsById.values()).filter((row) => !keyedRowIds.has(row.id));
+    for (const row of newlyKeyedRows) keyedRowIds.add(row.id);
+    const keyValues = Array.from(new Set(newlyKeyedRows.flatMap(expansionKeyValues)))
       .filter((value) => !processedKeyValues.has(value));
     // Fixed point: nothing new to expand from. This is the only path that
     // returns a result — every other exit (including exhausting the
     // iteration cap below) means the closure might still be incomplete, so
     // it must return null and let the caller fall back to a full reconcile
     // rather than silently return a partial scope.
-    if (keyValues.length === 0) return Array.from(rowsById.values()).sort((a, b) => a.id - b.id);
+    const bridgeEditionIds = Array.from(new Set(newlyKeyedRows
+      .filter((row) => row.source_type === "chaptarr")
+      .map((row) => normalizeExternalId(row.source_goodreads_edition_id))
+      .filter((id): id is string => id !== null && !processedChaptarrBridgeIds.has(id))));
+    for (const id of bridgeEditionIds) processedChaptarrBridgeIds.add(id);
+    const goodreadsBridgeIds = Array.from(new Set(newlyKeyedRows
+      .filter((row) => row.source_type === "goodreads")
+      .map((row) => normalizeExternalId(row.external_id))
+      .filter((id): id is string => id !== null && !processedGoodreadsBridgeIds.has(id))));
+    for (const id of goodreadsBridgeIds) processedGoodreadsBridgeIds.add(id);
+    if (keyValues.length === 0 && bridgeEditionIds.length === 0 && goodreadsBridgeIds.length === 0) return Array.from(rowsById.values()).sort((a, b) => a.id - b.id);
     for (const value of keyValues) processedKeyValues.add(value);
 
-    const newCandidateBookIds = candidateBookIdsForKeys(keyValues).filter((id) => !visitedBookIds.has(id));
+    const newCandidateBookIds = Array.from(new Set([
+      ...candidateBookIdsForKeys(keyValues),
+      ...candidateBookIdsForBridgeIds(bridgeEditionIds, "goodreads", "external_id"),
+      ...candidateBookIdsForBridgeIds(goodreadsBridgeIds, "chaptarr", "source_goodreads_edition_id")
+    ])).filter((id) => !visitedBookIds.has(id));
     if (newCandidateBookIds.length === 0) return Array.from(rowsById.values()).sort((a, b) => a.id - b.id);
 
     if (addRows(fetchByIds("book_id", newCandidateBookIds))) return null;
@@ -778,12 +827,14 @@ export function reconcileBookIdentities(db: Database.Database, scope?: Reconcile
         // confirm the conflict is actually confined to these two rows —
         // otherwise an unrelated conflicting member already in one of the
         // clusters would get pulled into the merge on this pair's coattails.
-        const residualKeysA = new Set([...keysA].filter((key) => !new Set(highIdentityKeys(firstRow!)).has(key)));
-        const residualKeysB = new Set([...keysB].filter((key) => !new Set(highIdentityKeys(secondRow!)).has(key)));
+        const firstRowKeys = new Set(highIdentityKeys(firstRow!));
+        const secondRowKeys = new Set(highIdentityKeys(secondRow!));
+        const residualKeysA = new Set([...keysA].filter((key) => !firstRowKeys.has(key)));
+        const residualKeysB = new Set([...keysB].filter((key) => !secondRowKeys.has(key)));
         const conflictConfinedToThisPair = sameTitle && corroboratedPath
           && !highKeyConflict(residualKeysA, residualKeysB)
-          && !highKeyConflict(residualKeysA, new Set(highIdentityKeys(secondRow!)))
-          && !highKeyConflict(new Set(highIdentityKeys(firstRow!)), residualKeysB);
+          && !highKeyConflict(residualKeysA, secondRowKeys)
+          && !highKeyConflict(firstRowKeys, residualKeysB);
         if (conflictConfinedToThisPair) {
           unionRoots(rootA, rootB);
           logger.info("Merged ISBN match despite stale Grimmory identifier", {
@@ -1068,6 +1119,10 @@ export function reconcileBookIdentities(db: Database.Database, scope?: Reconcile
   // job in scheduler.ts).
   const repairAudiobookshelfStates = (scopeBookIds?: number[]): void => {
     if (scopeBookIds && scopeBookIds.length === 0) return;
+    if (scopeBookIds && scopeBookIds.length > 500) {
+      for (let i = 0; i < scopeBookIds.length; i += 500) repairAudiobookshelfStates(scopeBookIds.slice(i, i + 500));
+      return;
+    }
     // Matched by (external_id AND instance) — a colliding local item id on a
     // different profile's ABS server must not move this profile's user state.
     const scopeClause = scopeBookIds ? `AND bs.book_id IN (${scopeBookIds.map(() => "?").join(",")})` : "";
@@ -1092,6 +1147,10 @@ export function reconcileBookIdentities(db: Database.Database, scope?: Reconcile
 
   const repairGrimmoryStates = (scopeBookIds?: number[]): void => {
     if (scopeBookIds && scopeBookIds.length === 0) return;
+    if (scopeBookIds && scopeBookIds.length > 500) {
+      for (let i = 0; i < scopeBookIds.length; i += 500) repairGrimmoryStates(scopeBookIds.slice(i, i + 500));
+      return;
+    }
     // Matched by (external_id AND instance) — a colliding local book id on a
     // different profile's Grimmory server must not move this profile's user state.
     const scopeClause = scopeBookIds ? `AND bs.book_id IN (${scopeBookIds.map(() => "?").join(",")})` : "";

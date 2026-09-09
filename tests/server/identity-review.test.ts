@@ -31,6 +31,14 @@ test("does not flag a conflict when Grimmory's cross-reference ID agrees with th
   assert.equal(hasIdentityReviewConflict(rows), false);
 });
 
+test("does not flag a conflict when a numeric Hardcover ID agrees with Grimmory's string cross-reference", () => {
+  const rows = [
+    { profile_id: 1, goodreads_book_id: null, grimmory_goodreads_id: null, hardcover_book_id: 111, grimmory_hardcover_book_id: null },
+    { profile_id: 1, goodreads_book_id: null, grimmory_goodreads_id: null, hardcover_book_id: null, grimmory_hardcover_book_id: "111" }
+  ];
+  assert.equal(hasIdentityReviewConflict(rows), false);
+});
+
 test("does not flag a conflict across different profiles' own rows", () => {
   const rows = [
     { profile_id: 1, goodreads_book_id: "111", grimmory_goodreads_id: "111", hardcover_book_id: null, grimmory_hardcover_book_id: null },

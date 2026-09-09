@@ -6,7 +6,7 @@ import {
   normalizeTitle,
   shouldGoodreadsOverwriteGrimmory
 } from "../../src/server/sync/engine.js";
-import { normalizeIsbn } from "../../src/server/identifiers.js";
+import { normalizeIsbn, normalizeValidIsbn } from "../../src/server/identifiers.js";
 import {
   cleanupDuplicateBlankHardcoverReads,
   hardcoverProgressPercent,
@@ -34,6 +34,11 @@ test("normalizeTitle preserves non-Latin scripts instead of stripping them to an
   assert.equal(normalizeTitle("三体"), "三体");
 });
 
+test("normalizeTitle treats NFC and NFD input as the same title", () => {
+  assert.equal(normalizeTitle("Café"), normalizeTitle("Cafe\u0301"));
+  assert.equal(normalizeTitle("Cafe\u0301"), "café");
+});
+
 test("normalizeSeriesNumber extracts the leading numeric portion", () => {
   assert.equal(normalizeSeriesNumber("Book 2.5"), "2.5");
   assert.equal(normalizeSeriesNumber(3), "3");
@@ -54,10 +59,12 @@ test("normalizeIsbn ignores conventional separators", () => {
   assert.equal(normalizeIsbn("97814028AB626"), null);
 });
 
-test("normalizeIsbn rejects a well-formed ISBN with an invalid check digit", () => {
+test("normalizeIsbn preserves a well-formed ISBN with an invalid check digit", () => {
   // Same digits as the valid examples above with the final check digit changed.
-  assert.equal(normalizeIsbn("978-1-4028-9462-9"), null);
-  assert.equal(normalizeIsbn("0-306-40615-9"), null);
+  assert.equal(normalizeIsbn("978-1-4028-9462-9"), "9781402894629");
+  assert.equal(normalizeIsbn("0-306-40615-9"), "0306406159");
+  assert.equal(normalizeValidIsbn("978-1-4028-9462-9"), null, "invalid checksums are never used as identity keys");
+  assert.equal(normalizeValidIsbn("978-1-4028-9462-6"), "9781402894626");
 });
 
 test("newerSource returns whichever timestamp is later, or null when either side is missing", () => {

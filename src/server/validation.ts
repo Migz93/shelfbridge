@@ -9,14 +9,15 @@ export function parsePositiveId(value: string | undefined): number | null {
 
 const conflictStrategySchema = z.enum(["latest_wins", "grimmory_wins", "hardcover_wins"]);
 
-const suppliedOutboundUrlSchema = z.string().superRefine((value, context) => {
+const suppliedOutboundUrlSchema = z.string().transform((value, context) => {
   try {
-    validateOutboundUrl(value);
+    return validateOutboundUrl(value);
   } catch (error) {
     context.addIssue({
       code: "custom",
       message: error instanceof UnsafeIntegrationUrlError ? error.message : "Integration URL must be valid"
     });
+    return z.NEVER;
   }
 });
 
@@ -30,15 +31,15 @@ const optionalSuppliedOutboundUrlSchema = z.preprocess(
 
 // Saved integration URLs may be blank to clear a configured value. Non-blank
 // values still use the same URL policy as every outbound integration request.
-const optionalIntegrationUrlSchema = z.string().superRefine((value, context) => {
-  if (!value.trim()) return;
+const optionalIntegrationUrlSchema = z.string().transform((value, context) => {
   try {
-    validateIntegrationUrl(value);
+    return validateIntegrationUrl(value);
   } catch (error) {
     context.addIssue({
       code: "custom",
       message: error instanceof UnsafeIntegrationUrlError ? error.message : "Integration URL must be valid"
     });
+    return z.NEVER;
   }
 }).optional();
 
@@ -84,7 +85,8 @@ export const profileGoodreadsTestSchema = z.object({ goodreadsUserId: z.string()
 export const profileAudiobookshelfTestSchema = z.object({ apiKey: z.string().optional() }).strict();
 
 export const jobIntervalSchema = z.object({
-  intervalMinutes: z.number().int()
+  // Zero disables the job; a negative interval has no useful scheduler meaning.
+  intervalMinutes: z.number().int().min(0)
 }).strict();
 
 export const writeGrimmoryIdSchema = z.object({
@@ -159,9 +161,10 @@ export type ValidationErrorResponse = {
 };
 
 export function validationErrorResponse(error: z.ZodError): ValidationErrorResponse {
+  const flattened = z.flattenError(error);
   return {
     error: "Invalid request",
-    fieldErrors: z.flattenError(error).fieldErrors,
-    formErrors: z.flattenError(error).formErrors
+    fieldErrors: flattened.fieldErrors,
+    formErrors: flattened.formErrors
   };
 }

@@ -41,6 +41,23 @@ function booksByTitle(db: ReturnType<typeof createTestDatabase>["db"]) {
   return db.prepare("SELECT id, title FROM books ORDER BY id").all() as { id: number; title: string }[];
 }
 
+function captureWarnings(): {
+  calls: Array<{ message: string; meta?: unknown }>;
+  restore: () => void;
+} {
+  const originalWarn = logger.warn.bind(logger);
+  const calls: Array<{ message: string; meta?: unknown }> = [];
+  (logger as unknown as { warn: typeof logger.warn }).warn = ((message: string, meta?: unknown) => {
+    calls.push({ message, meta });
+  }) as typeof logger.warn;
+  return {
+    calls,
+    restore: () => {
+      (logger as unknown as { warn: typeof logger.warn }).warn = originalWarn;
+    }
+  };
+}
+
 test("reconcileBookIdentities merges two sources that share an ISBN13 into one book", () => {
   const { db, cleanup } = createTestDatabase();
   try {
@@ -117,7 +134,7 @@ test("reconcileBookIdentities keeps a book and its audiobook sibling separate ev
     // are deliberately kept apart everywhere else in this codebase (bucket-
     // prefixed hardcover_book_id keys, the Owned-list/shared-sibling dual-row
     // mechanism), so a same-ISBN, opposite-bucket pair must stay split.
-    const sharedIsbn = "9780000000099";
+    const sharedIsbn = validIsbn13(99);
     db.prepare(`
       INSERT INTO book_sources (source_type, external_id, title, author, isbn13, source_media_type, source_hardcover_book_id)
       VALUES ('grimmory', 'gr-book', 'Same ISBN Both Formats', 'Author', ?, 'ebook', '777')
@@ -425,11 +442,7 @@ test("the stale-Grimmory-ID escape hatch does not drag in an unrelated conflicti
 
 test("reconcileBookIdentities aggregates many ambiguous Chaptarr file-path skips into a single bounded warning", () => {
   const { db, cleanup } = createTestDatabase();
-  const originalWarn = logger.warn.bind(logger);
-  const warnCalls: Array<{ message: string; meta?: unknown }> = [];
-  (logger as unknown as { warn: typeof logger.warn }).warn = ((message: string, meta?: unknown) => {
-    warnCalls.push({ message, meta });
-  }) as typeof logger.warn;
+  const warningCapture = captureWarnings();
   try {
     const firstProfile = seedProfile(db, "First");
     const secondProfile = seedProfile(db, "Second");
@@ -456,7 +469,7 @@ test("reconcileBookIdentities aggregates many ambiguous Chaptarr file-path skips
 
     reconcileBookIdentities(db);
 
-    const aggregatedWarnCalls = warnCalls.filter((call) => call.message === "Skipped Chaptarr file-path reassignment across scoped source profiles");
+    const aggregatedWarnCalls = warningCapture.calls.filter((call) => call.message === "Skipped Chaptarr file-path reassignment across scoped source profiles");
     assert.equal(aggregatedWarnCalls.length, 1, "a sync with many ambiguous paths must produce exactly one aggregated warning, not one per group");
 
     const meta = aggregatedWarnCalls[0]?.meta as { skippedGroups: number; sample: Array<{ path: string; instanceIds: Array<number | null> }> };
@@ -473,18 +486,14 @@ test("reconcileBookIdentities aggregates many ambiguous Chaptarr file-path skips
       assert.equal(chaptarrRow.book_id, originalChaptarrBookIds.get(externalId), `Chaptarr row ${externalId} must keep its original canonical book, not the ambiguous cross-profile one`);
     }
   } finally {
-    (logger as unknown as { warn: typeof logger.warn }).warn = originalWarn;
+    warningCapture.restore();
     cleanup();
   }
 });
 
 test("reconcileBookIdentities does not let a single crossing path fill the aggregated warning's sample with duplicates", () => {
   const { db, cleanup } = createTestDatabase();
-  const originalWarn = logger.warn.bind(logger);
-  const warnCalls: Array<{ message: string; meta?: unknown }> = [];
-  (logger as unknown as { warn: typeof logger.warn }).warn = ((message: string, meta?: unknown) => {
-    warnCalls.push({ message, meta });
-  }) as typeof logger.warn;
+  const warningCapture = captureWarnings();
   try {
     const firstProfile = seedProfile(db, "First");
     const secondProfile = seedProfile(db, "Second");
@@ -504,7 +513,7 @@ test("reconcileBookIdentities does not let a single crossing path fill the aggre
 
     reconcileBookIdentities(db);
 
-    const aggregatedWarnCalls = warnCalls.filter((call) => call.message === "Skipped Chaptarr file-path reassignment across scoped source profiles");
+    const aggregatedWarnCalls = warningCapture.calls.filter((call) => call.message === "Skipped Chaptarr file-path reassignment across scoped source profiles");
     assert.equal(aggregatedWarnCalls.length, 1);
 
     const meta = aggregatedWarnCalls[0]?.meta as { skippedGroups: number; sample: Array<{ path: string; instanceIds: unknown[] }> };
@@ -512,7 +521,7 @@ test("reconcileBookIdentities does not let a single crossing path fill the aggre
     const samplesForPath = meta.sample.filter((entry) => entry.path === path);
     assert.equal(samplesForPath.length, 1, "a path shared by two rows within the same skipped group must appear once in the sample, not once per row");
   } finally {
-    (logger as unknown as { warn: typeof logger.warn }).warn = originalWarn;
+    warningCapture.restore();
     cleanup();
   }
 });
@@ -565,6 +574,60 @@ test("scoped reconcileBookIdentities bridges two previously-separate existing bo
 
     const after = booksByTitle(db);
     assert.equal(after.length, 1, "scoped reconcile must bridge both existing books through the new corroborating row");
+  } finally {
+    cleanup();
+  }
+});
+
+test("scoped reconciliation includes a Goodreads edition reachable only through the corroborated Chaptarr bridge", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const goodreadsBookId = Number(db.prepare("INSERT INTO books (title, media_type) VALUES ('Goodreads Edition', 'book')").run().lastInsertRowid);
+    db.prepare(`
+      INSERT INTO book_sources (book_id, source_type, external_id, title, source_media_type)
+      VALUES (?, 'goodreads', '78129-Killing_Floor', 'Goodreads Edition', 'book')
+    `).run(goodreadsBookId);
+
+    const localBookId = Number(db.prepare("INSERT INTO books (title, media_type) VALUES ('Local Copy', 'book')").run().lastInsertRowid);
+    const chaptarrSourceId = Number(db.prepare(`
+      INSERT INTO book_sources (book_id, source_type, external_id, title, source_media_type, source_goodreads_edition_id, chaptarr_primary_file_path)
+      VALUES (?, 'chaptarr', 'chap-1', 'Local Copy', 'book', '78129', '/library/local-copy.epub')
+    `).run(localBookId).lastInsertRowid);
+    db.prepare(`
+      INSERT INTO book_sources (book_id, source_type, external_id, title, source_media_type, grimmory_primary_file_path)
+      VALUES (?, 'grimmory', 'gr-1', 'Local Copy', 'book', '/library/local-copy.epub')
+    `).run(localBookId);
+
+    reconcileBookIdentities(db, { sourceIds: [chaptarrSourceId] });
+
+    assert.equal(booksByTitle(db).length, 1, "the scoped bridge must discover and merge the Goodreads edition");
+  } finally {
+    cleanup();
+  }
+});
+
+test("scoped reconciliation follows the corroborated Chaptarr bridge from a Goodreads-originated scope", () => {
+  const { db, cleanup } = createTestDatabase();
+  try {
+    const goodreadsBookId = Number(db.prepare("INSERT INTO books (title, media_type) VALUES ('Goodreads Origin', 'book')").run().lastInsertRowid);
+    const goodreadsSourceId = Number(db.prepare(`
+      INSERT INTO book_sources (book_id, source_type, external_id, title, source_media_type)
+      VALUES (?, 'goodreads', '88129-Killing_Floor', 'Goodreads Origin', 'book')
+    `).run(goodreadsBookId).lastInsertRowid);
+
+    const localBookId = Number(db.prepare("INSERT INTO books (title, media_type) VALUES ('Local Origin', 'book')").run().lastInsertRowid);
+    db.prepare(`
+      INSERT INTO book_sources (book_id, source_type, external_id, title, source_media_type, source_goodreads_edition_id, chaptarr_primary_file_path)
+      VALUES (?, 'chaptarr', 'chap-2', 'Local Origin', 'book', '88129', '/library/local-origin.epub')
+    `).run(localBookId);
+    db.prepare(`
+      INSERT INTO book_sources (book_id, source_type, external_id, title, source_media_type, grimmory_primary_file_path)
+      VALUES (?, 'grimmory', 'gr-2', 'Local Origin', 'book', '/library/local-origin.epub')
+    `).run(localBookId);
+
+    reconcileBookIdentities(db, { sourceIds: [goodreadsSourceId] });
+
+    assert.equal(booksByTitle(db).length, 1, "a Goodreads-originated scope must discover the corroborated Chaptarr bridge");
   } finally {
     cleanup();
   }

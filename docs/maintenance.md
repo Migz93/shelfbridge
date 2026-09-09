@@ -14,7 +14,7 @@ ShelfBridge runs three scheduled housekeeping jobs, all registered in
 | `full-reconcile` | Daily at 04:00 | First runs `cleanupLegacyHardcoverSources()` (`sync/hardcover-legacy-cleanup.ts`), then a full, unscoped `reconcileBookIdentities()` pass over the whole catalog, with progress logged at each phase. Serialized against every profile sync via `runExclusiveOfSyncs` in `engine.ts` — it never runs while a sync is mid-flight, since a sync yields to the event loop between remote I/O calls and an unserialized reconcile could merge/reassign a book_id it's mid-write against |
 
 `cleanupLegacyHardcoverSources()` (`sync/hardcover-legacy-cleanup.ts`) deletes
-instance-less (`source_instance_id IS NULL`) `hardcover` `book_sources` rows —
+eligible instance-less (`source_instance_id IS NULL`) `hardcover` `book_sources` rows —
 a pre-per-profile-scoping artifact that no sync path writes anymore, but that
 a fresh install migrated forward as a duplicate of every currently-tracked
 Hardcover book.
@@ -64,8 +64,8 @@ A related cleanup is not scheduled but runs inline, via two paths:
 |---|---|---|
 | `sync_runs` | 7 days (default) | **Settings → General → History Retention** (`sync.historyRetentionDays`) |
 | `sync_events` | Follows `sync_runs` | `ON DELETE CASCADE` — never pruned directly |
-| `shelfbridge-*.log` | 7 days, 20 MB per file | `maxFiles` in `src/server/logger.ts` |
-| `.machinelogs-*.json` | 3 days, 20 MB per file | `maxFiles` in `src/server/logger.ts` |
+| `logs/shelfbridge-*.log` | 7 days, 20 MB per file | `maxFiles` in `src/server/logger.ts` |
+| `logs/.machinelogs-*.json` | 3 days, 20 MB per file | `maxFiles` in `src/server/logger.ts` |
 
 ShelfBridge does not currently prune `books`, `book_sources`, or
 `user_book_states` on a schedule. Those are pruned reactively instead — see the

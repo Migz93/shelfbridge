@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { chmodSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { logger } from "../logger.js";
+import { probableDuplicateAuthorKey, probableDuplicateTitleKey } from "./duplicateKeys.js";
 
 export interface Migration {
   version: number;
@@ -588,7 +589,22 @@ const migration6: Migration = {
   }
 };
 
-export const migrations: Migration[] = [migration1, migration2, migration3, migration4, migration5, migration6];
+// Unicode composition is semantically irrelevant for duplicate matching, but
+// pre-v7 rows stored whatever form their source supplied. Rebuild the indexed
+// keys so existing records compare the same way as future NFC-normalized rows.
+const migration7: Migration = {
+  version: 7,
+  description: "Normalize persisted duplicate-detection keys",
+  up(db: Database.Database): void {
+    const rows = db.prepare("SELECT id, title, author FROM books").all() as { id: number; title: string | null; author: string | null }[];
+    const updateKeys = db.prepare("UPDATE books SET duplicate_title_key = ?, duplicate_author_key = ? WHERE id = ?");
+    for (const row of rows) {
+      updateKeys.run(probableDuplicateTitleKey(row.title), probableDuplicateAuthorKey(row.author), row.id);
+    }
+  }
+};
+
+export const migrations: Migration[] = [migration1, migration2, migration3, migration4, migration5, migration6, migration7];
 
 // Guards against a typo'd version number: a duplicate would let two migrations
 // silently race to apply at the same version, and a gap (e.g. 1, 3 — skipping

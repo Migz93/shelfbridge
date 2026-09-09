@@ -52,10 +52,10 @@ test("readRecentMachineLogs falls back to the ring buffer instead of throwing wh
   const missingPath = path.join(dir, "does-not-exist.json");
   rmSync(dir, { recursive: true, force: true }); // the containing directory is gone too, not just the file
 
-  // An empty ring would make [] === getRecentLogs(3) trivially true even for an implementation
+  // An empty ring would make [] === getRecentLogs(50) trivially true even for an implementation
   // that doesn't actually fall back — log a marker first so the assertion proves the ring was read.
   const marker = "machine-log-fallback-marker";
   logger.info(marker);
-  const entries = await readRecentMachineLogs(missingPath, 3);
+  const entries = await readRecentMachineLogs(missingPath, 50);
   assert.ok(entries.some((entry) => entry.message === marker));
 });

@@ -1,6 +1,7 @@
 import { getDb, getSetting } from "../db/index.js";
+import fs from "node:fs";
 import { logger } from "../logger.js";
-import { ensureCoverCached, getCachedCoverPath, storeFetchedCover } from "../image-cache.js";
+import { discardStoredFetchedCover, ensureCoverCached, getCachedCoverPath, persistStoredFetchedCover, storeFetchedCover, type StoredFetchedCover } from "../image-cache.js";
 import { getGrimmoryToken } from "./grimmory.js";
 import { fetchIntegration } from "../security/outbound.js";
 import { reconcileBookIdentities } from "../db/bookIdentity.js";
@@ -79,20 +80,72 @@ export async function fetchGrimmoryCoverBuffer(baseUrl: string, token: string, g
 // them and a reconcile failure can't leave cover_cache_path pointing at a
 // path nothing else will retry. Reconcile only fires when the UPDATE actually
 // changed the row, so re-caching an already-current path is a no-op.
-async function writeCoverPathAndReconcile(db: Db, sourceId: number, newPath: string): Promise<void> {
+async function writeCoverPathAndReconcile(db: Db, sourceId: number, newPath: string, stored?: StoredFetchedCover): Promise<void> {
   await runExclusiveOfSyncs(async () => {
-    db.transaction(() => {
-      const { changes } = db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ? AND cover_cache_path IS NOT ?")
-        .run(newPath, sourceId, newPath);
-      if (changes > 0) reconcileBookIdentities(db, { sourceIds: [sourceId] });
-    })();
+    // ensureCoverCached may return an old path while a public-cover refresh is
+    // already in flight. Resolve again after entering the queue so a refresh
+    // that committed first cannot have its new path overwritten by the stale
+    // return value (and cannot leave book_sources pointing at its deleted file).
+    const currentCachedPath = getCachedCoverPath(sourceId);
+    writeCoverPathAndReconcileTransaction(db, sourceId, currentCachedPath ?? newPath, stored);
   });
+}
+
+function writeCoverPathAndReconcileTransaction(db: Db, sourceId: number, newPath: string, stored?: StoredFetchedCover): void {
+  db.transaction(() => {
+    if (stored) persistStoredFetchedCover(db, stored);
+    const { changes } = db.prepare("UPDATE book_sources SET cover_cache_path = ? WHERE id = ? AND cover_cache_path IS NOT ?")
+      .run(newPath, sourceId, newPath);
+    if (changes > 0) reconcileBookIdentities(db, { sourceIds: [sourceId] });
+  })();
+}
+
+// Stage, commit, and cleanup run under the same exclusive queue. Fetching
+// happens outside it, but serialising from storeFetchedCover's read of the old
+// cache row onward prevents concurrent refreshes from orphaning each other's
+// newly written file.
+async function storeCoverAndReconcile(db: Db, sourceId: number, data: Buffer): Promise<boolean> {
+  return runExclusiveOfSyncs(async () => {
+    const stored = storeFetchedCover(sourceId, data);
+    if (!stored) return false;
+    try {
+      writeCoverPathAndReconcileTransaction(db, sourceId, stored.webPath, stored);
+    } catch (err) {
+      discardStoredFetchedCover(stored);
+      throw err;
+    }
+    removeSupersededCoverFile(stored.previousFilePath);
+    return true;
+  });
+}
+
+async function propagateCachedCover(db: Db, sourceId: number): Promise<boolean> {
+  return runExclusiveOfSyncs(async () => {
+    // Read the cache path inside the same exclusive section as propagation:
+    // a refresh may otherwise replace and delete this file between a cache-hit
+    // read and the later queued update, reasserting a stale path.
+    const cachedPath = getCachedCoverPath(sourceId);
+    if (!cachedPath) return false;
+    writeCoverPathAndReconcileTransaction(db, sourceId, cachedPath);
+    return true;
+  });
+}
+
+function removeSupersededCoverFile(previousFilePath: string | null): void {
+  if (!previousFilePath) return;
+  try {
+    fs.unlinkSync(previousFilePath);
+  } catch {
+    // Best effort: stale image files are harmless and can be removed later.
+  }
 }
 
 export async function cacheSourceCover(db: Db, sourceId: number, sourceType: string, coverUrl: string): Promise<void> {
   try {
     const localPath = await ensureCoverCached(sourceId, coverUrl);
     if (localPath) {
+      // ensureCoverCached owns freshness and changed-URL detection; preserve
+      // that behavior even when a local file already exists.
       await writeCoverPathAndReconcile(db, sourceId, localPath);
       logger.info("Cached source cover", { sourceType, sourceId });
     }
@@ -101,16 +154,12 @@ export async function cacheSourceCover(db: Db, sourceId: number, sourceType: str
 
 export async function cacheGrimmoryCover(db: Db, bookSourceId: number, baseUrl: string, token: string, grimmoryBookId: number, mediaType: "physical" | "ebook" | "audiobook" | null = null): Promise<void> {
   try {
-    const cachedPath = getCachedCoverPath(bookSourceId);
-    if (cachedPath) {
-      await writeCoverPathAndReconcile(db, bookSourceId, cachedPath);
+    if (await propagateCachedCover(db, bookSourceId)) {
       return;
     }
     const data = await fetchGrimmoryCoverBuffer(baseUrl, token, grimmoryBookId, mediaType);
     if (!data) { logger.info("No Grimmory cover available; leaving other source covers eligible", { bookSourceId, grimmoryBookId }); return; }
-    const webPath = storeFetchedCover(bookSourceId, data);
-    if (webPath) {
-      await writeCoverPathAndReconcile(db, bookSourceId, webPath);
+    if (await storeCoverAndReconcile(db, bookSourceId, data)) {
       logger.info("Cached Grimmory source cover", { bookSourceId, grimmoryBookId });
     }
   } catch (err) { logger.warn("Failed to cache Grimmory source cover", { bookSourceId, grimmoryBookId, error: err }); }
@@ -157,9 +206,7 @@ export async function refreshStaleGrimmoryCovers(): Promise<void> {
           const source = db.prepare("SELECT source_media_type FROM book_sources WHERE id = ?").get(sourceId) as { source_media_type: "physical" | "ebook" | "audiobook" | null } | undefined;
           const data = await fetchGrimmoryCoverBuffer(baseUrl, token, grimmory_book_id, source?.source_media_type ?? null);
           if (!data) continue;
-          const webPath = storeFetchedCover(sourceId, data);
-          if (webPath) {
-            await writeCoverPathAndReconcile(db, sourceId, webPath);
+          if (await storeCoverAndReconcile(db, sourceId, data)) {
             refreshed++;
           }
         } catch (error) {

@@ -188,9 +188,10 @@ stored as plaintext in the local application database. They are never returned
 by the API and the logging formatter redacts credential-shaped metadata.
 
 Configured integration URLs must use HTTP or HTTPS and cannot contain embedded
-credentials. Outbound integration and cover requests disable automatic redirects,
-so an authenticated request cannot be redirected to another host. LAN-hosted
-services remain supported over HTTP or HTTPS.
+credentials. Outbound integration requests disable automatic redirects, so an
+authenticated request cannot be redirected to another host. Untrusted cover
+requests may follow redirects only after each destination is validated as a
+public address. LAN-hosted services remain supported over HTTP or HTTPS.
 
 Logs pass through a redaction formatter that masks metadata keys containing
 password, token, secret, credential, authorization, or API key. Do not expose

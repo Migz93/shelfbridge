@@ -15,6 +15,7 @@ mkdirSync(cacheDir, { recursive: true });
 
 const { getDb } = await import("../../src/server/db/index.js");
 const { refreshStaleCachedCovers } = await import("../../src/server/image-cache.js");
+const { setCoverFetchForTesting } = await import("../../src/server/security/outbound.js");
 const { logger } = await import("../../src/server/logger.js");
 
 const db = getDb();
@@ -51,18 +52,17 @@ test("a background-refreshed public cover propagates its new path to book_source
   `).run(`cover:${sourceId}`, String(sourceId), sourceUrl, oldFilePath);
 
   const originalLookup = dns.lookup;
-  const originalFetch = globalThis.fetch;
   (dns as unknown as { lookup: typeof dns.lookup }).lookup = (async () => [{ address: "8.8.8.8", family: 4 }]) as typeof dns.lookup;
-  globalThis.fetch = (async () => new Response(Buffer.from([0xff, 0xd8, 0xff, 0x11]), {
+  const restoreCoverFetch = setCoverFetchForTesting((async () => new Response(Buffer.from([0xff, 0xd8, 0xff, 0x11]), {
     status: 200,
     headers: { "content-type": "image/jpeg" }
-  })) as typeof fetch;
+  })) as never);
 
   try {
     await refreshStaleCachedCovers();
   } finally {
     (dns as unknown as { lookup: typeof dns.lookup }).lookup = originalLookup;
-    globalThis.fetch = originalFetch;
+    restoreCoverFetch();
   }
 
   const cache = db.prepare("SELECT local_web_path FROM image_cache WHERE cache_key = ?").get(`cover:${sourceId}`) as { local_web_path: string };

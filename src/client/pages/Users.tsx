@@ -13,7 +13,7 @@ import {
   X,
   XCircle
 } from "lucide-react";
-import { apiGet, apiPatch, apiPost } from "../lib/api";
+import { ApiError, apiGet, apiPatch, apiPost } from "../lib/api";
 import { useLiveRefresh } from "../lib/useLiveRefresh";
 import { useModalA11y } from "../lib/useModalA11y";
 import { formatRelativeTime } from "../lib/utils";
@@ -24,6 +24,7 @@ import type { GoodreadsShelfMapping, HardcoverList, HardcoverListMapping, Grimmo
 const USERS_FAST_MS = 3_000;
 const USERS_IDLE_MS = 30_000;
 const GOODREADS_DEFAULT_SHELVES = ["read", "currently-reading", "to-read", "did-not-finish"];
+const HARDCOVER_PAT_URL = "https://hardcover.app/account/api/keys/new?scope=read%3Ame+read%3Alibrary+read%3Alists+read%3Acatalog%3Adata+write%3Alibrary+write%3Alists";
 
 export default function Users() {
   const [profiles, setProfiles] = useState<ProfileSummary[]>([]);
@@ -363,9 +364,13 @@ function AddUserModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
           <div className="rounded-2xl border border-outline-variant/20 bg-background-container-low p-5 space-y-5">
             <ModalSectionTitle title="Hardcover connection" description="Optional. Add this only for users who sync with Hardcover." />
             <div className="text-sm leading-6 text-on-surface-variant bg-background-container rounded-xl px-4 py-3 border border-outline-variant/20">
-              Optional. Find your Hardcover API token in Hardcover &gt; Settings &gt; Integrations, or leave this blank to skip Hardcover.
+              Optional. Paste only the token value, or leave this blank to skip Hardcover. {" "}
+              <a href={HARDCOVER_PAT_URL} target="_blank" rel="noreferrer" className="text-primary hover:underline">
+                Create hardcover API token
+              </a>
+              .
             </div>
-            <Field label="API Token">
+            <Field label="API Token" hint="The preselected token permissions cover library, progress, and list sync.">
               <PasswordInput onChange={setHardcoverToken} placeholder="Enter Hardcover API token, or leave blank" />
             </Field>
           </div>
@@ -429,23 +434,6 @@ export function UserDetailPage() {
   const [hardcoverSyncListName, setHardcoverSyncListName] = useState<string | null>(null);
   const [hardcoverTargetShelfName, setHardcoverTargetShelfName] = useState<string | null>(null);
   const [hardcoverOwnedImportEnabled, setHardcoverOwnedImportEnabled] = useState(false);
-  // Tracks the user's own latest toggle intent, independent of React state
-  // updates, so testConnection() can restore it after a test-triggered
-  // loadProfile() reload without losing a change made while that request
-  // was still in flight (testConnection's own closure only sees whatever
-  // hardcoverOwnedImportEnabled was at the moment Test was clicked). Updated
-  // synchronously by the toggle's own handler below
-  // (setHardcoverOwnedImportEnabledFromToggle) — not by a useEffect, since
-  // an effect only runs after the next render commits, which is still late
-  // enough for the test request to resolve first and read a stale .current.
-  // An ordinary loadProfile() call (initial mount, after Save) instead
-  // brings the ref back in sync with the real persisted value, same as the
-  // state — see loadProfile's own preserveOwnedImportToggle parameter.
-  const hardcoverOwnedImportEnabledRef = useRef(hardcoverOwnedImportEnabled);
-  const setHardcoverOwnedImportEnabledFromToggle = useCallback((v: boolean) => {
-    hardcoverOwnedImportEnabledRef.current = v;
-    setHardcoverOwnedImportEnabled(v);
-  }, []);
   const [hardcoverListMappings, setHardcoverListMappings] = useState<Record<string, string>>({});
   const [hardcoverListNames, setHardcoverListNames] = useState<Record<string, string>>({});
   const [hardcoverMappingsLoaded, setHardcoverMappingsLoaded] = useState(false);
@@ -459,15 +447,7 @@ export function UserDetailPage() {
   const [absEnabled, setAbsEnabled] = useState(false);
   const [syncSettings, setSyncSettings] = useState<Partial<SyncSettings>>({});
 
-  // preserveOwnedImportToggle: true only for the reload testConnection()
-  // triggers after successfully testing an already-persisted connection —
-  // that reload must keep whatever the user's own last toggle interaction
-  // set (tracked in the ref, updated synchronously by the toggle's own
-  // handler) rather than overwrite it with the just-fetched persisted
-  // value. Every other call site (initial mount, after Save) is an
-  // ordinary load: the ref is brought back in sync with the real persisted
-  // value there, same as the state.
-  async function loadProfile(preserveOwnedImportToggle = false) {
+  async function loadProfile() {
     if (!Number.isFinite(profileId)) {
       setError("User not found");
       setLoading(false);
@@ -488,12 +468,7 @@ export function UserDetailPage() {
       setHardcoverSyncListId(p.hardcover?.syncListId ?? null);
       setHardcoverSyncListName(p.hardcover?.syncListName ?? null);
       setHardcoverTargetShelfName(p.hardcover?.targetShelfName ?? null);
-      if (preserveOwnedImportToggle) {
-        setHardcoverOwnedImportEnabled(hardcoverOwnedImportEnabledRef.current);
-      } else {
-        hardcoverOwnedImportEnabledRef.current = p.hardcover?.ownedImportEnabled ?? false;
-        setHardcoverOwnedImportEnabled(p.hardcover?.ownedImportEnabled ?? false);
-      }
+      setHardcoverOwnedImportEnabled(p.hardcover?.ownedImportEnabled ?? false);
       setGoodreadsId(p.goodreads?.goodreadsUserId ?? "");
       setGoodreadsEnabled(p.goodreads?.enabled ?? false);
       setGoodreadsSyncShelfName(p.goodreads?.syncShelfName ?? null);
@@ -588,7 +563,15 @@ export function UserDetailPage() {
       }
       setSuccess(true);
       await loadProfile();
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    } catch (e) {
+      // A 207 PATCH has applied the non-cleanup fields; refresh those values
+      // before surfacing the cleanup error so the form cannot remain stale.
+      // Other failures leave the user's unsaved edits intact for correction.
+      if (e instanceof ApiError && e.method === "PATCH" && e.status === 207) {
+        await loadProfile().catch(() => null);
+      }
+      setError(e instanceof Error ? e.message : String(e));
+    }
     finally { setSaving(false); }
   }
 
@@ -603,22 +586,8 @@ export function UserDetailPage() {
         : {};
       const result = await apiPost<TestResult>(`/api/profiles/${profileId}/test/${type}`, body);
       setTestResults((r) => ({ ...r, [type]: result }));
-      // Only reload if the connection is already persisted — otherwise the reload
-      // resets unsaved form toggles (e.g. absEnabled before first save).
-      const isPersisted =
-        type === "grimmory" ? Boolean(profile?.grimmory)
-        : type === "hardcover" ? Boolean(profile?.hardcover)
-        : type === "goodreads" ? Boolean(profile?.goodreads)
-        : type === "audiobookshelf" ? Boolean(profile?.audiobookshelf)
-        : true;
-      // loadProfile() overwrites every field on every tab with the server's
-      // persisted values, including hardcoverOwnedImportEnabled — testing
-      // ANY already-persisted connection (not just Hardcover's own) would
-      // otherwise silently discard an unsaved Owned Import toggle flip made
-      // just before clicking Test. preserveOwnedImportToggle = true tells
-      // loadProfile() to restore the ref's value (the user's latest toggle
-      // intent) instead of the just-fetched persisted one.
-      if (result.ok && isPersisted) await loadProfile(true);
+      // A successful test is represented by testResults; reloading here would
+      // overwrite unrelated unsaved edits in the connection form.
     } catch (e) { setTestResults((r) => ({ ...r, [type]: { ok: false, message: e instanceof Error ? e.message : String(e) } })); }
     finally { setTesting(null); }
   }
@@ -738,7 +707,7 @@ export function UserDetailPage() {
               targetShelfName={hardcoverTargetShelfName}
               setTargetShelfName={setHardcoverTargetShelfName}
               ownedImportEnabled={hardcoverOwnedImportEnabled}
-              setOwnedImportEnabled={setHardcoverOwnedImportEnabledFromToggle}
+              setOwnedImportEnabled={setHardcoverOwnedImportEnabled}
               listMappings={hardcoverListMappings}
               setListMappings={setHardcoverListMappings}
               setListNames={setHardcoverListNames}
@@ -963,9 +932,14 @@ function HardcoverTabContent({
       <ToggleField label="Enable Hardcover" checked={hardcoverEnabled} onChange={setHardcoverEnabled} />
 
       {hardcoverEnabled && (<>
-      <Field label="API Token" hint="Leave blank to keep existing token.">
+      <Field label="API Token" hint="Paste only the token value. Leave blank to keep the existing token.">
         <PasswordInput configured={Boolean(profile?.hardcover)} onChange={setHardcoverToken} />
       </Field>
+      {(!profile?.hardcover || profile.hardcover.usesLegacyToken) && (
+        <a href={HARDCOVER_PAT_URL} target="_blank" rel="noreferrer" className="inline-block text-sm text-primary hover:underline">
+          Create hardcover API token
+        </a>
+      )}
       <TestConnectionRow type="hardcover" testing={testing} testResults={testResults} onTest={() => onTest("hardcover")} />
 
       <div className="border-t border-outline-variant/15 pt-5 space-y-4">

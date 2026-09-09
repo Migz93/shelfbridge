@@ -76,13 +76,17 @@ test("refreshStaleGrimmoryCovers isolates a per-source failure so later sources 
   // disk error) on the book_sources UPDATE for one specific source, without
   // needing to fabricate a failure deep inside reconcileBookIdentities.
   const originalPrepare = db.prepare.bind(db);
+  let interceptedFailingWrite = false;
   db.prepare = ((sql: string) => {
     const stmt = originalPrepare(sql);
-    if (sql === "UPDATE book_sources SET cover_cache_path = ? WHERE id = ? AND cover_cache_path IS NOT ?") {
+    if (sql.includes("UPDATE book_sources SET cover_cache_path = ? WHERE id = ? AND cover_cache_path IS NOT ?")) {
       const originalRun = stmt.run.bind(stmt);
       // @ts-expect-error -- intentionally overriding a native binding for this test only
       stmt.run = (webPath: unknown, sourceId: unknown, currentPath: unknown) => {
-        if (sourceId === failingSourceId) throw new Error("simulated write failure");
+        if (sourceId === failingSourceId) {
+          interceptedFailingWrite = true;
+          throw new Error("simulated write failure");
+        }
         return originalRun(webPath, sourceId, currentPath);
       };
     }
@@ -100,8 +104,10 @@ test("refreshStaleGrimmoryCovers isolates a per-source failure so later sources 
       await refreshStaleGrimmoryCovers();
     });
   } finally {
-    db.prepare = originalPrepare;
+    delete (db as unknown as { prepare?: unknown }).prepare;
   }
+
+  assert.ok(interceptedFailingWrite, "the simulated write failure must have been triggered");
 
   const okCache = db.prepare("SELECT local_web_path FROM image_cache WHERE entity_id = ?").get(String(okSourceId)) as { local_web_path: string | null } | undefined;
   assert.ok(okCache?.local_web_path, "the source after the failing one must still be refreshed, not skipped");

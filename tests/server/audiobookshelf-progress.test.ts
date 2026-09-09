@@ -94,6 +94,11 @@ test("syncAudiobookshelfProgress returns the Hardcover book_sources id whose aud
       (book_id, source_type, source_instance_id, external_id, source_media_type)
     VALUES (?, 'hardcover', ?, '555', 'book')
   `).run(bookId, profileId).lastInsertRowid);
+  const ownedSourceId = Number(db.prepare(`
+    INSERT INTO book_sources
+      (book_id, source_type, source_instance_id, external_id, source_bucket, source_media_type, source_edition_id)
+    VALUES (?, 'hardcover', ?, '555', 'owned', 'book', '99')
+  `).run(bookId, profileId).lastInsertRowid);
   db.prepare(`
     INSERT INTO book_sources
       (book_id, source_type, source_instance_id, external_id, source_media_type, audiobookshelf_duration, audiobookshelf_runtime_validated)
@@ -153,6 +158,10 @@ test("syncAudiobookshelfProgress returns the Hardcover book_sources id whose aud
     { source_media_type: string; source_edition_id: string };
   assert.equal(updated.source_media_type, "audiobook");
   assert.equal(updated.source_edition_id, "10");
+  const owned = db.prepare("SELECT source_media_type, source_edition_id FROM book_sources WHERE id = ?").get(ownedSourceId) as
+    { source_media_type: string; source_edition_id: string };
+  assert.equal(owned.source_media_type, "book", "the secondary owned row must not be reclassified from the primary ABS match");
+  assert.equal(owned.source_edition_id, "99");
 });
 
 test("an active book sibling owning the shared Hardcover record suppresses the ABS-to-Hardcover write", async (t) => {

@@ -43,6 +43,7 @@ export interface GrimmoryConnectionView {
 export interface HardcoverConnectionView {
   id: number;
   hardcoverUsername: string | null;
+  usesLegacyToken: boolean;
   syncListId: number | null;
   syncListName: string | null;
   targetShelfName: string | null;
@@ -157,6 +158,19 @@ export type BookDuplicateCandidate = Pick<BookSummary,
   seriesNumber: string | null;
   mergeEligible: boolean;
 };
+
+export interface DuplicateMergeFailure {
+  profileId: number;
+  error: string;
+}
+
+export interface DuplicateMergeResponse {
+  ok: true;
+  bookId: number | null;
+  succeededProfileIds: number[];
+  failures?: DuplicateMergeFailure[];
+  finalizationError?: string;
+}
 
 export interface BookRelationship {
   id: number;

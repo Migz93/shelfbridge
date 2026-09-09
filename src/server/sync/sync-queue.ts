@@ -13,7 +13,7 @@ export function getActiveSyncStatus(): SyncStatus {
   const rows = Array.from(activeSyncRuns.entries()).map(([runId, run]) => ({
     runId,
     ...run
-  })).sort((a, b) => a.startedAt.localeCompare(b.startedAt) || a.runId - b.runId);
+  })).sort((a, b) => (a.startedAt < b.startedAt ? -1 : a.startedAt > b.startedAt ? 1 : 0) || a.runId - b.runId);
 
   return {
     isRunning: rows.length > 0,
