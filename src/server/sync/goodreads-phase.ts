@@ -1,6 +1,6 @@
 import { logger } from "../logger.js";
 import { reconcileBookIdentities } from "../db/bookIdentity.js";
-import { identifierVariants, normalizeExternalId, normalizeIsbn } from "../identifiers.js";
+import { identifierVariants, normalizeExternalId, normalizeValidIsbn } from "../identifiers.js";
 import { enqueueImageCacheTask } from "../image-cache.js";
 import { GOODREADS_TO_GRIMMORY } from "./matcher.js";
 import { normalizeTitle, normalizeSeriesNumber } from "./normalization.js";
@@ -128,8 +128,8 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
       addGoodreadsLookup(src.source_goodreads_book_id, lookup);
       addGoodreadsLookup(src.source_goodreads_work_id, lookup);
       addGoodreadsLookup(src.source_goodreads_edition_id, lookup);
-      const isbn13 = normalizeIsbn(src.isbn13);
-      const isbn10 = normalizeIsbn(src.isbn10);
+      const isbn13 = normalizeValidIsbn(src.isbn13);
+      const isbn10 = normalizeValidIsbn(src.isbn10);
       if (isbn13) existingByIsbn13[isbn13] ??= lookup;
       if (isbn10) existingByIsbn10[isbn10] ??= lookup;
       const norm = src.title ? normalizeTitle(src.title) : "";
@@ -171,8 +171,8 @@ if (goodreadsConnectionEnabled && goodreadsUserId?.trim()) {
       let matchType: string | null = null;
 
       const normalizedGoodreadsId = normalizeExternalId(grBook.goodreadsId);
-      const normalizedIsbn13 = normalizeIsbn(grBook.isbn13);
-      const normalizedIsbn10 = normalizeIsbn(grBook.isbn10);
+      const normalizedIsbn13 = normalizeValidIsbn(grBook.isbn13);
+      const normalizedIsbn10 = normalizeValidIsbn(grBook.isbn10);
       if (normalizedGoodreadsId && existingByGoodreadsId[normalizedGoodreadsId]) {
         matched = existingByGoodreadsId[normalizedGoodreadsId];
         matchType = "goodreads_id";

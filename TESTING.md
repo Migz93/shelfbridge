@@ -330,6 +330,7 @@ Also covers `cleanupAfterSourceRemoval` (shared with Chaptarr's own source remov
 | Test | What it checks |
 |---|---|
 | Large reverse shelf lookup | A 500-book Grimmory shelf is processed in SQLite-safe batches while preserving all membership and Hardcover-list updates. |
+| Invalid ISBN shelf isolation | A checksum-invalid ISBN cannot route an unrelated Goodreads shelf book to a Grimmory shelf. |
 
 ### `tests/server/sync-engine.test.ts` — Sync engine integration
 
@@ -381,6 +382,7 @@ Adapters not relevant to a given test are left unimplemented via `createFakeAdap
 |---|---|
 | Changed Goodreads shelf | A changed Goodreads shelf writes its mapped status to the matched Grimmory book and persists local state. |
 | Matched-book ISBN update reconciled | A matched Goodreads book's newly-reported ISBN — not just newly-created sources — is reconciled, merging it with the existing book that now shares that ISBN. |
+| Invalid ISBN enrichment isolation | A checksum-invalid ISBN cannot attach an incoming Goodreads book to an unrelated existing source. |
 
 ### `tests/server/chaptarr-orphan-cleanup.test.ts` — Chaptarr source removal cleanup
 
