@@ -263,19 +263,22 @@ type/branch-name branch → PR into develop → develop → chore/bump-version �
    (`feat:`, `fix:`, `chore:`, etc.). Open it as a draft; see
    [docs/workflow.md](docs/workflow.md)'s Pull Request Conventions for when to
    mark it ready for review.
-5. **Merge the PR** into `develop`. Delete the branch after merging.
+5. **Merge the PR** into `develop` with a squash merge
+   (`gh pr merge --squash --delete-branch`). Delete the branch after merging.
 6. **Repeat** steps 1–5 for each piece of work. `develop` accumulates all the
    merged PRs.
 7. **When ready to release**, create a `chore/bump-version-X.Y.Z` branch from
-   `develop`, bump the version files, open a PR into `develop`, and merge it. A
-   version bump does not go through the review gate — see below.
+   `develop`, bump the version files, open a PR into `develop`, and squash-merge
+   it. A version bump does not go through the review gate — see below.
 8. **Open a PR** from `develop` into `main`. This one **does** go through the
    review gate first. Open it as a draft too, marking it ready per the same
    conventions once the review gate is satisfied and no further fixes are
-   pending. Merge it. This triggers the release-drafter to generate release
-   notes from all the PR titles since the last release.
-9. **Tag `main`** with `vX.Y.Z` and push the tag. This triggers the Docker build
-   workflow.
+   pending. Merge it with a merge commit (`gh pr merge --merge --delete-branch`),
+   never a squash merge. This preserves `develop` ancestry on `main` and avoids
+   future release conflicts. This triggers the release-drafter to generate
+   release notes from all the PR titles since the last release.
+9. **Tag the resulting release merge commit on `main`** with `vX.Y.Z` and push
+   the tag. This triggers the Docker build workflow.
 10. **Publish the GitHub release** — review the auto-generated draft and publish
     it.
 
