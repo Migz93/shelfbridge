@@ -1,12 +1,12 @@
 import express from "express";
 import helmet from "helmet";
-import rateLimit from "express-rate-limit";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import { registerAuthRoutes, requireAuth, sessionMiddleware } from "./auth.js";
 import { getDb, getSetting } from "./db/index.js";
 import { logger } from "./logger.js";
+import { createGlobalRateLimiter } from "./rate-limit.js";
 import { initScheduler } from "./scheduler.js";
 import settingsRouter from "./routes/settings.js";
 import profilesRouter from "./routes/profiles.js";
@@ -59,27 +59,9 @@ logger.info("Transport security policy configured for plain-HTTP deployment", {
 });
 app.use(express.json());
 app.use(sessionMiddleware);
-// Applies to every route (including /images and the static/catch-all client routes below),
-// so file-serving and auth-checked routes outside /api aren't left unlimited.
-const globalLimiter = rateLimit({
-  windowMs: 60_000,
-  max: 600,
-  standardHeaders: true,
-  legacyHeaders: false
-});
-app.use(globalLimiter);
-
-const apiLimiter = rateLimit({
-  windowMs: 60_000,
-  max: 300,
-  standardHeaders: true,
-  legacyHeaders: false
-});
-
-app.use(
-  "/api",
-  apiLimiter
-);
+// Applies to every route. Built assets, cached images and the favicon are exempt
+// from the count (see rate-limit.ts); /images still requires a session.
+app.use(createGlobalRateLimiter(logger));
 
 // Ensure DB is initialised, close out interrupted syncs, then start background jobs.
 const db = getDb();

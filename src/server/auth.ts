@@ -1,8 +1,8 @@
 import crypto from "node:crypto";
 import type { NextFunction, Request, Response, Router } from "express";
-import rateLimit from "express-rate-limit";
 import { getDb, getSetting, setSetting } from "./db/index.js";
 import { logger } from "./logger.js";
+import { createSignInRateLimiter } from "./rate-limit.js";
 
 const SESSION_COOKIE_NAME = "shelfbridge_session";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 14;
@@ -147,18 +147,7 @@ export function sessionMiddleware(req: Request, _res: Response, next: NextFuncti
   next();
 }
 
-const loginIpLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: 20,
-  skipSuccessfulRequests: true,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "Too many login attempts. Try again later." },
-  handler: (_req, res, _next, options) => {
-    logger.warn("ShelfBridge login rate limit exceeded", { limiter: "ip" });
-    res.status(options.statusCode).send(options.message);
-  },
-});
+const signInRateLimiter = createSignInRateLimiter(logger);
 
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
   if (!authConfigured()) {
@@ -202,7 +191,7 @@ export function registerAuthRoutes(router: Router): void {
     res.json({ authenticated: true });
   });
 
-  router.post("/auth/login", loginIpLimiter, async (req, res) => {
+  router.post("/auth/login", signInRateLimiter, async (req, res) => {
     const passwordHash = getSetting("auth.passwordHash", "");
     const passwordSalt = getSetting("auth.passwordSalt", "");
     const password = typeof req.body?.password === "string" ? req.body.password : "";
