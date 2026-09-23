@@ -17,7 +17,7 @@ moment rather than up front.
 | [Pull Request Description Format](#pull-request-description-format) | Opening a PR |
 | [Pull Request Conventions](#pull-request-conventions) | Opening or merging a PR |
 | [Release Process](#release-process) | Cutting a release |
-| [Snyk Findings](#snyk-findings) | Triaging a Snyk result |
+| [Security Findings](#security-findings) | Triaging a code-scanning or Dependabot alert |
 | [Implementation Expectations](#implementation-expectations) | Writing new code |
 
 ---
@@ -75,7 +75,8 @@ Keep it factual. Describe what changed and how it was checked, not how
 significant it is.
 
 Call out explicitly if the change affects: release behaviour, Docker publishing,
-auth, database schema, Audiobookshelf/Hardcover/Grimmory/Chaptarr integrations, or user-visible setup.
+auth, database schema, the integrations listed under "Integrations to flag in
+review" in the `AGENTS.md` Project Facts table, or user-visible setup.
 
 If the work was done somewhere Docker was unavailable, say so in the test plan
 rather than implying the container was rebuilt and verified.
@@ -125,27 +126,33 @@ Do not invent the version — always confirm with the user if ambiguous.
 
 ---
 
-## Snyk Findings
+## Security Findings
 
-When working through Snyk findings:
+Findings come from GitHub Security — Trivy and CodeQL raise code-scanning
+alerts, Dependabot raises Dependabot alerts. Nothing is scanned locally; don't
+suggest installing or running a scanner to "verify" a finding. When working
+through a finding:
 
-1. **Always explain the finding first** — describe what Snyk flagged, why it
-   flagged it, and whether it is a genuine issue or a false positive before
-   suggesting any action.
-2. **Recommend Fix or Won't Fix honestly** — if fixing the issue would require
+1. **Always explain the finding first** — describe what the scanner flagged,
+   why it flagged it, and whether it is a genuine issue or a false positive
+   before suggesting any action.
+2. **Recommend fix or dismiss honestly** — if fixing the issue would require
    writing worse code (less readable, against best practice, or purely to
-   satisfy static analysis), say so clearly and recommend Won't Fix instead.
-3. **When recommending Won't Fix**, always provide:
-   - A plain-English comment the user can paste into the Snyk GUI, explaining
-     why the code is safe
-   - The correct Snyk category to select: **Won't Fix** for false positives or
-     deliberate decisions, **Ignore Temporarily** only if there is a genuine
-     plan to revisit
-4. **Never suggest a change purely to appease Snyk** if it doesn't improve
+   satisfy static analysis), say so clearly and recommend dismissing instead.
+   A base-image or package vulnerability with no fixed version available is
+   usually a wait, not a code change.
+3. **When recommending a dismissal**, always provide:
+   - The dismissal reason to select in GitHub — for code scanning: **False
+     positive**, **Won't fix** or **Used in tests**; for Dependabot:
+     **Inaccurate**, **Not used**, **No bandwidth to fix**, **Risk is
+     tolerable** or **Fix has already been started**
+   - A plain-English comment the user can paste into the dismissal comment
+     box, explaining why the code is safe or why the risk is accepted
+4. **Never suggest a change purely to appease a scanner** if it doesn't improve
    actual security or code quality.
 
-See [SECURITY.md](../SECURITY.md) for the scan commands and the fix-vs-ignore
-philosophy.
+See [SECURITY.md](../SECURITY.md) for what is scanned, where alerts appear, and
+the fix-vs-dismiss philosophy.
 
 ---
 

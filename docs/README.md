@@ -27,7 +27,7 @@ only its **structure**, with app-specific content underneath.
 |---|---|---|
 | [architecture.md](architecture.md) | You need the big-picture mental model before touching the code | structure |
 | [deployment.md](deployment.md) | Changing Docker, ports, bind mounts, the entrypoint, or runtime config | structure |
-| [workflow.md](workflow.md) | Opening a PR, cutting a release, triaging a Snyk finding, or writing logs and comments | content |
+| [workflow.md](workflow.md) | Opening a PR, cutting a release, triaging a security finding, or writing logs and comments | content |
 | [maintenance.md](maintenance.md) | Adding background cleanup, pruning, retention, or consistency checks | structure |
 | [colour-scheme.md](colour-scheme.md) | Choosing a colour for any UI element, text, or interactive state | structure |
 

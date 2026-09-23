@@ -1,4 +1,4 @@
-<!-- shared: content — keep in sync across Migz93 self-hosted apps; only the Project Facts table differs -->
+<!-- shared: content — keep in sync across Migz93 self-hosted apps; only the Project Facts values differ -->
 
 # Agent Guidelines
 
@@ -6,7 +6,7 @@ Read this file before doing any work in this repo.
 
 Everything here is **always relevant** — environment, conventions, and the gates
 you have to stop at. Material that only matters at a particular moment (opening
-a PR, cutting a release, triaging a Snyk finding) lives in `docs/` instead, and
+a PR, cutting a release, triaging a security finding) lives in `docs/` instead, and
 the table below says when to go and read it.
 
 > If a `LOCAL.md` file exists in this directory, read it — it contains
@@ -15,9 +15,10 @@ the table below says when to go and read it.
 
 ## Project Facts
 
-Everything below this table is identical across shelfbridge, hubarr and pacearr.
-This table is the only place the projects differ — when a rule below refers to
-"the port" or "the version files", it means the value here.
+Everything below this table is identical across hubarr, pacearr and shelfbridge,
+apart from the app name, port and paths from this table written into the
+examples. This table is the only place the projects differ — when a rule below
+refers to "the port" or "the version files", it means the value here.
 
 | | |
 |---|---|
@@ -40,7 +41,7 @@ Don't guess at these — they contain conventions you will otherwise get wrong.
 |---|---|
 | Open a PR, or write PR/issue text | [docs/workflow.md](docs/workflow.md) |
 | Cut a release or bump a version | [docs/workflow.md](docs/workflow.md) |
-| Act on a Snyk finding | [docs/workflow.md](docs/workflow.md) |
+| Act on a security finding (code scanning or Dependabot) | [docs/workflow.md](docs/workflow.md) |
 | Add logging or comments to new code | [docs/workflow.md](docs/workflow.md) |
 | Add or change tests | [TESTING.md](TESTING.md) |
 | Change the database schema | [docs/architecture.md](docs/architecture.md) |
@@ -116,8 +117,9 @@ Everything for ShelfBridge lives under a single directory on the host:
 
 All files the app needs — config, database, logs, whatever — go directly in
 there. Do not create subdirectories like `config/` or `data/` unless the app
-itself requires a specific path inside the container. Keep it flat, except for
-`logs/`, which the app requires (matching hubarr/pacearr) and creates itself.
+itself requires a specific path inside the container. Keep it flat. The one
+exception is `logs/`, which the app creates itself on startup — don't create it
+by hand.
 
 ## Docker Naming Conventions
 
@@ -220,8 +222,8 @@ rather than substituting a workspace check for a real rebuild.
 ## GitHub Workflow
 
 The gates below are mandatory and apply on every piece of work. The mechanical
-detail — PR body format, `gh` commands, release steps, Snyk handling — lives in
-[docs/workflow.md](docs/workflow.md).
+detail — PR body format, `gh` commands, release steps, security findings —
+lives in [docs/workflow.md](docs/workflow.md).
 
 ### Before Starting Any Work — Branch Check (Mandatory)
 
@@ -480,7 +482,7 @@ without re-litigating, but say what you're doing.
 - Keep `docs/` files to operational facts — tables, short steps, commands.
   Detailed rationale belongs in code comments next to the code, not in prose
 - A doc whose first line carries a `shared: content` marker is kept identical
-  across hubarr and pacearr — change it in all of them, or not at all
+  across hubarr, pacearr and shelfbridge — change it in all of them, or not at all
 
 ---
 
