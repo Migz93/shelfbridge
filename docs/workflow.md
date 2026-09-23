@@ -143,7 +143,7 @@ through a finding:
    usually a wait, not a code change.
 3. **When recommending a dismissal**, always provide:
    - The dismissal reason to select in GitHub — for code scanning: **False
-     positive**, **Won't fix** or **Used in tests**; for Dependabot:
+     positive**, **Won't fix**, **Used in tests** or **Mitigated**; for Dependabot:
      **Inaccurate**, **Not used**, **No bandwidth to fix**, **Risk is
      tolerable** or **Fix has already been started**
    - A plain-English comment the user can paste into the dismissal comment

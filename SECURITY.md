@@ -89,7 +89,7 @@ explaining the decision. Don't leave a deliberate decision as an open alert.
 
 | Alert type | Reasons |
 |---|---|
-| Code scanning (Trivy, CodeQL) | **False positive**, **Won't fix**, **Used in tests** |
+| Code scanning (Trivy, CodeQL) | **False positive**, **Won't fix**, **Used in tests**, **Mitigated** |
 | Dependabot | **Inaccurate**, **Not used**, **No bandwidth to fix**, **Risk is tolerable**, **Fix has already been started** |
 
 The comment is what tells a future reader why the alert was dismissed, so write
