@@ -75,4 +75,22 @@ test.describe("Page smoke tests", () => {
     await expect(page).toHaveURL(/\/login/);
     await context.close();
   });
+
+  test("Failed session check shows a retry screen, not the login page", async ({ page }) => {
+    // A 429/5xx from the startup status check must not look like a logout.
+    // The response is faked in the browser, so the live instance is untouched.
+    let failStatusCheck = true;
+    await page.route("**/api/auth/status", (route) =>
+      failStatusCheck ? route.fulfill({ status: 429, body: "Too many requests" }) : route.continue()
+    );
+
+    await page.goto("/settings");
+    await expect(page.getByText("Unable to load ShelfBridge. Please try again.")).toBeVisible();
+    await expect(page).toHaveURL(/\/settings/);
+    await expect(page.getByLabel("Password")).toHaveCount(0);
+
+    failStatusCheck = false;
+    await page.getByRole("button", { name: "Retry" }).click();
+    await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
+  });
 });
