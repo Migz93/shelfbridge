@@ -41,10 +41,12 @@ ENV COMMIT_SHA=$COMMIT_SHA
 RUN apt-get update \
   && apt-get install -y --no-install-recommends gosu python3 tzdata \
   && rm -rf /var/lib/apt/lists/*
-# The runtime image never invokes npm (CMD runs node directly) — the global
-# npm CLI bundled by the base image just sits there dragging in CVEs against
-# its own dependencies (brace-expansion, tar, sigstore, etc). Drop it.
-RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+# The runtime image never invokes a package manager (CMD runs node directly) —
+# the npm, corepack and yarn CLIs bundled by the base image just sit there
+# dragging in CVEs against their own dependencies (brace-expansion, tar,
+# sigstore, etc). Drop them; the Yarn directory includes its version.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-v* \
+  && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg
 COPY --from=build /app/package.json ./package.json
 COPY --from=production-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
