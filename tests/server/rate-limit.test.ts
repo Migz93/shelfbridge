@@ -40,10 +40,18 @@ async function withServer(app: Express, run: (baseUrl: string) => Promise<void>)
   }
 }
 
-async function statusesOf(requests: Array<Promise<Response>>): Promise<number[]> {
-  const responses = await Promise.all(requests);
-  await Promise.all(responses.map((response) => response.arrayBuffer()));
-  return responses.map((response) => response.status);
+/** Sends `count` GET requests in batches, so the test doesn't open thousands of sockets at once. */
+async function statusesOf(url: string, count: number): Promise<number[]> {
+  const statuses: number[] = [];
+  for (let sent = 0; sent < count; sent += 200) {
+    const batch = Array.from({ length: Math.min(200, count - sent) }, async () => {
+      const response = await fetch(url);
+      await response.arrayBuffer();
+      return response.status;
+    });
+    statuses.push(...(await Promise.all(batch)));
+  }
+  return statuses;
 }
 
 test("static assets, cached images and the favicon are exempt from the global limit", () => {
@@ -70,14 +78,10 @@ test("the global limiter rejects requests past the limit with JSON, logs once, a
 
   await withServer(app, async (baseUrl) => {
     // Exempt requests beyond the limit must not use up any of the allowance.
-    const exempt = await statusesOf(
-      Array.from({ length: GLOBAL_RATE_LIMIT.limit + 10 }, () => fetch(`${baseUrl}/assets/app.js`))
-    );
+    const exempt = await statusesOf(`${baseUrl}/assets/app.js`, GLOBAL_RATE_LIMIT.limit + 10);
     assert.ok(exempt.every((status) => status === 200));
 
-    const allowed = await statusesOf(
-      Array.from({ length: GLOBAL_RATE_LIMIT.limit }, () => fetch(`${baseUrl}/api/ping`))
-    );
+    const allowed = await statusesOf(`${baseUrl}/api/ping`, GLOBAL_RATE_LIMIT.limit);
     assert.ok(allowed.every((status) => status === 200));
 
     const rejected = await fetch(`${baseUrl}/api/ping`);

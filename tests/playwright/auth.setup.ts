@@ -1,9 +1,21 @@
-import { test as setup } from "@playwright/test";
+import { test as setup, type APIResponse } from "@playwright/test";
 import fs from "fs";
 import path from "path";
 
 const authFile = "tests/playwright/.auth/storageState.json";
 const baseURL = process.env.BASE_URL ?? "http://localhost:9303";
+
+// A 429 means the rate limiter refused the check, not that the session is
+// invalid. Without this, a rate-limited run reports an expired session and
+// sends you off to fetch a fresh cookie for no reason.
+function throwIfRateLimited(response: APIResponse): void {
+  if (response.status() === 429) {
+    throw new Error(
+      "\n\n  The session check was rate-limited (HTTP 429), so the cookie was not tested.\n" +
+      "  Wait for the rate-limit window to reset (up to a minute) and re-run.\n"
+    );
+  }
+}
 
 /**
  * Auth setup for Playwright tests.
@@ -31,6 +43,7 @@ setup("authenticate", async ({ request }) => {
       const response = await request.get("/api/auth/session", {
         headers: { Cookie: buildCookieHeader() }
       });
+      throwIfRateLimited(response);
       const session = await response.json() as { authenticated: boolean };
       if (session.authenticated) {
         console.log("  Existing session is still valid, skipping login.");
@@ -57,6 +70,7 @@ setup("authenticate", async ({ request }) => {
   const response = await request.get("/api/auth/session", {
     headers: { Cookie: `shelfbridge_session=${cookie}` }
   });
+  throwIfRateLimited(response);
   const session = await response.json() as { authenticated: boolean };
 
   if (!session.authenticated) {

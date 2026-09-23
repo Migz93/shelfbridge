@@ -20,7 +20,11 @@ interface RateLimitLogger {
   warn(message: string, meta?: Record<string, unknown>): void;
 }
 
-export const GLOBAL_RATE_LIMIT = { windowMs: 60_000, limit: 600 } as const;
+// 3,000/min (50 requests a second) is well clear of normal use: several open
+// tabs polling jobs, or back-to-back Playwright runs, which take about 600
+// requests each on Hubarr. A runaway loop sends hundreds a second, so it's
+// still caught.
+export const GLOBAL_RATE_LIMIT = { windowMs: 60_000, limit: 3000 } as const;
 export const SIGN_IN_RATE_LIMIT = { windowMs: 15 * 60_000, limit: 10 } as const;
 
 /**
