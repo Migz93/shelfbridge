@@ -1,4 +1,4 @@
-<!-- shared: structure — headings kept in sync across Migz93 self-hosted apps, content is app-specific -->
+<!-- shared: content — keep in sync across Migz93 self-hosted apps; only the app name differs -->
 
 # Security Policy
 
@@ -45,28 +45,22 @@ documented, security fixes are handled on the latest supported code line.
 
 ---
 
-## Security Scanning With Snyk
+## Security Scanning
 
-### Installation
+Scanning runs on GitHub, not locally. Every scanner reports to the repository's
+**Security** tab.
 
-```bash
-npm install -g snyk
-snyk auth
-```
+| What's scanned | Scanner | Where it runs | Where findings appear |
+|---|---|---|---|
+| Docker image (AMD64 and ARM64) | Trivy — HIGH and CRITICAL vulnerabilities that have a fix | `develop.yml` and `release.yml`, after each image is published | Code scanning alerts (categories `trivy-linux-amd64`, `trivy-linux-arm64`) |
+| Source code and workflows | CodeQL | `codeql.yml` — pushes and PRs to `main`/`develop`, plus weekly | Code scanning alerts |
+| npm packages and GitHub Actions | Dependabot | Alerts from GitHub's dependency graph; update PRs from `.github/dependabot.yml` — daily, targeting `develop` | Dependabot alerts, and Dependabot PRs |
 
-`snyk auth` will open a browser to authenticate against your Snyk account.
+There is nothing to install or run locally. To check a fix, let the workflow run
+again — merging to `develop` re-runs Trivy on the development image, and CodeQL
+runs on the PR itself.
 
-### Scan Commands
-
-| What you're scanning | Command |
-|---|---|
-| Dependencies (npm packages) | `snyk test` |
-| Source code (static analysis) | `snyk code test` |
-| Docker image | `snyk container test shelfbridge` |
-
-Run all three from the repo root to get full coverage.
-
-### Philosophy — Fix Vs Ignore
+### Philosophy — Fix Vs Dismiss
 
 We take security seriously, but we don't fix things for the sake of fixing them.
 
@@ -77,22 +71,29 @@ We take security seriously, but we don't fix things for the sake of fixing them.
 - It's straightforward to address without compromising readability or best
   practice
 
-**Mark as Won't Fix** if:
+**Dismiss it** if:
 
-- Snyk can't trace through your validation logic but the code is demonstrably
-  safe (false positive)
+- The scanner can't trace through your validation logic but the code is
+  demonstrably safe (false positive)
 - The "fix" would require writing worse code purely to satisfy static analysis
 - The issue requires a contorted workaround that obscures intent more than it
   improves security
 
 When in doubt, ask whether fixing it actually makes the code safer — or just
-makes Snyk happy. Those aren't the same thing.
+makes the scanner happy. Those aren't the same thing.
 
-### Marking Something As Won't Fix In The Snyk GUI
+### Dismissing An Alert
 
-Use **Won't Fix** (not "Ignore Temporarily") for confirmed false positives or
-conscious decisions not to fix. "Ignore Temporarily" implies you plan to revisit;
-Won't Fix signals a deliberate call.
+Dismiss the alert in GitHub's Security tab with a reason and a comment
+explaining the decision. Don't leave a deliberate decision as an open alert.
+
+| Alert type | Reasons |
+|---|---|
+| Code scanning (Trivy, CodeQL) | **False positive**, **Won't fix**, **Used in tests**, **Mitigated** |
+| Dependabot | **Inaccurate**, **Not used**, **No bandwidth to fix**, **Risk is tolerable**, **Fix has already been started** |
+
+The comment is what tells a future reader why the alert was dismissed, so write
+it for someone who hasn't seen this conversation.
 
 See [docs/workflow.md](docs/workflow.md) for how an agent handles these decisions
-and what it will provide when recommending Won't Fix.
+and what it will provide when recommending a dismissal.
