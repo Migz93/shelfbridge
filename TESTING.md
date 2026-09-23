@@ -469,6 +469,7 @@ Read-only. Safe to run against a live instance.
 | Sidebar navigation links are present | On the dashboard, checks all five nav links exist inside `<nav>` |
 | Sidebar navigation works | Clicks each sidebar link in turn and verifies the URL and page heading update correctly |
 | Unauthenticated request redirects to login | Opens a fresh browser context with no session cookies, navigates to `/dashboard`, expects a redirect to `/login` |
+| Failed session check shows a retry screen, not the login page | Fakes a 429 on `/api/auth/status` in the browser, navigates to `/settings`, expects the "Unable to load ShelfBridge" error with no password field and the URL unchanged; clicking Retry once the request succeeds loads Settings |
 
 ### `tests/playwright/dashboard.spec.ts` — Dashboard UI
 

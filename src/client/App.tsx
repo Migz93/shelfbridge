@@ -25,6 +25,7 @@ export default function App() {
 function MainApp() {
   const navigate = useNavigate();
   const [auth, setAuth] = useState<AuthStatus | null>(null);
+  const [authCheckFailed, setAuthCheckFailed] = useState(false);
 
   async function refreshAuth() {
     const status = await apiGet<AuthStatus>("/api/auth/status");
@@ -32,8 +33,17 @@ function MainApp() {
     return status;
   }
 
+  // /api/auth/status answers 200 with authenticated: false for a signed-out
+  // user, so a rejection here is a 429, 5xx or network failure — not a logout.
+  // Show a retryable error instead of the login screen so a valid session
+  // isn't treated as ended.
+  function checkAuth() {
+    setAuthCheckFailed(false);
+    refreshAuth().catch(() => setAuthCheckFailed(true));
+  }
+
   useEffect(() => {
-    void refreshAuth().catch(() => setAuth({ configured: true, authenticated: false }));
+    checkAuth();
   }, []);
 
   async function handleAuthenticated() {
@@ -45,6 +55,21 @@ function MainApp() {
     await apiPost<void>("/api/auth/logout");
     setAuth({ configured: true, authenticated: false });
     navigate("/login", { replace: true });
+  }
+
+  if (!auth && authCheckFailed) {
+    return (
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-4 px-4 text-center">
+        <div className="text-sm text-error">Unable to load ShelfBridge. Please try again.</div>
+        <button
+          type="button"
+          onClick={checkAuth}
+          className="rounded-xl bg-primary-dim px-4 py-2 text-sm font-bold text-on-surface transition-colors hover:bg-primary"
+        >
+          Retry
+        </button>
+      </div>
+    );
   }
 
   if (!auth) {
