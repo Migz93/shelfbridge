@@ -45,7 +45,7 @@ test.describe("Page smoke tests", () => {
     await expect(nav.getByRole("link", { name: /^dashboard$/i })).toBeVisible();
     await expect(nav.getByRole("link", { name: /^books$/i }).first()).toBeVisible();
     await expect(nav.getByRole("link", { name: /^users$/i })).toBeVisible();
-    await expect(nav.getByRole("link", { name: /^history$/i })).toBeVisible();
+    await expect(nav.getByRole("link", { name: /^sync history$/i })).toBeVisible();
     await expect(nav.getByRole("link", { name: /^settings$/i })).toBeVisible();
   });
 
@@ -60,7 +60,7 @@ test.describe("Page smoke tests", () => {
     await nav.getByRole("link", { name: /^users$/i }).click();
     await expect(page).toHaveURL(/\/users/);
 
-    await nav.getByRole("link", { name: /^history$/i }).click();
+    await nav.getByRole("link", { name: /^sync history$/i }).click();
     await expect(page).toHaveURL(/\/history/);
 
     await nav.getByRole("link", { name: /^settings$/i }).click();
