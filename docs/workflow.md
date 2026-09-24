@@ -29,7 +29,7 @@ Use `gh` for all GitHub operations:
 - `gh pr create --draft --base develop --title "..." --body "..."`
 - Ordinary PRs into `develop`: `gh pr merge --squash --delete-branch`
 - Release and ancestry-reconciliation PRs: `gh pr merge --merge`
-- `gh release create vX.Y.Z --generate-notes`
+- Publish the release-drafter draft once the tag is pushed: `gh release edit vX.Y.Z --draft=false`
 - `gh issue create --title "..." --body "..."`
 
 PRs are opened as drafts and only marked ready-for-review once finished (see
@@ -119,6 +119,8 @@ When the user says it's time to release:
    merge it with a merge commit: `gh pr merge --merge`
 6. Create and push the tag `vX.Y.Z` from the resulting merge commit on `main`
 7. Review the release-drafter draft on GitHub and publish it
+   (`gh release edit vX.Y.Z --draft=false`). Don't use `gh release create`,
+   which makes a second release instead of publishing the draft.
 
 Do not invent the version — always confirm with the user if ambiguous.
 
