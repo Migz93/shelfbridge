@@ -26,6 +26,7 @@ function MainApp() {
   const navigate = useNavigate();
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [authCheckFailed, setAuthCheckFailed] = useState(false);
+  const [checkingAuth, setCheckingAuth] = useState(false);
 
   async function refreshAuth() {
     const status = await apiGet<AuthStatus>("/api/auth/status");
@@ -39,7 +40,10 @@ function MainApp() {
   // isn't treated as ended.
   function checkAuth() {
     setAuthCheckFailed(false);
-    refreshAuth().catch(() => setAuthCheckFailed(true));
+    setCheckingAuth(true);
+    refreshAuth()
+      .catch(() => setAuthCheckFailed(true))
+      .finally(() => setCheckingAuth(false));
   }
 
   useEffect(() => {
@@ -80,7 +84,9 @@ function MainApp() {
     );
   }
 
-  if (!auth) {
+  // A retry after a failed check can find auth still holding the stale
+  // signed-out status, so keep the loading screen up until it resolves.
+  if (!auth || checkingAuth) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-sm text-on-surface-variant">Loading ShelfBridge...</div>
