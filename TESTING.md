@@ -231,7 +231,7 @@ so all tests start already authenticated.
 
 | Test | What it checks |
 |---|---|
-| Exempt paths | `/assets/`, `/images/` and `/favicon.ico` are exempt from the global limit, while API and page routes are not |
+| Exempt paths | `/assets/`, `/images/` and `/favicon.ico` (with or without a trailing slash) are exempt from the global limit, while API and page routes are not |
 | Global limiter | The request after 3,000 in a minute gets a JSON 429 with draft-8 `RateLimit` headers, only the first rejection is logged, and exempt paths never use up the allowance |
 | Sign-in limiter | Successful sign-ins don't count, the attempt after 10 failures gets a JSON 429, and one warning is logged |
 
@@ -584,14 +584,13 @@ docker run -d \
   -v /opt/shelfbridge:/config \
   --restart unless-stopped \
   shelfbridge
-docker logs shelfbridge 2>&1 | tail -5
+timeout 90 sh -c 'until [ "$(docker inspect -f "{{.State.Health.Status}}" shelfbridge)" = healthy ]; do sleep 3; done' \
+  && echo healthy || { docker logs shelfbridge 2>&1 | tail -20; false; }
 ```
 
-Expected log line:
-
-```text
-ShelfBridge listening on port 9303
-```
+This waits for the HEALTHCHECK, which reads `starting` until its first check
+passes, and prints `healthy`. If it prints logs instead, look for the
+`ShelfBridge listening` startup line.
 
 Then open `http://localhost:9303`, create or enter the ShelfBridge admin
 password, and smoke-test:

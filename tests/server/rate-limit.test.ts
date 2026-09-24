@@ -58,6 +58,7 @@ test("static assets, cached images and the favicon are exempt from the global li
   assert.equal(isRateLimitExempt("/assets/index-abc123.js"), true);
   assert.equal(isRateLimitExempt("/images/covers/1.jpg"), true);
   assert.equal(isRateLimitExempt("/favicon.ico"), true);
+  assert.equal(isRateLimitExempt("/favicon.ico/"), true);
 
   assert.equal(isRateLimitExempt("/api/dashboard"), false);
   assert.equal(isRateLimitExempt("/"), false);

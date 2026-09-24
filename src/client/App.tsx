@@ -47,7 +47,13 @@ function MainApp() {
   }, []);
 
   async function handleAuthenticated() {
-    const status = await refreshAuth();
+    let status: AuthStatus;
+    try {
+      status = await refreshAuth();
+    } catch {
+      setAuthCheckFailed(true);
+      return;
+    }
     if (status.authenticated) navigate("/dashboard", { replace: true });
   }
 
@@ -57,7 +63,9 @@ function MainApp() {
     navigate("/login", { replace: true });
   }
 
-  if (!auth && authCheckFailed) {
+  // Also covers a check that fails straight after sign-in, when auth is already
+  // set from the first check but still reads as signed out.
+  if (authCheckFailed) {
     return (
       <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-4 px-4 text-center">
         <div className="text-sm text-error">Unable to load ShelfBridge. Please try again.</div>

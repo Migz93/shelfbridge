@@ -34,7 +34,11 @@ export const SIGN_IN_RATE_LIMIT = { windowMs: 15 * 60_000, limit: 10 } as const;
  * require a session; this only exempts them from the request count.
  */
 export function isRateLimitExempt(path: string): boolean {
-  return path.startsWith("/assets/") || path.startsWith("/images/") || path === "/favicon.ico";
+  return (
+    path.startsWith("/assets/") ||
+    path.startsWith("/images/") ||
+    path.replace(/\/$/, "") === "/favicon.ico"
+  );
 }
 
 /**

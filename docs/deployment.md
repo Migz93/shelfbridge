@@ -44,15 +44,20 @@ unprivileged `node` user. `docker-entrypoint.sh` gets it there:
    and use.
 3. Repairs ownership of `/config` via `docker-ownership-repair.py`, which walks
    the tree using directory descriptors and no-follow operations at every level,
-   and chowns only entries that don't already match `node`.
-4. Drops privileges with `gosu node` before `exec`ing the real `CMD`.
+   and chowns only entries that don't already match `node`. An entry it isn't
+   allowed to chown (for example on NFS with root_squash, or a read-only mount)
+   gets a warning and is skipped rather than stopping startup.
+4. Checks, as `node`, that `/config` has write and search (`x`) permission,
+   and refuses to start with an error naming the UID if it doesn't. On mounts
+   where root can't chown, fix the ownership or permissions on the host.
+5. Drops privileges with `gosu node` before `exec`ing the real `CMD`.
 
 No host-side setup is needed. A brand-new empty bind mount (root-owned when
 Docker creates it) is repaired on first start, and an existing mount from an
 older root-run container is repaired on upgrade. `/app` stays root-owned, so
 `node` can read but not write application code.
 
-Steps 1–3 only run when the container starts as root. An unsupported non-root
+Steps 1–4 only run when the container starts as root. An unsupported non-root
 launch (`docker run --user`) skips straight to `exec` with whatever `DATA_DIR`
 and UID it was given, and none of the validation or repair applies.
 
