@@ -134,6 +134,9 @@ Run:
 coderabbit review --agent --base main -c AGENTS.md
 ```
 
+Aim for two CLI reviews for each periodic review; this is not a hard cap, but
+ask the project owner before running a third.
+
 First triage the output for the owner: identify important findings, group
 related findings, recommend which should become normal issues, and call out
 minor or optional suggestions. Clearly explain findings that are intentional,
@@ -146,8 +149,9 @@ accepted without an issue; record that disposition in the triage report.
 
 ### Release PR Review
 
-When a normal `develop` → `main` release PR has been opened as a draft, trigger
-CodeRabbit's PR review if necessary. Its purpose is limited to release safety.
+When a normal `develop` → `main` release PR has been opened as a draft,
+trigger CodeRabbit's PR review if necessary. Its purpose is limited to
+release safety.
 Address only findings that could break the application, startup or deployment,
 cause data loss or corruption, break a database migration, introduce a serious
 security problem, seriously break a core integration listed in the
