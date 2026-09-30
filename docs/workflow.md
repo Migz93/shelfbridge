@@ -17,6 +17,7 @@ moment rather than up front.
 | [Pull Request Description Format](#pull-request-description-format) | Opening a PR |
 | [Pull Request Conventions](#pull-request-conventions) | Opening or merging a PR |
 | [Release Process](#release-process) | Cutting a release |
+| [Release Notes](#release-notes) | Editing a release-drafter draft before publication |
 | [Security Findings](#security-findings) | Triaging a code-scanning or Dependabot alert |
 | [Implementation Expectations](#implementation-expectations) | Writing new code |
 
@@ -29,7 +30,9 @@ Use `gh` for all GitHub operations:
 - `gh pr create --draft --base develop --title "..." --body "..."`
 - Ordinary PRs into `develop`: `gh pr merge --squash --delete-branch`
 - Release and ancestry-reconciliation PRs: `gh pr merge --merge`
-- Publish the release-drafter draft once the tag is pushed: `gh release edit vX.Y.Z --draft=false`
+- Edit the release-drafter draft into the [Release Notes](#release-notes)
+  format, then publish it once the tag is pushed:
+  `gh release edit vX.Y.Z --draft=false`
 - `gh issue create --title "..." --body "..."`
 
 PRs are opened as drafts and only marked ready-for-review once finished (see
@@ -118,13 +121,94 @@ When the user says it's time to release:
 5. Open a PR from `develop` into `main`, take it through the review gate, and
    merge it with a merge commit: `gh pr merge --merge`
 6. Create and push the tag `vX.Y.Z` from the resulting merge commit on `main`
-7. Review the release-drafter draft on GitHub and publish it
+7. Edit the release-drafter draft into the user-facing format in
+   [Release Notes](#release-notes), then publish it
    (`gh release edit vX.Y.Z --draft=false`). Don't use `gh release create`,
    which makes a second release instead of publishing the draft.
 
 Do not invent the version — always confirm with the user if ambiguous.
 
 **Tag format:** `vX.Y.Z` — always from `main`, never from `develop`.
+
+---
+
+## Release Notes
+
+Release Drafter output is a starting point, not the finished release note. For
+each future release, edit the draft into a concise explanation for users and
+operators before publishing it. Do not rewrite releases that have already been
+published.
+
+Use this order, including a section only when it contains useful content:
+
+1. A human-written opening summary.
+2. Upgrade notes, when needed.
+3. Features, when needed.
+4. Fixes and reliability, when needed.
+5. Security and maintenance, when needed.
+6. Documentation, when genuinely useful.
+7. Docker information.
+8. A collapsed complete pull request list.
+
+### Opening Summary
+
+Start with one or two plain-English paragraphs that explain what the release is
+mainly about, the important user-visible improvements, and any broad
+operational or reliability improvement that matters. It should be useful to
+someone who does not want to inspect every pull request. Avoid repeating the
+same detail in the later sections.
+
+### Upgrade Notes
+
+Include this section only when existing users need to know about database
+migrations, changed defaults, Docker permissions or startup changes,
+configuration changes, surprising behaviour changes, or required manual
+actions.
+
+### Features, Fixes and Reliability
+
+Describe new user-facing functionality in plain language. Describe important
+bug fixes, reliability improvements, and meaningful behaviour corrections;
+group related changes into meaningful entries rather than copying raw pull
+request titles.
+
+### Security and Maintenance
+
+Include meaningful security fixes, runtime-image changes, rate limiting,
+dependency updates, CI or security scanning, authentication hardening, and
+similar operational changes. Put Docker health checks and runtime-image changes
+here rather than under Features. Do not turn this into a detailed dependency
+changelog.
+
+### Documentation
+
+Include documentation changes only when they matter to users or operators.
+Minor internal documentation changes can remain in the complete pull request
+list.
+
+### Docker
+
+Include all of the following near the end of every release note:
+
+- A versioned `docker pull` command.
+- The `latest` and versioned image tags.
+- Supported architectures.
+- Any important image-specific note.
+
+### Complete Pull Request List
+
+Put the complete pull request list last, inside a collapsed `<details>` block.
+It is the release audit trail and must include every pull request in the
+release: release and version-bump pull requests, test-only pull requests,
+internal review-fix pull requests, documentation pull requests, and dependency
+pull requests. Group the list consistently under headings such as Features,
+Fixes, Maintenance, Documentation, and Dependencies.
+
+Check the list against GitHub's compare range from the previous tag to
+`vX.Y.Z`; Release Drafter omits pull requests labelled `skip-changelog`.
+
+Do not add empty sections or a permanent "Known issues" section. Mention a
+known limitation only when it is relevant to that specific release.
 
 ---
 
