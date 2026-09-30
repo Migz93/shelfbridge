@@ -418,9 +418,9 @@ periodic review below is the only broad `develop`-against-`main` CLI review;
 the `develop` → `main` release PR instead follows the narrow
 [Release PR Review](#release-pr-review).
 
-**Runs are slow and silent.** A review can take 10–15 minutes with no
-output — it looks stuck, but it's working. Check in every 5 minutes; if
-nothing has happened after 30 minutes, tell the user.
+**Runs are slow and silent.** A review can take 10–15 minutes with no output —
+it looks stuck, but it's working. Check in every 5 minutes; if nothing has
+happened after 30 minutes, tell the user.
 
 **Budget: aim for two CLI reviews per changeset or manually requested periodic
 review.** This is not a hard cap. After the second review, the agent must stop
