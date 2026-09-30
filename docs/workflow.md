@@ -142,7 +142,7 @@ irrelevant, false positives, or unsuitable for the project.
 Do not create issues automatically. Only after the owner approves the proposed
 findings, create normal GitHub issues with existing repository labels; never
 introduce review-specific labels. Intentional or unwanted findings can be
-accepted without an issue.
+accepted without an issue; record that disposition in the triage report.
 
 ### Release PR Review
 
@@ -150,7 +150,7 @@ When a normal `develop` → `main` release PR has been opened as a draft, trigge
 CodeRabbit's PR review if necessary. Its purpose is limited to release safety. Address only
 findings that could break the application, startup or deployment, cause data
 loss or corruption, break a database migration, introduce a serious security
-problem, seriously break Plex, Sonarr, Tautulli, or another core integration,
+problem, seriously break a core integration listed in the Project Facts table,
 or otherwise make the release unsafe.
 
 Non-critical findings should become normal future-work issues only after the

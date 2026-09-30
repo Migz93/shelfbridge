@@ -422,14 +422,16 @@ the `develop` → `main` release PR instead follows the narrow
 it looks stuck, but it's working. Check in every 5 minutes; if nothing has
 happened after 30 minutes, tell the user.
 
-**Budget: two CLI reviews per changeset.** After the second one on the same
-branch, the agent must stop and ask before running another:
+**Budget: aim for two CLI reviews per changeset or manually requested periodic
+review.** This is not a hard cap. After the second review, the agent must stop
+and ask before running another:
 
-> You've used 2 CodeRabbit CLI reviews on this branch. Do you want me to run
-> another, or push to the PR?
+> You've used 2 CodeRabbit CLI reviews for this changeset or periodic review.
+> Do you want me to run another, or proceed without one?
 
 Never run a third without an explicit yes. Track the count and state it when
-reporting results. The counter resets when a new changeset starts.
+reporting results. The counter resets when a new changeset or periodic review
+starts.
 
 **After a CodeRabbit review that changed code**, go back to the cross-AI review
 and take it to a clean full pass before offering CodeRabbit again. CodeRabbit is
@@ -460,7 +462,7 @@ ones. Explain the reasoning for each disposition.
 Do not create issues automatically. After the owner approves the proposed
 follow-up work, create normal GitHub issues using the repository's existing
 labels. Do not add review-specific labels. Intentional or unwanted findings may
-be accepted without an issue.
+be accepted without an issue; record that disposition in the triage report.
 
 ---
 
@@ -471,7 +473,7 @@ narrow release-safety check. Trigger it on the PR when necessary, and only act
 on findings that could make the release unsafe: application failure, failed
 startup or deployment, data loss or corruption, a broken database migration, a
 serious security problem, or a serious failure in Plex, Sonarr, Tautulli, or
-another core integration.
+a core integration listed in the Project Facts table.
 
 Non-critical findings are not release blockers. After project-owner approval,
 turn them into normal future-work issues or explicitly accept them; do not
