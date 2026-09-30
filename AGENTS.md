@@ -326,9 +326,9 @@ number in two files with no logic to review — open it directly.
   CodeRabbit CLI is the expensive, rate-limited option; prefer cross-AI review
   first and use CodeRabbit sparingly. Release PRs use the narrow release PR
   review instead.
-- Any CodeRabbit review that results in code changes sends the work **back to
-  the cross-AI review**, which must reach a clean full pass again before another
-  CodeRabbit review is considered.
+- Any CodeRabbit CLI review for a work branch that results in code changes sends
+  the work **back to the cross-AI review**, which must reach a clean full pass
+  again before another CodeRabbit CLI review is considered.
 - After any review completes, re-prompt with the options that still make sense —
   never silently proceed to the next step.
 
@@ -476,6 +476,12 @@ another core integration.
 Non-critical findings are not release blockers. After project-owner approval,
 turn them into normal future-work issues or explicitly accept them; do not
 automatically open additional release PRs for them.
+
+If a release-safety blocker requires code changes, use the normal work-branch
+flow: create a fix branch from `develop`, take its PR through the review gate,
+and merge it into `develop`. The draft release PR then includes the fix; repeat
+the release PR review before marking it ready. Do not commit the fix directly
+to `develop`, `main`, or the release PR.
 
 ---
 

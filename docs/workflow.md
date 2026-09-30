@@ -157,6 +157,12 @@ Non-critical findings should become normal future-work issues only after the
 project owner approves, or be explicitly accepted. They must not automatically
 create more release PRs.
 
+If a release-safety blocker requires code changes, create a normal fix branch
+from `develop` and take its PR through the normal review gate before merging it
+into `develop`. The draft release PR then includes the fix and must go through
+the release PR review again before it is marked ready. Do not commit the fix
+directly to `develop`, `main`, or the release PR.
+
 ---
 
 ## Release Process
