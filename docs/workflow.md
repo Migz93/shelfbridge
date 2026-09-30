@@ -16,6 +16,7 @@ moment rather than up front.
 | [AI Sign-Off For GitHub Text](#ai-sign-off-for-github-text) | Writing anything that lands on GitHub |
 | [Pull Request Description Format](#pull-request-description-format) | Opening a PR |
 | [Pull Request Conventions](#pull-request-conventions) | Opening or merging a PR |
+| [CodeRabbit Review Process](#coderabbit-review-process) | Reviewing development changes or a release PR |
 | [Release Process](#release-process) | Cutting a release |
 | [Release Notes](#release-notes) | Editing a release-drafter draft before publication |
 | [Security Findings](#security-findings) | Triaging a code-scanning or Dependabot alert |
@@ -110,6 +111,65 @@ rather than implying the container was rebuilt and verified.
 
 ---
 
+## CodeRabbit Review Process
+
+CodeRabbit serves two distinct purposes. The existing two-branch workflow and
+release mechanics remain unchanged.
+
+| Review | Purpose | Outcome |
+|---|---|---|
+| Periodic CLI review | Broad review of accumulated `develop` changes | Initially triaged recommendations, then owner-approved normal issues and accepted findings |
+| Release PR review | Critical release-safety check | Fix blockers only |
+
+### Periodic CLI Review
+
+The project owner manually requests this review when a broad check of
+`develop` against `main` would be useful. It is not scheduled, automated, a
+frozen testing phase, or a release gate. Do not create release branches or
+release candidates for it.
+
+Run:
+
+```bash
+coderabbit review --agent --base main -c AGENTS.md
+```
+
+Aim for two CLI reviews for each periodic review; this is not a hard cap, but
+ask the project owner before running a third.
+
+First triage the output for the owner: identify important findings, group
+related findings, recommend which should become normal issues, and call out
+minor or optional suggestions. Clearly explain findings that are intentional,
+irrelevant, false positives, or unsuitable for the project.
+
+Do not create issues automatically. Only after the owner approves the proposed
+findings, create normal GitHub issues with existing repository labels; never
+introduce review-specific labels. Intentional or unwanted findings can be
+accepted without an issue; record that disposition in the triage report.
+
+### Release PR Review
+
+When a normal `develop` → `main` release PR has been opened as a draft,
+trigger CodeRabbit's PR review if necessary. Its purpose is limited to
+release safety.
+Address only findings that could break the application, startup or deployment,
+cause data loss or corruption, break a database migration, introduce a serious
+security problem, seriously break a core integration listed in the
+`Integrations to flag in review` row of `AGENTS.md`'s Project Facts table, or
+otherwise make the release unsafe.
+
+Non-critical findings should become normal future-work issues only after the
+project owner approves, or be explicitly accepted. They must not automatically
+create more release PRs.
+
+If a release-safety blocker requires code changes, create a normal fix branch
+from `develop` and take its PR through the normal review gate before merging it
+into `develop`. The draft release PR then includes the fix and must go through
+the release PR review again before it is marked ready. Do not commit the fix
+directly to `develop`, `main`, or the release PR.
+
+---
+
 ## Release Process
 
 When the user says it's time to release:
@@ -118,8 +178,10 @@ When the user says it's time to release:
 2. Create `chore/bump-version-X.Y.Z` from `develop`
 3. Update the version files listed in the Project Facts table in `AGENTS.md`
 4. Open a PR from that branch into `develop` and merge it
-5. Open a PR from `develop` into `main`, take it through the review gate, and
-   merge it with a merge commit: `gh pr merge --merge`
+5. Open a draft PR from `develop` into `main`, take it through the narrow
+   [release PR review](#release-pr-review), mark it ready (`gh pr ready`) once
+   release-safety blockers are resolved or accepted, then merge it with a merge
+   commit: `gh pr merge --merge`
 6. Create and push the tag `vX.Y.Z` from the resulting merge commit on `main`
 7. Edit the release-drafter draft into the user-facing format in
    [Release Notes](#release-notes), then publish it
