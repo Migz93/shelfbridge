@@ -279,9 +279,9 @@ type/branch-name branch → PR into develop → develop → chore/bump-version �
 7. **When ready to release**, create a `chore/bump-version-X.Y.Z` branch from
    `develop`, bump the version files, open a PR into `develop`, and squash-merge
    it. A version bump does not go through the review gate — see below.
-8. **Open a PR** from `develop` into `main`. This one **does** go through the
-   review gate first. Open it as a draft too, marking it ready per the same
-   conventions once the review gate is satisfied and no further fixes are
+8. **Open a draft PR** from `develop` into `main`, then take it through the
+   narrow [Release PR Review](#release-pr-review). Mark it ready only once
+   release-safety blockers are resolved or accepted and no further fixes are
    pending. Merge it with a merge commit (`gh pr merge --merge`),
    never a squash merge. This preserves `develop` ancestry on `main` and avoids
    future release conflicts. This triggers the release-drafter to generate
@@ -300,7 +300,7 @@ is complete **and** the user has confirmed they're happy with it, the agent must
 stop and ask the user which way to go. It must never pick on the user's behalf,
 and must never open the PR without asking.
 
-The prompt offers three options every time:
+For a work-branch PR, the prompt offers three options:
 
 > Everything's implemented. Do you want to:
 > 1. Go to the cross-AI review (the other agent reviews this diff)
@@ -311,21 +311,24 @@ Option 3 is always available and always legitimate. Review budgets are finite
 and the user is the one who knows what's left — the gate exists so they can
 choose, not so reviews become compulsory.
 
-**This gate applies to:** the work-branch PR (step 3 above) and the
-`develop` → `main` release PR (step 8, where the changeset is everything
-accumulated on `develop` since the last release).
+**This gate applies to:** the work-branch PR (step 3 above).
+
+The `develop` → `main` release PR follows the [Release PR
+Review](#release-pr-review) after it is opened as a draft (step 8), because the
+narrow review runs on that PR.
 
 **This gate does not apply to:** the version-bump PR in step 7. It's a version
 number in two files with no logic to review — open it directly.
 
 #### Ordering rules
 
-- The cross-AI review is the cheap, repeatable one. CodeRabbit CLI is the
-  expensive, rate-limited one. Prefer the cross-AI review first and use
-  CodeRabbit sparingly.
+- The cross-AI review is the cheap, repeatable one. For work branches,
+  CodeRabbit CLI is the expensive, rate-limited option; prefer cross-AI review
+  first and use CodeRabbit sparingly. Release PRs use the narrow release PR
+  review instead.
 - Any CodeRabbit review that results in code changes sends the work **back to
-  the cross-AI review**, which must reach a clean full pass again before
-  CodeRabbit is considered a second time.
+  the cross-AI review**, which must reach a clean full pass again before another
+  CodeRabbit review is considered.
 - After any review completes, re-prompt with the options that still make sense —
   never silently proceed to the next step.
 
@@ -409,8 +412,11 @@ rather than the interactive terminal UI:
 coderabbit review --agent --base develop
 ```
 
-For the `develop` → `main` release PR, use `--base main`. Pass `-c AGENTS.md` to
-give the reviewer this file as context.
+This CLI review is for work-branch changes against `develop`. Pass `-c
+AGENTS.md` to give the reviewer this file as context. The separate manual
+periodic review below is the only broad `develop`-against-`main` CLI review;
+the `develop` → `main` release PR instead follows the narrow
+[Release PR Review](#release-pr-review).
 
 **Runs are slow and silent.** A review can take 10–15 minutes with no output —
 it looks stuck, but it's working. Check in every 5 minutes; if nothing has
@@ -430,6 +436,46 @@ and take it to a clean full pass before offering CodeRabbit again. CodeRabbit is
 the scarce resource — the cross-AI loop should have caught everything cheap
 first, so a CodeRabbit run finding a lot usually means the cross-AI loop was cut
 short.
+
+---
+
+### Periodic Develop-to-Main Review
+
+This is a manual, broad review of the accumulated `develop` changes against
+`main`. It is **not** scheduled, automated, a release gate, or a replacement
+for the normal review gate above. Only start it when the project owner asks.
+
+Run it with the shared guidance as context:
+
+```bash
+coderabbit review --agent --base main -c AGENTS.md
+```
+
+Initially triage the findings and report recommendations to the project owner
+before creating any GitHub issues. Identify important findings, group related
+ones, suggest which should become normal issues, and distinguish minor or
+optional findings from intentional, irrelevant, false-positive, or unsuitable
+ones. Explain the reasoning for each disposition.
+
+Do not create issues automatically. After the owner approves the proposed
+follow-up work, create normal GitHub issues using the repository's existing
+labels. Do not add review-specific labels. Intentional or unwanted findings may
+be accepted without an issue.
+
+---
+
+### Release PR Review
+
+The CodeRabbit review on a normal `develop` → `main` release PR is a separate,
+narrow release-safety check. Trigger it on the PR when necessary, and only act
+on findings that could make the release unsafe: application failure, failed
+startup or deployment, data loss or corruption, a broken database migration, a
+serious security problem, or a serious failure in Plex, Sonarr, Tautulli, or
+another core integration.
+
+Non-critical findings are not release blockers. After project-owner approval,
+turn them into normal future-work issues or explicitly accept them; do not
+automatically open additional release PRs for them.
 
 ---
 
