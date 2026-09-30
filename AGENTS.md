@@ -453,6 +453,9 @@ Run it with the shared guidance as context:
 coderabbit review --agent --base main -c AGENTS.md
 ```
 
+The two-review target in [The CodeRabbit CLI Review](#the-coderabbit-cli-review)
+also applies to each periodic review.
+
 Initially triage the findings and report recommendations to the project owner
 before creating any GitHub issues. Identify important findings, group related
 ones, suggest which should become normal issues, and distinguish minor or
@@ -473,7 +476,7 @@ narrow release-safety check. Trigger it on the PR when necessary, and only act
 on findings that could make the release unsafe: application failure, failed
 startup or deployment, data loss or corruption, a broken database migration, a
 serious security problem, or a serious failure in a core integration listed in
-the Project Facts table.
+the `Integrations to flag in review` row of the Project Facts table.
 
 Non-critical findings are not release blockers. After project-owner approval,
 turn them into normal future-work issues or explicitly accept them; do not
