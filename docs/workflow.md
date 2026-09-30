@@ -148,8 +148,8 @@ accepted without an issue; record that disposition in the triage report.
 
 When a normal `develop` → `main` release PR has been opened as a draft, trigger
 CodeRabbit's PR review if necessary. Its purpose is limited to release safety.
-Address only findings that could break the application, startup or deployment, cause data
-loss or corruption, break a database migration, introduce a serious security
+Address only findings that could break the application, startup or deployment,
+cause data loss or corruption, break a database migration, introduce a serious security
 problem, seriously break a core integration listed in the Project Facts table,
 or otherwise make the release unsafe.
 

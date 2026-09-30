@@ -472,8 +472,8 @@ The CodeRabbit review on a normal `develop` → `main` release PR is a separate,
 narrow release-safety check. Trigger it on the PR when necessary, and only act
 on findings that could make the release unsafe: application failure, failed
 startup or deployment, data loss or corruption, a broken database migration, a
-serious security problem, or a serious failure in Plex, Sonarr, Tautulli, or
-a core integration listed in the Project Facts table.
+serious security problem, or a serious failure in a core integration listed in
+the Project Facts table.
 
 Non-critical findings are not release blockers. After project-owner approval,
 turn them into normal future-work issues or explicitly accept them; do not
