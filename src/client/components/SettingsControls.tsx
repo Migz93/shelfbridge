@@ -41,7 +41,7 @@ export function SettingsToggle({
           onChange={(e) => onChange(e.target.checked)}
           className="peer sr-only"
         />
-        <span className={`block w-10 h-6 rounded-full transition-colors peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-on-surface peer-disabled:opacity-50 ${checked ? "bg-primary-dim" : "bg-outline-variant"}`} />
+        <span className={`block w-10 h-6 rounded-full border transition-colors peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-on-surface peer-disabled:opacity-50 ${checked ? "bg-primary-dim border-primary-dim" : "bg-background-bright border-outline-variant"}`} />
         <span className={`absolute top-1 w-4 h-4 rounded-full transition-all peer-disabled:opacity-50 ${checked ? "bg-on-surface translate-x-5" : "bg-on-surface-variant translate-x-1"}`} />
       </span>
     </label>
