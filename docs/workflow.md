@@ -87,6 +87,29 @@ rather than implying the container was rebuilt and verified.
 
 ---
 
+## Docker Pull Request Checks
+
+Every pull request runs two Docker jobs in `.github/workflows/ci.yml`:
+
+| Check | Coverage |
+|---|---|
+| Docker AMD64 build and startup | Builds and loads the production image; starts an unconfigured instance with a fresh root-owned `/config` bind mount; waits for Docker health; checks HTTP, SQLite, data-directory writes, and the non-root app process |
+| Docker ARM64 build | Builds the production image for `linux/arm64` using QEMU; does not run it |
+
+Both jobs use GitHub-hosted runners and publish no images. They need no registry
+credentials, external-service configuration, or access to a deployed instance.
+AMD64 failures print container logs and inspection details before cleanup. Each
+architecture has its own build-cache scope and can fall back to the existing
+publishing cache to warm its first PR build. The existing npm checks still run
+independently.
+
+These checks cover fresh startup, not configured integrations or upgrades using
+existing data. They run on pull requests only; Docker publishing remains in the
+separate develop and release workflows. To require them before merging, select
+both check names in the repository's branch rules.
+
+---
+
 ## Pull Request Conventions
 
 - PR titles are semantic and become changelog entries: `feat: add poster
