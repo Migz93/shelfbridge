@@ -65,8 +65,8 @@ export default function Settings() {
       </div>
 
       {/* Desktop: pill bar */}
-      <div className="hidden md:block mb-6">
-        <div className="flex p-1 bg-background-container-high rounded-xl gap-1">
+      <div className="hidden md:block mb-6 overflow-x-auto">
+        <div className="flex min-w-max p-1 bg-background-container-high rounded-xl gap-1">
           {TABS.map((t) => (
             <button
               key={t.id}

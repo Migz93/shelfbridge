@@ -4,7 +4,7 @@ const rowClassName = "-mx-3 -my-2 rounded-lg px-3 py-2 transition-colors hover:b
 
 export function SettingsField({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
-    <label className={`grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,20rem)] sm:items-center ${rowClassName}`}>
+    <label className={`grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,20rem)] sm:items-center ${rowClassName}`}>
       <span className="min-w-0">
         <span className="block text-sm font-medium text-on-surface">{label}</span>
         {hint && <span className="block text-xs text-on-surface-variant mt-0.5">{hint}</span>}
