@@ -6,7 +6,8 @@ import { notifySettingsChanged } from "../lib/settingsEvents";
 import { useLiveRefresh } from "../lib/useLiveRefresh";
 import { useModalA11y } from "../lib/useModalA11y";
 import { formatRelativeTime } from "../lib/utils";
-import { Field, SaveBar, SectionCard, SelectInput, TextInput, ToggleField } from "../components/FormControls";
+import { SaveBar, SectionCard, SelectInput, TextInput } from "../components/FormControls";
+import { SettingsField, SettingsToggle } from "../components/SettingsControls";
 import type { AboutInfo, AppSettings, JobInfo, LogEntry, LogsPageResponse, TestResult } from "../../shared/types";
 
 type Tab = "general" | "grimmory" | "download" | "chaptarr" | "audiobookshelf" | "logs" | "jobs" | "about";
@@ -135,7 +136,7 @@ function GeneralTab({ settings, onSave }: { settings: AppSettings; onSave: () =>
         <div className="text-xs text-on-surface-variant">
           Changes to proxy support require a container restart to take effect.
         </div>
-        <ToggleField
+        <SettingsToggle
           label="Trust Proxy"
           hint="Use the real client IP from X-Forwarded-For headers for rate limiting."
           checked={generalForm.trustProxy}
@@ -144,23 +145,23 @@ function GeneralTab({ settings, onSave }: { settings: AppSettings; onSave: () =>
         <SaveBar saving={saving} success={success} error={error} onSave={() => void save()} label="Save Network" />
       </SectionCard>
       <SectionCard title="Sync Behaviour" description="Global defaults for how ShelfBridge syncs data.">
-        <ToggleField
+        <SettingsToggle
           label="Startup Sync"
           hint="Run a profile sync automatically when ShelfBridge starts. Only fires if the sync interval is not set to Disabled."
           checked={syncForm.startupSyncEnabled}
           onChange={(v) => setSyncForm((f) => ({ ...f, startupSyncEnabled: v }))}
         />
-        <Field label="Default Conflict Strategy" hint="How to resolve conflicts when both sides have changed.">
+        <SettingsField label="Default Conflict Strategy" hint="How to resolve conflicts when both sides have changed.">
           <SelectInput value={syncForm.conflictStrategy} onChange={(v) => setSyncForm((f) => ({ ...f, conflictStrategy: v as typeof syncForm.conflictStrategy }))}>
             <option value="latest_wins">Latest update wins</option>
             <option value="grimmory_wins">Grimmory always wins</option>
             <option value="hardcover_wins">Hardcover always wins</option>
           </SelectInput>
-        </Field>
+        </SettingsField>
         <SaveBar saving={saving} success={success} error={error} onSave={() => void save()} label="Save Sync" />
       </SectionCard>
       <SectionCard title="History Retention" description="How long sync run history is kept before the Maintenance job removes it.">
-        <Field label="Retention Period (days)" hint="Sync runs older than this many days will be pruned by the daily Maintenance job.">
+        <SettingsField label="Retention Period (days)" hint="Sync runs older than this many days will be pruned by the daily Maintenance job.">
           <TextInput
             type="number"
             value={String(syncForm.historyRetentionDays)}
@@ -170,7 +171,7 @@ function GeneralTab({ settings, onSave }: { settings: AppSettings; onSave: () =>
             }}
             placeholder="7"
           />
-        </Field>
+        </SettingsField>
         <SaveBar saving={saving} success={success} error={error} onSave={() => void save()} label="Save History" />
       </SectionCard>
     </div>
@@ -215,14 +216,14 @@ function GrimmoryTab({ settings, onSave }: { settings: AppSettings; onSave: () =
         </div>
       )}
       <SectionCard title="Grimmory Server" description="Global connection settings for your Grimmory instance.">
-        <Field label="Base URL" hint="Example: http://grimmory:8080">
+        <SettingsField label="Base URL" hint="Example: http://grimmory:8080">
           <TextInput
             value={form.baseUrl}
             onChange={(v) => setForm((f) => ({ ...f, baseUrl: v }))}
             placeholder="http://grimmory:8080"
           />
-        </Field>
-        <ToggleField
+        </SettingsField>
+        <SettingsToggle
           label="Show link in navigation"
           hint="Show a Grimmory link in the bottom-left navigation menu."
           checked={form.addMenuLink}
@@ -270,14 +271,14 @@ function DownloadTab({ settings, onSave }: { settings: AppSettings; onSave: () =
   return (
     <div className="space-y-5">
       <SectionCard title="Shelfmark" description="Base URL for your Shelfmark instance.">
-        <Field label="Base URL">
+        <SettingsField label="Base URL">
           <TextInput
             value={form.baseUrl}
             onChange={(v) => setForm((f) => ({ ...f, baseUrl: v }))}
             placeholder="https://shelfmark.example.com"
           />
-        </Field>
-        <ToggleField
+        </SettingsField>
+        <SettingsToggle
           label="Show link in navigation"
           hint="Show a Shelfmark link in the bottom-left navigation menu."
           checked={form.addMenuLink}
@@ -347,14 +348,14 @@ function ChaptarrTab({ settings, onSave }: { settings: AppSettings; onSave: () =
   return (
     <div className="space-y-5">
       <SectionCard title="Chaptarr Connection" description="URL and API key for your Chaptarr instance. Found under Settings → General in Chaptarr.">
-        <Field label="Base URL" hint="Example: http://chaptarr:8787">
+        <SettingsField label="Base URL" hint="Example: http://chaptarr:8787">
           <TextInput
             value={form.baseUrl}
             onChange={(v) => setForm((f) => ({ ...f, baseUrl: v }))}
             placeholder="http://chaptarr:8787"
           />
-        </Field>
-        <Field label="API Key" hint="Copy from Chaptarr → Settings → General → Security">
+        </SettingsField>
+        <SettingsField label="API Key" hint="Copy from Chaptarr → Settings → General → Security">
           <input
             type="password"
             autoComplete="off"
@@ -363,8 +364,8 @@ function ChaptarrTab({ settings, onSave }: { settings: AppSettings; onSave: () =
             placeholder={apiKeyConfigured ? "••••••••••••••" : "Paste your API key"}
             className="w-full bg-background-container-low border border-outline-variant/30 rounded-xl px-4 py-2.5 text-sm text-on-surface placeholder:text-on-surface-variant/40 focus:outline-none focus:border-primary/50 transition-colors font-mono"
           />
-        </Field>
-        <ToggleField
+        </SettingsField>
+        <SettingsToggle
           label="Show link in navigation"
           hint="Show a Chaptarr link in the bottom-left navigation menu."
           checked={form.addMenuLink}
@@ -430,14 +431,14 @@ function AudiobookshelfTab({ settings, onSave }: { settings: AppSettings; onSave
   return (
     <div className="space-y-5">
       <SectionCard title="Audiobookshelf Server" description="Global base URL for your Audiobookshelf instance. Each user configures their own API key under their profile.">
-        <Field label="Base URL" hint="Example: http://audiobookshelf:13378">
+        <SettingsField label="Base URL" hint="Example: http://audiobookshelf:13378">
           <TextInput
             value={form.baseUrl}
             onChange={(v) => { setForm((f) => ({ ...f, baseUrl: v })); setTestResult(null); }}
             placeholder="http://audiobookshelf:13378"
           />
-        </Field>
-        <ToggleField
+        </SettingsField>
+        <SettingsToggle
           label="Show link in navigation"
           hint="Show an Audiobookshelf link in the bottom-left navigation menu."
           checked={form.addMenuLink}
