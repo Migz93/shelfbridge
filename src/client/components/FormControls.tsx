@@ -18,7 +18,7 @@ export function SectionCard({
         <h3 className="font-headline font-semibold text-base text-on-surface">{title}</h3>
         {description && <p className="text-on-surface-variant text-sm mt-1">{description}</p>}
       </div>
-      <div className="space-y-4">{children}</div>
+      <div className="flex flex-col gap-4">{children}</div>
     </div>
   );
 }

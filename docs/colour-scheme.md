@@ -99,7 +99,6 @@ Status colours have specific jobs across the app:
 - `outline-variant` is a border colour only, never used for text.
 - Animate-pulse on the warning dot is reserved for actively running syncs only —
   don't use it for static warning indicators.
-
 - Settings form rows use `SettingsField` and `SettingsToggle` from
   `src/client/components/SettingsControls.tsx`: labels and hints sit on the left,
   controls on the right; input rows stack below the small-screen breakpoint.
