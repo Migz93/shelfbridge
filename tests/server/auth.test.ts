@@ -235,7 +235,7 @@ test("password changes validate credentials, revoke sessions atomically and pres
       for (let attempt = 0; attempt < 10; attempt++) {
         assert.equal((await post("login", { password: "wrong-password" }, "", "192.0.2.233")).status, 401);
       }
-      // Login and password changes share the existing failed-credential budget.
+      // Login and password changes share the same rejected-request budget.
       assert.equal((await post("change-password", {
         currentPassword: finalPassword, newPassword, confirmPassword: newPassword
       }, cookieOf(finalLogin), "192.0.2.233")).status, 429);

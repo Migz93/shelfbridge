@@ -56,7 +56,13 @@ Requires a valid admin session and the current password. Available in
 | 400 | Missing/incorrect current password, new password shorter than 8 characters, or mismatched confirmation |
 | 401 | Missing/expired session, or session/credentials changed while the request was running |
 | 503 | Authentication has not been configured |
-| 429 | Failed credential attempts exceeded the shared sign-in allowance (10 per IP per 15 minutes) |
+| 429 | Rejected sign-in/password-change requests exceeded the shared allowance (10 per IP per 15 minutes) |
+
+The shared limiter counts all 4xx/5xx responses from sign-in and password-change
+handlers, including field-validation errors, incorrect passwords, stale credentials
+and server failures. Successful requests do not consume the allowance.
+Password-change requests rejected by the authentication gate (401/503) before
+reaching the limiter do not count.
 
 Passwords are used exactly as entered (no trimming). The replacement uses a fresh
 salt and scrypt hash. Credential replacement and deletion of **all** sessions

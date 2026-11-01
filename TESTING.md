@@ -121,8 +121,11 @@ All are gitignored:
 
 The app's rate limits live in `src/server/rate-limit.ts`, which is shared
 unchanged across the Migz93 self-hosted apps. There are two limiters: 3,000
-requests per minute per client IP across the app, and 10 failed sign-in
-attempts per 15 minutes. Built assets (`/assets/`), cached images (`/images/`)
+requests per minute per client IP across the app, and a shared allowance of 10 rejected sign-in/password-change requests per
+15 minutes. The latter counts all handler responses with a 4xx/5xx status,
+including validation errors and server failures; successful requests and
+password-change requests rejected by the authentication gate before the limiter
+do not count. Built assets (`/assets/`), cached images (`/images/`)
 and `/favicon.ico` don't count toward the global limit, so a full Playwright
 run stays well under it.
 
@@ -239,7 +242,7 @@ so all tests start already authenticated.
 |---|---|
 | Password change validation | HTTP route rejects unconfigured/unauthenticated requests, malformed fields, incorrect current password, short new password and mismatched confirmation without changing credentials, sessions or other app data |
 | Password change transaction | Injected session-deletion failure rolls back both credential writes; concurrent change requests permit only one winner |
-| In-flight login and rate limiting | A login paused during scrypt cannot create a session after credentials change; password changes share the existing failed-sign-in allowance |
+| In-flight login and rate limiting | A login paused during scrypt cannot create a session after credentials change; password changes share the sign-in limiter, which counts all handler 4xx/5xx responses |
 | Password change success | Fresh hash/salt, all prior sessions rejected, old password rejected, new password accepted, and all non-auth tables preserved |
 | Malformed cookie | Invalid percent-encoding is treated as unauthenticated input rather than throwing |
 | Hashed session storage | The database contains only a SHA-256 session-token hash with a numeric expiry |
