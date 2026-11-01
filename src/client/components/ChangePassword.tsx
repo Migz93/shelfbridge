@@ -2,7 +2,7 @@ import { useState, type FormEvent } from "react";
 import { SectionCard } from "./FormControls";
 import { SettingsField } from "./SettingsControls";
 
-export default function ChangePassword({ onPasswordChanged }: { onPasswordChanged: () => void }) {
+export default function ChangePassword({ onPasswordChanged, onSessionEnded }: { onPasswordChanged: () => void; onSessionEnded: () => void }) {
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -25,6 +25,10 @@ export default function ChangePassword({ onPasswordChanged }: { onPasswordChange
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ currentPassword, newPassword, confirmPassword })
       });
+      if (response.status === 401) {
+        onSessionEnded();
+        return;
+      }
       if (!response.ok) {
         const result = await response.json().catch(() => null) as { error?: string } | null;
         throw new Error(result?.error ?? "Unable to change password. Please try again.");

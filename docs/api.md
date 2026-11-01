@@ -58,6 +58,10 @@ Requires a valid admin session and the current password. Available in
 | 503 | Authentication has not been configured |
 | 429 | Rejected sign-in/password-change requests exceeded the shared allowance (10 per IP per 15 minutes) |
 
+If a password-change request returns 401, the form returns to sign-in with a
+session-ended notice. A successful change instead shows a password-changed
+notice. Both notices receive keyboard focus when sign-in appears.
+
 The shared limiter counts all 4xx/5xx responses from sign-in and password-change
 handlers, including field-validation errors, incorrect passwords, stale credentials
 and server failures. Successful requests do not consume the allowance.

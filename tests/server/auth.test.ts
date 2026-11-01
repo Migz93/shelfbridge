@@ -88,7 +88,7 @@ test("session cookies become Secure for HTTPS requests", () => {
 });
 
 
-test("password changes validate credentials, revoke sessions atomically and preserve other data", async () => {
+test("password changes validate credentials, revoke sessions atomically and preserve other data", { timeout: 15_000 }, async () => {
   const app = express();
   app.set("trust proxy", "loopback");
   app.use(express.json(), sessionMiddleware);
@@ -105,7 +105,8 @@ test("password changes validate credentials, revoke sessions atomically and pres
   const address = server.address();
   assert.ok(address && typeof address !== "string");
   const base = `http://127.0.0.1:${address.port}`;
-  async function post(route: string, body: unknown, cookie = "", ip = "192.0.2.230") {
+  let clientIp = "192.0.2.230";
+  async function post(route: string, body: unknown, cookie = "", ip = clientIp) {
     return fetch(base + "/api/auth/" + route, {
       method: "POST",
       headers: { "Content-Type": "application/json", cookie, "X-Forwarded-For": ip },
@@ -144,6 +145,7 @@ test("password changes validate credentials, revoke sessions atomically and pres
     const original = credentials();
     const sessions = () => getDb().prepare("SELECT * FROM auth_sessions ORDER BY token_hash").all();
     const originalSessions = sessions();
+    clientIp = "192.0.2.240";
     const invalidBodies = [
       { ...body, currentPassword: "wrong-password" },
       { ...body, currentPassword: 123 },
@@ -162,6 +164,7 @@ test("password changes validate credentials, revoke sessions atomically and pres
       assert.deepEqual(snapshot(), before);
     }
 
+    clientIp = "192.0.2.241";
     // A failed revocation must roll back both credential writes.
     getDb().exec("CREATE TRIGGER fail_session_delete BEFORE DELETE ON auth_sessions BEGIN SELECT RAISE(ABORT, 'injected failure'); END");
     try {
@@ -172,21 +175,62 @@ test("password changes validate credentials, revoke sessions atomically and pres
       getDb().exec("DROP TRIGGER fail_session_delete");
     }
 
-    // Two in-flight changes using the same credentials cannot both succeed.
-    const responses = await Promise.all([
-      post("change-password", body, cookie),
-      post("change-password", body, secondCookie)
-    ]);
-    assert.deepEqual(responses.map((r) => r.status).sort(), [200, 401]);
-    const success = responses.find((r) => r.status === 200)!;
-    assert.deepEqual(await success.json(), { authenticated: false });
-    assert.match(success.headers.get("set-cookie") ?? "", /shelfbridge_session=;.*Max-Age=0/);
+    clientIp = "192.0.2.242";
+    // Hold both current-password verifications until both requests have passed
+    // requireAuth. Commit one change before releasing the other so only the
+    // transaction's recheck can reject the second request.
+    const releases: (() => void)[] = [];
+    let bothVerifying = () => {};
+    const bothStarted = new Promise<void>((resolve) => { bothVerifying = resolve; });
+    const realScrypt = crypto.scrypt;
+    let verificationCount = 0;
+    const concurrentScrypt = test.mock.method(crypto, "scrypt", (password: string, salt: string, keylen: number, callback: (err: Error | null, derivedKey: Buffer) => void) => {
+      const hold = verificationCount++ < 2;
+      realScrypt(password, salt, keylen, (err, derivedKey) => {
+        if (hold) {
+          let released = false;
+          releases.push(() => {
+            if (!released) { released = true; callback(err, derivedKey); }
+          });
+          if (releases.length === 2) bothVerifying();
+        } else {
+          callback(err, derivedKey);
+        }
+      });
+    });
+    let requests: Promise<globalThis.Response>[] = [];
+    try {
+      // Track which callback belongs to which request without depending on
+      // request arrival or worker-thread completion order.
+      const responses: globalThis.Response[] = [];
+      requests = [
+        post("change-password", body, cookie).then((response) => { responses.push(response); return response; }),
+        post("change-password", body, secondCookie).then((response) => { responses.push(response); return response; })
+      ];
+      await bothStarted;
+      releases[0]!();
+      const success = await Promise.race(requests);
+      assert.equal(success.status, 200);
+      assert.deepEqual(await success.json(), { authenticated: false });
+      assert.match(success.headers.get("set-cookie") ?? "", /shelfbridge_session=;.*Max-Age=0/);
+      releases[1]!();
+      await Promise.all(requests);
+      const rejected = responses.find((response) => response.status !== 200)!;
+      assert.equal(rejected.status, 401);
+      assert.deepEqual(await rejected.json(), { error: "Session or password changed. Please sign in again." });
+    } finally {
+      concurrentScrypt.mock.restore();
+      // Release any callback still held if an assertion failed.
+      for (const release of releases) release();
+      await Promise.allSettled(requests);
+    }
     const replacement = credentials();
     assert.notEqual(replacement[0], original[0]);
     assert.notEqual(replacement[1], original[1]);
     assert.equal(replacement[0]?.includes(newPassword), false);
     assert.deepEqual(sessions(), []);
     assert.deepEqual(snapshot(), before);
+    clientIp = "192.0.2.243";
     for (const revoked of [cookie, secondCookie]) {
       assert.equal((await fetch(base + "/private", { headers: { cookie: revoked } })).status, 401);
       assert.equal((await post("change-password", body, revoked)).status, 401);

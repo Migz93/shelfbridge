@@ -24,7 +24,7 @@ export default function App() {
 
 function MainApp() {
   const navigate = useNavigate();
-  const [passwordChanged, setPasswordChanged] = useState(false);
+  const [signInReason, setSignInReason] = useState<"password-changed" | "session-ended" | null>(null);
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [authCheckFailed, setAuthCheckFailed] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(false);
@@ -60,13 +60,19 @@ function MainApp() {
       return;
     }
     if (status.authenticated) {
-      setPasswordChanged(false);
+      setSignInReason(null);
       navigate("/dashboard", { replace: true });
     }
   }
 
   function handlePasswordChanged() {
-    setPasswordChanged(true);
+    setSignInReason("password-changed");
+    setAuth({ configured: true, authenticated: false });
+    navigate("/login", { replace: true });
+  }
+
+  function handleSessionEnded() {
+    setSignInReason("session-ended");
     setAuth({ configured: true, authenticated: false });
     navigate("/login", { replace: true });
   }
@@ -116,7 +122,7 @@ function MainApp() {
   if (!auth.authenticated) {
     return (
       <Routes>
-        <Route path="/login" element={<Login mode="login" notice={passwordChanged ? "Password changed. Sign in with your new password." : undefined} onAuthenticated={() => void handleAuthenticated()} />} />
+        <Route path="/login" element={<Login mode="login" notice={signInReason === "password-changed" ? "Password changed. Sign in with your new password." : signInReason === "session-ended" ? "Your session ended. Please sign in again." : undefined} noticeTone={signInReason === "session-ended" ? "warning" : "success"} onAuthenticated={() => void handleAuthenticated()} />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     );
@@ -134,7 +140,7 @@ function MainApp() {
           <Route path="/users" element={<Users />} />
           <Route path="/users/:id" element={<UserDetailPage />} />
           <Route path="/history" element={<SyncHistory />} />
-          <Route path="/settings" element={<Settings onPasswordChanged={handlePasswordChanged} />} />
+          <Route path="/settings" element={<Settings onPasswordChanged={handlePasswordChanged} onSessionEnded={handleSessionEnded} />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Route>
       </Routes>
