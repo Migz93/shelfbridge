@@ -1,18 +1,25 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { apiPost } from "../lib/api";
 
 interface LoginProps {
   mode: "setup" | "login";
+  notice?: string | undefined;
+  noticeTone?: "success" | "warning";
   onAuthenticated: () => void;
 }
 
-export default function Login({ mode, onAuthenticated }: LoginProps) {
+export default function Login({ mode, notice, noticeTone = "success", onAuthenticated }: LoginProps) {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const isSetup = mode === "setup";
+  const noticeRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (notice) noticeRef.current?.focus();
+  }, [notice]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -47,6 +54,8 @@ export default function Login({ mode, onAuthenticated }: LoginProps) {
             </p>
           </div>
         </div>
+
+        {notice && <div ref={noticeRef} tabIndex={-1} role="status" className={`mb-5 rounded-xl border px-4 py-3 text-sm focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-primary ${noticeTone === "warning" ? "border-warning/30 bg-warning/10 text-warning" : "border-success/30 bg-success/10 text-success"}`}>{notice}</div>}
 
         <label className="block text-sm font-semibold text-on-surface mb-2" htmlFor="password">
           Password

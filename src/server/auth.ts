@@ -207,10 +207,66 @@ export function registerAuthRoutes(router: Router): void {
       return;
     }
 
+    // A password change can finish while scrypt is running. Never issue a
+    // session for credentials that were replaced during verification.
+    if (getSetting("auth.passwordHash", "") !== passwordHash || getSetting("auth.passwordSalt", "") !== passwordSalt) {
+      res.status(401).json({ error: "Password changed. Please sign in again." });
+      return;
+    }
+
     const sessionId = createSession();
     setSessionCookie(req, res, sessionId);
     logger.info("ShelfBridge login succeeded");
     res.json({ authenticated: true });
+  });
+
+  router.post("/auth/change-password", requireAuth, signInRateLimiter, async (req, res) => {
+    const currentPassword = typeof req.body?.currentPassword === "string" ? req.body.currentPassword : "";
+    const newPassword = typeof req.body?.newPassword === "string" ? req.body.newPassword : "";
+    const confirmPassword = typeof req.body?.confirmPassword === "string" ? req.body.confirmPassword : "";
+
+    if (!currentPassword) {
+      res.status(400).json({ error: "Current password is required." });
+      return;
+    }
+    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+      res.status(400).json({ error: `New password must be at least ${MIN_PASSWORD_LENGTH} characters.` });
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      res.status(400).json({ error: "Passwords do not match." });
+      return;
+    }
+
+    const passwordHash = getSetting("auth.passwordHash", "");
+    const passwordSalt = getSetting("auth.passwordSalt", "");
+    if (!(await verifyPassword(currentPassword, passwordHash, passwordSalt))) {
+      logger.warn("ShelfBridge password change rejected: invalid current password");
+      res.status(400).json({ error: "Current password is incorrect." });
+      return;
+    }
+
+    const replacement = await hashPassword(newPassword);
+    // Keep credentials and revocation atomic. Recheck after both async hashes
+    // so concurrent changes/logout cannot authorize a stale request.
+    const changed = getDb().transaction(() => {
+      if (!req.sessionId || !getValidSession(req.sessionId)
+        || getSetting("auth.passwordHash", "") !== passwordHash
+        || getSetting("auth.passwordSalt", "") !== passwordSalt) return false;
+      setSetting("auth.passwordHash", replacement.passwordHash);
+      setSetting("auth.passwordSalt", replacement.passwordSalt);
+      getDb().prepare("DELETE FROM auth_sessions").run();
+      return true;
+    })();
+
+    if (!changed) {
+      res.status(401).json({ error: "Session or password changed. Please sign in again." });
+      return;
+    }
+
+    clearSessionCookie(res);
+    logger.info("ShelfBridge admin password changed; all sessions signed out");
+    res.json({ authenticated: false });
   });
 
   router.post("/auth/logout", (req, res) => {
