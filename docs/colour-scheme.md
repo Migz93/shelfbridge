@@ -101,8 +101,7 @@ Status colours have specific jobs across the app:
   don't use it for static warning indicators.
 - Settings form rows use `SettingsField`, `SettingsNumber` and `SettingsToggle`
   from `src/client/components/SettingsControls.tsx`, matching Pacearr's row
-  layout. Wide inputs stack at 820px and below; compact fields stack at 480px
-  and below; toggles stay on the right. Hints wrap at roughly 65 characters.
+  layout. Wide inputs stack below 820px; compact fields stack below 480px; toggles stay on the right. Hints wrap at roughly 65 characters.
   Labels name controls and hints are linked through `aria-describedby`.
   Card bodies use grid gaps of 20px so negative row margins do not override
   spacing. Rows highlight with `background-container-high` on hover, except
