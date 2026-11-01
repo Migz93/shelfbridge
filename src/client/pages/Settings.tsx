@@ -7,7 +7,7 @@ import { useLiveRefresh } from "../lib/useLiveRefresh";
 import { useModalA11y } from "../lib/useModalA11y";
 import { formatRelativeTime } from "../lib/utils";
 import { SaveBar, SectionCard, SelectInput, TextInput } from "../components/FormControls";
-import { SettingsField, SettingsToggle } from "../components/SettingsControls";
+import { SettingsField, SettingsNumber, SettingsToggle } from "../components/SettingsControls";
 import type { AboutInfo, AppSettings, JobInfo, LogEntry, LogsPageResponse, TestResult } from "../../shared/types";
 
 type Tab = "general" | "grimmory" | "download" | "chaptarr" | "audiobookshelf" | "logs" | "jobs" | "about";
@@ -161,17 +161,17 @@ function GeneralTab({ settings, onSave }: { settings: AppSettings; onSave: () =>
         <SaveBar saving={saving} success={success} error={error} onSave={() => void save()} label="Save Sync" />
       </SectionCard>
       <SectionCard title="History Retention" description="How long sync run history is kept before the Maintenance job removes it.">
-        <SettingsField label="Retention Period (days)" hint="Sync runs older than this many days will be pruned by the daily Maintenance job.">
-          <TextInput
-            type="number"
-            value={String(syncForm.historyRetentionDays)}
-            onChange={(v) => {
-              const n = parseInt(v, 10);
-              if (!Number.isNaN(n) && n > 0) setSyncForm((f) => ({ ...f, historyRetentionDays: n }));
-            }}
-            placeholder="7"
-          />
-        </SettingsField>
+        <SettingsNumber
+          label="Retention Period"
+          hint="Sync runs older than this many days will be pruned by the daily Maintenance job."
+          unit="days"
+          min={1}
+          value={syncForm.historyRetentionDays}
+          onChange={(v) => {
+            const n = parseInt(v, 10);
+            if (!Number.isNaN(n) && n > 0) setSyncForm((f) => ({ ...f, historyRetentionDays: n }));
+          }}
+        />
         <SaveBar saving={saving} success={success} error={error} onSave={() => void save()} label="Save History" />
       </SectionCard>
     </div>
@@ -216,7 +216,7 @@ function GrimmoryTab({ settings, onSave }: { settings: AppSettings; onSave: () =
         </div>
       )}
       <SectionCard title="Grimmory Server" description="Global connection settings for your Grimmory instance.">
-        <SettingsField label="Base URL" hint="Example: http://grimmory:8080">
+        <SettingsField wide label="Base URL" hint="Example: http://grimmory:8080">
           <TextInput
             value={form.baseUrl}
             onChange={(v) => setForm((f) => ({ ...f, baseUrl: v }))}
@@ -271,7 +271,7 @@ function DownloadTab({ settings, onSave }: { settings: AppSettings; onSave: () =
   return (
     <div className="space-y-5">
       <SectionCard title="Shelfmark" description="Base URL for your Shelfmark instance.">
-        <SettingsField label="Base URL">
+        <SettingsField wide label="Base URL">
           <TextInput
             value={form.baseUrl}
             onChange={(v) => setForm((f) => ({ ...f, baseUrl: v }))}
@@ -348,14 +348,14 @@ function ChaptarrTab({ settings, onSave }: { settings: AppSettings; onSave: () =
   return (
     <div className="space-y-5">
       <SectionCard title="Chaptarr Connection" description="URL and API key for your Chaptarr instance. Found under Settings → General in Chaptarr.">
-        <SettingsField label="Base URL" hint="Example: http://chaptarr:8787">
+        <SettingsField wide label="Base URL" hint="Example: http://chaptarr:8787">
           <TextInput
             value={form.baseUrl}
             onChange={(v) => setForm((f) => ({ ...f, baseUrl: v }))}
             placeholder="http://chaptarr:8787"
           />
         </SettingsField>
-        <SettingsField label="API Key" hint="Copy from Chaptarr → Settings → General → Security">
+        <SettingsField wide label="API Key" hint="Copy from Chaptarr → Settings → General → Security">
           <input
             type="password"
             autoComplete="off"
@@ -431,7 +431,7 @@ function AudiobookshelfTab({ settings, onSave }: { settings: AppSettings; onSave
   return (
     <div className="space-y-5">
       <SectionCard title="Audiobookshelf Server" description="Global base URL for your Audiobookshelf instance. Each user configures their own API key under their profile.">
-        <SettingsField label="Base URL" hint="Example: http://audiobookshelf:13378">
+        <SettingsField wide label="Base URL" hint="Example: http://audiobookshelf:13378">
           <TextInput
             value={form.baseUrl}
             onChange={(v) => { setForm((f) => ({ ...f, baseUrl: v })); setTestResult(null); }}

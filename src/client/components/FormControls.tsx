@@ -13,12 +13,12 @@ export function SectionCard({
   wide?: boolean;
 }) {
   return (
-    <div className={`bg-background-container rounded-2xl border border-outline-variant/20 p-5 ${wide ? "w-full" : ""}`}>
-      <div className="mb-4">
-        <h3 className="font-headline font-semibold text-base text-on-surface">{title}</h3>
+    <div className={`bg-background-container rounded-xl border border-outline-variant/30 p-5 ${wide ? "w-full" : ""}`}>
+      <div className="mb-5">
+        <h3 className="font-headline font-semibold text-lg text-on-surface">{title}</h3>
         {description && <p className="text-on-surface-variant text-sm mt-1">{description}</p>}
       </div>
-      <div className="flex flex-col gap-4">{children}</div>
+      <div className="grid gap-5">{children}</div>
     </div>
   );
 }
@@ -37,15 +37,21 @@ export function TextInput({
   value,
   onChange,
   placeholder,
-  type = "text"
+  type = "text",
+  id,
+  "aria-describedby": describedBy
 }: {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
   type?: string;
+  id?: string;
+  "aria-describedby"?: string;
 }) {
   return (
     <input
+      id={id}
+      aria-describedby={describedBy}
       type={type}
       value={value}
       onChange={(e) => onChange(e.target.value)}
@@ -74,9 +80,11 @@ export function PasswordInput({
   );
 }
 
-export function SelectInput({ value, onChange, children }: { value: string; onChange: (value: string) => void; children: ReactNode }) {
+export function SelectInput({ value, onChange, children, id, "aria-describedby": describedBy }: { value: string; onChange: (value: string) => void; children: ReactNode; id?: string; "aria-describedby"?: string }) {
   return (
     <select
+      id={id}
+      aria-describedby={describedBy}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       className="w-full bg-background-container-low border border-outline-variant/30 rounded-lg px-3 py-2 text-on-surface text-sm focus:outline-none focus:border-primary/50"
