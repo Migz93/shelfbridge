@@ -32,6 +32,7 @@ function MainApp() {
   async function refreshAuth() {
     const status = await apiGet<AuthStatus>("/api/auth/status");
     setAuth(status);
+    if (status.authenticated) setSignInReason(null);
     return status;
   }
 
@@ -60,7 +61,6 @@ function MainApp() {
       return;
     }
     if (status.authenticated) {
-      setSignInReason(null);
       navigate("/dashboard", { replace: true });
     }
   }
