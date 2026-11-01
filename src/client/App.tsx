@@ -24,6 +24,7 @@ export default function App() {
 
 function MainApp() {
   const navigate = useNavigate();
+  const [passwordChanged, setPasswordChanged] = useState(false);
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [authCheckFailed, setAuthCheckFailed] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(false);
@@ -58,7 +59,16 @@ function MainApp() {
       setAuthCheckFailed(true);
       return;
     }
-    if (status.authenticated) navigate("/dashboard", { replace: true });
+    if (status.authenticated) {
+      setPasswordChanged(false);
+      navigate("/dashboard", { replace: true });
+    }
+  }
+
+  function handlePasswordChanged() {
+    setPasswordChanged(true);
+    setAuth({ configured: true, authenticated: false });
+    navigate("/login", { replace: true });
   }
 
   async function handleLogout() {
@@ -106,7 +116,7 @@ function MainApp() {
   if (!auth.authenticated) {
     return (
       <Routes>
-        <Route path="/login" element={<Login mode="login" onAuthenticated={() => void handleAuthenticated()} />} />
+        <Route path="/login" element={<Login mode="login" notice={passwordChanged ? "Password changed. Sign in with your new password." : undefined} onAuthenticated={() => void handleAuthenticated()} />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     );
@@ -124,7 +134,7 @@ function MainApp() {
           <Route path="/users" element={<Users />} />
           <Route path="/users/:id" element={<UserDetailPage />} />
           <Route path="/history" element={<SyncHistory />} />
-          <Route path="/settings" element={<Settings />} />
+          <Route path="/settings" element={<Settings onPasswordChanged={handlePasswordChanged} />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Route>
       </Routes>

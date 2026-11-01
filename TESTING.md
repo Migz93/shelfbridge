@@ -237,6 +237,10 @@ so all tests start already authenticated.
 
 | Test | What it checks |
 |---|---|
+| Password change validation | HTTP route rejects unconfigured/unauthenticated requests, malformed fields, incorrect current password, short new password and mismatched confirmation without changing credentials, sessions or other app data |
+| Password change transaction | Injected session-deletion failure rolls back both credential writes; concurrent change requests permit only one winner |
+| In-flight login and rate limiting | A login paused during scrypt cannot create a session after credentials change; password changes share the existing failed-sign-in allowance |
+| Password change success | Fresh hash/salt, all prior sessions rejected, old password rejected, new password accepted, and all non-auth tables preserved |
 | Malformed cookie | Invalid percent-encoding is treated as unauthenticated input rather than throwing |
 | Hashed session storage | The database contains only a SHA-256 session-token hash with a numeric expiry |
 | Secure cookie | HTTPS requests receive a `Secure` session cookie |

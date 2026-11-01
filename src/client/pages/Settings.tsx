@@ -7,6 +7,7 @@ import { useLiveRefresh } from "../lib/useLiveRefresh";
 import { useModalA11y } from "../lib/useModalA11y";
 import { formatRelativeTime } from "../lib/utils";
 import { SaveBar, SectionCard, SelectInput, TextInput } from "../components/FormControls";
+import ChangePassword from "../components/ChangePassword";
 import { SettingsField, SettingsNumber, SettingsToggle } from "../components/SettingsControls";
 import type { AboutInfo, AppSettings, JobInfo, LogEntry, LogsPageResponse, TestResult } from "../../shared/types";
 
@@ -23,7 +24,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "about", label: "About" }
 ];
 
-export default function Settings() {
+export default function Settings({ onPasswordChanged }: { onPasswordChanged: () => void }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const activeTab = (TABS.some((t) => t.id === searchParams.get("tab")) ? searchParams.get("tab") : "general") as Tab;
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -93,7 +94,7 @@ export default function Settings() {
         </div>
       ) : settings ? (
         <>
-          {activeTab === "general" && <GeneralTab settings={settings} onSave={loadSettings} />}
+          {activeTab === "general" && <GeneralTab settings={settings} onSave={loadSettings} onPasswordChanged={onPasswordChanged} />}
           {activeTab === "grimmory" && <GrimmoryTab settings={settings} onSave={loadSettings} />}
           {activeTab === "download" && <DownloadTab settings={settings} onSave={loadSettings} />}
           {activeTab === "chaptarr" && <ChaptarrTab settings={settings} onSave={loadSettings} />}
@@ -107,7 +108,7 @@ export default function Settings() {
   );
 }
 
-function GeneralTab({ settings, onSave }: { settings: AppSettings; onSave: () => Promise<void> }) {
+function GeneralTab({ settings, onSave, onPasswordChanged }: { settings: AppSettings; onSave: () => Promise<void>; onPasswordChanged: () => void }) {
   const [generalForm, setGeneralForm] = useState(settings.general);
   const [syncForm, setSyncForm] = useState(settings.sync);
   const [saving, setSaving] = useState(false);
@@ -174,6 +175,7 @@ function GeneralTab({ settings, onSave }: { settings: AppSettings; onSave: () =>
         />
         <SaveBar saving={saving} success={success} error={error} onSave={() => void save()} label="Save History" />
       </SectionCard>
+      <ChangePassword onPasswordChanged={onPasswordChanged} />
     </div>
   );
 }
