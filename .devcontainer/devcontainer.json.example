@@ -1,0 +1,33 @@
+{
+  "name": "dev-shelfbridge",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:22",
+  "runArgs": [
+    "--name",
+    "zdev-shelfbridge"
+  ],
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/shelfbridge,type=bind,consistency=cached",
+  "workspaceFolder": "/workspaces/shelfbridge",
+  "remoteUser": "node",
+  "updateRemoteUserUID": true,
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "containerEnv": {
+    "HOME": "/home/node",
+    "NPM_CONFIG_CACHE": "/home/node/.npm"
+  },
+  "postCreateCommand": "npm ci && npx playwright install --with-deps chromium",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "anthropic.claude-code",
+        "openai.chatgpt"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  }
+}

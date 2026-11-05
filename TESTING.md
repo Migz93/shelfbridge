@@ -593,35 +593,43 @@ When a test is agreed and written, add a row for it in the relevant table above.
 
 ## Manual Smoke Test
 
-For a local Docker verification:
+1. In the app's devcontainer, run the checks listed in Project Facts in
+   [AGENTS.md](AGENTS.md#project-facts) and any tests relevant to the change. On the Docker host, build the production image
+   from that same checkout with a unique candidate tag. Record the source revision and the
+   resulting image ID.
+2. Start that image ID in a uniquely named disposable container on bridge
+   networking with fresh writable storage at `/config`, such as tmpfs or an
+   anonymous volume. Use no live data mounts, live integration credentials,
+   or restart policy. For browser checks, use a separate loopback port. For
+   startup and health checks alone, leave the port unpublished.
+3. Wait for Docker health and check that `GET /api/health` returns HTTP 200.
+   Verify that the app runs as a non-root user. Exercise the changed behaviour
+   where possible with disposable data or mocked integrations. Record which
+   checks require real configuration or data. Collect sanitized failure
+   evidence if needed and remove the disposable container and storage in
+   either case.
+4. After the required checks pass, deploy the exact tested image ID to the
+   live app by default for implementation work. Stop at validation when the
+   owner requests it. A failed required check stops the flow before replacement.
 
-```bash
-docker build -t shelfbridge .
-docker stop shelfbridge && docker rm shelfbridge
-docker run -d \
-  --name shelfbridge \
-  --network bridge \
-  -p 9303:9303 \
-  -v /opt/shelfbridge:/config \
-  --restart unless-stopped \
-  shelfbridge
-timeout 90 sh -c 'until [ "$(docker inspect -f "{{.State.Health.Status}}" shelfbridge)" = healthy ]; do sleep 3; done' \
-  && echo healthy || { docker logs shelfbridge 2>&1 | tail -20; false; }
-```
+### Live replacement and verification
 
-This waits for the HEALTHCHECK, which reads `starting` until its first check
-passes, and prints `healthy`. If it prints logs instead, look for the
-`ShelfBridge listening` startup line.
+Inspect the current live container and preserve its data mount, port mapping,
+network, restart policy, and runtime overrides. Stop and retain the previous
+container under a temporary name while starting the replacement. Verify the
+new image ID, Docker health, HTTP health, and the relevant app behaviour. Keep
+the previous image available and remove the stopped previous container after
+verification passes. If verification fails, retain it and report the failure.
+Consider existing-data migrations before rolling back an image.
 
-Then open `http://localhost:9303`, create or enter the ShelfBridge admin
-password, and smoke-test:
+Check configured behaviour separately from disposable startup. When relevant,
+verify that the dashboard and Settings load, that unauthenticated routes return
+the expected status, and that the changed feature works with the live
+configuration. Run a real sync or another operation that changes live data only
+when authorized. Report the limits of testing against existing data and real
+integrations.
 
-- Dashboard loads after authentication
-- Settings loads and the About tab reports version/build info
-- Users can be created or opened
-- Credential fields never echo stored secrets back to the browser
-- `/api/settings` returns `401` from an unauthenticated browser/session
-- `/images/...` returns `401` without a valid session
-
-This section needs Docker. See "Where You're Running" in `AGENTS.md` — where it
-is unavailable, say so rather than substituting a workspace check.
+For configured verification, check admin sign-in, dashboard and Settings,
+user access, and the changed integration behaviour. For auth changes, verify
+that secret fields do not return stored credentials and that unauthenticated
+settings and image requests are rejected.

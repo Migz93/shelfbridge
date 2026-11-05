@@ -1,4 +1,4 @@
-<!-- shared: content — keep in sync across Migz93 self-hosted apps; only the Project Facts values differ -->
+<!-- shared: content — keep in sync across Migz93 self-hosted apps; only Project Facts values differ -->
 
 # Agent Guidelines
 
@@ -15,10 +15,9 @@ the table below says when to go and read it.
 
 ## Project Facts
 
-Everything below this table is identical across hubarr, pacearr and shelfbridge,
-apart from the app name, port and paths from this table written into the
-examples. This table is the only place the projects differ — when a rule below
-refers to "the port" or "the version files", it means the value here.
+The guidance in this file is shared across Hubarr, Pacearr and Shelfbridge.
+Use the values in this table wherever a rule refers to the app name, port,
+data directory, workspace or version files.
 
 | | |
 |---|---|
@@ -26,7 +25,7 @@ refers to "the port" or "the version files", it means the value here.
 | Port | `9303` |
 | Host data directory | `/opt/shelfbridge` |
 | Container data directory | `/config` |
-| Workspace path | `/workspaces/shelfbridge` (same as `app/` on the host at `/opt/vscode/node/shelfbridge/app/`) |
+| Workspace path | `/workspaces/shelfbridge` |
 | Version files | `package.json` and `package-lock.json` |
 | Checks to run before closing out work | `npm run check` |
 | Test suite | Server tests — `npm test` (also run in CI). Playwright end-to-end suite — `npm run test:e2e` (needs a live instance). |
@@ -62,164 +61,40 @@ are specific to this app.
 
 ## Where You're Running
 
-This repo is worked on from two different places, and they are **not equally
-capable**. Check which one you're in before doing anything Docker-related:
+For implementation work, check the branch, dirty state and concurrent use,
+then start the app's devcontainer using the commands in `LOCAL.md` when present.
+Edit source, install dependencies, and run application checks and tests inside
+the devcontainer as its development user. Run authenticated Git operations,
+CodeRabbit, Docker builds and container management on the Docker host.
 
-```bash
-uname -s
-docker info >/dev/null 2>&1 && echo "docker: available" || echo "docker: unavailable"
-```
+The development image definition is `.devcontainer/Dockerfile`. The devcontainer
+mounts the checkout at the workspace path in Project Facts. Keep machine-specific
+paths and launcher commands in the ignored `LOCAL.md`.
 
-| | Devcontainer (Linux, DooD) | Mac (Claude/Codex desktop app) |
-|---|---|---|
-| `uname -s` | `Linux` | `Darwin` |
-| Docker build / run / logs | Yes | **No** |
-| `/opt/shelfbridge` bind mount | On the Docker host | **Absent — never create it** |
-| `npm ci`, build, checks | Yes | Yes |
-| Server tests | Yes | Yes |
-| Playwright | Yes | Only against a remote `BASE_URL` |
-| Docs, refactors, review, git, `gh` | Yes | Yes |
+## Live Container Conventions
 
-**If a task needs a container built, run, or inspected and Docker is
-unavailable, stop and say so.** Do not improvise a workaround, do not try to
-install or configure Docker, and do not report a change as verified when it was
-only type-checked. Name the step that needs the devcontainer and let the user
-decide how to proceed.
-
-The line falls at *"does this need a running container to verify?"* — Dockerfile
-changes, entrypoint changes, and anything touching startup or the bind mount
-need the devcontainer. Docs, refactors, server tests, and review do not.
-
-## Docker Outside Of Docker
-
-In the devcontainer you have access to the host's Docker daemon via
-Docker-outside-of-Docker (DooD). `docker` and `docker compose` work normally,
-with two constraints:
-
-- You **cannot** browse the host filesystem. Paths like `/opt/...` exist on the
-  host, not inside this container. Do not `ls`, `cat`, or browse them — just
-  reference them correctly in Docker configuration.
-- Always use **bridge networking**. It is the only mode that works reliably with
-  DooD on this host.
-  - `docker run`: include `--network bridge`
-  - Compose services: set `network_mode: bridge`
-  - `docker build`: do **not** pass `--network`
-
-  Do not use `host`, `none`, or custom named networks unless explicitly asked.
-
-## Host Filesystem Conventions
-
-Everything for ShelfBridge lives under a single directory on the host:
-
-```
-/opt/shelfbridge/
-```
-
-All files the app needs — config, database, logs, whatever — go directly in
-there. Do not create subdirectories like `config/` or `data/` unless the app
-itself requires a specific path inside the container. Keep it flat. The
-exceptions are subdirectories the app creates itself on startup, such as
-`logs/` — don't create them by hand.
-
-## Docker Naming Conventions
-
-When building images or creating containers for this app, use the app name
-directly — do not suffix with `-app`, `-container`, `-service`, or similar.
-
-| Thing | Correct | Incorrect |
-|---|---|---|
-| Image name | `shelfbridge` | `shelfbridge-app`, `shelfbridge-image` |
-| Container name | `shelfbridge` | `shelfbridge-app`, `shelfbridge-container` |
-| Compose service name | `shelfbridge` | `app`, `shelfbridge-service` |
-
-If the app gains multiple distinct services (e.g. a frontend and an API), use
-`shelfbridge-frontend`, `shelfbridge-api` etc.
-
-## Bind Mounts
-
-Bind-mount the entire app directory from the host into the container as a single
-volume. Do not use named Docker volumes — the user needs to be able to inspect
-and edit files directly on the host.
-
-Map `/opt/shelfbridge` on the host to `/config` inside the container (the app
-reads `DATA_DIR=/config`).
-
-Example docker-compose service:
-
-```yaml
-services:
-  shelfbridge:
-    image: shelfbridge
-    container_name: shelfbridge
-    network_mode: bridge
-    ports:
-      - "9303:9303"
-    volumes:
-      - /opt/shelfbridge:/config
-    restart: unless-stopped
-```
-
-## Where Your App Code Is
-
-Your workspace is mounted at `/workspaces/shelfbridge` inside the devcontainer.
-This is the same directory as `app/` on the host at
-`/opt/vscode/node/shelfbridge/app/`.
-
-## Port
-
-ShelfBridge runs on port **9303**. Always map `9303:9303` — do not
-change the port unless the user explicitly asks.
-
-## Checklist Before Creating Any Container
-
-- [ ] Image name matches the app name
-- [ ] Container name matches the app name
-- [ ] `/opt/shelfbridge` on the host bind-mounted as a single volume
-- [ ] Host directory documented or created in setup steps
-- [ ] `--network bridge` / `network_mode: bridge` set
+- Use the app name for the image, container and Compose service.
+- Use bridge networking and the port from Project Facts. For Docker builds,
+  use the default build network.
+- Bind the host data directory as a single mount at the container data directory.
+  Keep the data directory flat apart from subdirectories created by the app.
+- Inspect existing runtime settings before live replacement. Preserve the data
+  mount, port mapping, network, restart policy and overrides.
+- For disposable containers, follow [TESTING.md](TESTING.md) and use fresh
+  storage with a unique name.
 
 ## Rebuilding The Container After Code Changes
 
-Any change to source code requires rebuilding the Docker image and recreating
-the container. The app is not hot-reloaded inside the container — the image
-bakes in a production build at `docker build` time.
+For implementation changes to the running app or image, use the
+[Manual Smoke Test](TESTING.md#manual-smoke-test) procedure. Build a uniquely
+tagged candidate on the Docker host and verify it in a disposable container
+with fresh storage. After the required checks and disposable startup and health
+checks pass, the owner's default is to replace the running app with the
+**exact tested image** and verify it. An instruction to stop at validation or skip deployment
+takes precedence. Preserve live data and runtime settings.
 
-Workspace checks are useful, but they do not verify the running deployment.
-Whenever implementation changes need end-to-end verification, rebuild from the
-current workspace and recreate the live container from it.
-
-Standard rebuild sequence (run from `/workspaces/shelfbridge`):
-
-```bash
-docker build -t shelfbridge .
-docker stop shelfbridge && docker rm shelfbridge
-docker run -d \
-  --name shelfbridge \
-  --network bridge \
-  -p 9303:9303 \
-  -v /opt/shelfbridge:/config \
-  --restart unless-stopped \
-  shelfbridge
-```
-
-Keep the image and container name as `shelfbridge`, use bridge networking, and
-preserve the `/opt/shelfbridge:/config` bind mount so configuration, database, and
-logs remain intact while the container is recreated.
-
-After the container starts, wait for it to become healthy. The status reads
-`starting` until the image's HEALTHCHECK first passes, usually within a few
-seconds, so poll rather than checking once:
-
-```bash
-timeout 90 sh -c 'until [ "$(docker inspect -f "{{.State.Health.Status}}" shelfbridge)" = healthy ]; do sleep 3; done' \
-  && echo healthy || { docker logs shelfbridge 2>&1 | tail -20; false; }
-```
-
-This prints `healthy`, or the recent logs and a non-zero exit if it isn't
-healthy within 90 seconds. A good start logs a `ShelfBridge listening` line.
-
-This whole section needs Docker. On a machine where it is unavailable, say so
-rather than substituting a workspace check for a real rebuild.
+Documentation-only and review-only tasks do not trigger this deployment flow.
+The PR and review gates below still apply.
 
 ---
 
@@ -336,7 +211,7 @@ number in two files with no logic to review — open it directly.
 
 #### The Cross-AI Review
 
-ShelfBridge is worked on by two AI agents — Claude and Codex — usually in separate
+The app is worked on by two AI agents — Claude and Codex — usually in separate
 chat sessions, with the user relaying messages between them. The changeset goes
 through a review pass by the *other* agent.
 
@@ -405,7 +280,7 @@ that the **PR itself** is not opened until the gate says so.
 
 #### The CodeRabbit CLI Review
 
-Run with `--agent`, which produces structured output intended for an AI agent
+Run from the host checkout with `--agent`, which produces structured output intended for an AI agent
 rather than the interactive terminal UI:
 
 ```bash
@@ -489,6 +364,23 @@ the release PR review before marking it ready. Do not commit the fix directly
 to `develop`, `main`, or the release PR.
 
 ---
+
+### Close Out Finished Or Cancelled Work
+
+After the work PR merges or the owner cancels the work, check that the task
+checkout is clean and that no other chat is using the devcontainer. Switch
+back to the integration branch and fast-forward it. Delete leftover branches
+for this task on the server, GitHub and available clients once you have
+verified the work was merged or the owner explicitly discarded it. Check
+squash merges against the reviewed PR head. A PR closed without merging
+requires confirmation that its work was discarded before deleting its branch.
+Preserve unrelated branches and unsynchronized work. Report any cleanup that
+needs to happen on a disconnected client.
+
+When the PR closes or the owner cancels, stop and remove the app's
+devcontainer and its disposable dependency volume using the local launcher.
+Preserve the checkout and live deployment.
+Create the devcontainer again when starting the next implementation task.
 
 ### Branch Rules Summary
 
