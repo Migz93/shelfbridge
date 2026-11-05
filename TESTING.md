@@ -597,8 +597,9 @@ When a test is agreed and written, add a row for it in the relevant table above.
    [AGENTS.md](AGENTS.md#project-facts) and any tests relevant to the change. On the Docker host, build the production image
    from that same checkout with a unique candidate tag. Record the source revision and the
    resulting image ID.
-2. Start that image ID in a uniquely named disposable container on bridge
-   networking with fresh writable storage at `/config`, such as tmpfs or an
+2. Start that image ID in a disposable container named `zdev-<app>-smoke-<id>`,
+   using the app name and a unique test ID. Use bridge networking and fresh
+   writable storage at `/config`, such as tmpfs or an
    anonymous volume. Use no live data mounts, live integration credentials,
    or restart policy. For browser checks, use a separate loopback port. For
    startup and health checks alone, leave the port unpublished.
