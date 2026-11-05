@@ -614,13 +614,17 @@ When a test is agreed and written, add a row for it in the relevant table above.
 
 ### Live replacement and verification
 
-Inspect the current live container and preserve its data mount, port mapping,
-network, restart policy, and runtime overrides. Stop and retain the previous
-container under a temporary name while starting the replacement. Verify the
-new image ID, Docker health, HTTP health, and the relevant app behaviour. Keep
-the previous image available and remove the stopped previous container after
-verification passes. If verification fails, retain it and report the failure.
-Consider existing-data migrations before rolling back an image.
+Record the current image ID and runtime settings, including the data mount,
+port mapping, network, restart policy, and overrides. After removing the
+disposable smoke-test container, stop and remove the current live container
+while preserving its data. Start the exact tested image under the live
+container's original name with the recorded settings. Verify the image ID,
+Docker health, HTTP health, and relevant app behaviour.
+
+If verification fails, report the failure. Keep the prior image available for
+recovery. If rollback is approved and the live data is compatible with the
+prior image, remove the failed replacement and recreate the live container
+from that image with the recorded settings. Repeat the health checks.
 
 Check configured behaviour separately from disposable startup. When relevant,
 verify that the dashboard and Settings load, that unauthenticated routes return
