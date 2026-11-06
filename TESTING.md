@@ -646,14 +646,16 @@ the disposable smoke-test container before replacing the live app.
   while preserving its data. Start the exact tested image under the original
   live name with the recorded settings.
 - For a Compose deployment, record the Compose project, config files and
-  runtime overrides. Set the service image to the tested image's unique local
-  tag in a persistent deployment-local Compose override outside the Git
-  checkout. Add that override last, keeping the existing files and project
-  settings. Check the merged configuration and confirm the tag resolves to
-  the tested image ID. Stop and remove the old service container through
-  Compose, preserving its data. Recreate only that service through Compose
-  with pulls and builds disabled. Keep using the same file list and project
-  settings for subsequent Compose operations.
+  runtime overrides. In a persistent deployment-local Compose override
+  outside the Git checkout, set the service image to the tested image's
+  unique local tag and set `pull_policy: never`. Clear any inherited
+  `build` section with `build: !reset null`. Add that override last, keeping
+  the existing files and project settings. Check that the merged service has
+  no build configuration and that the local tag resolves to the tested image
+  ID. Stop and remove the old service container through Compose, preserving
+  its data. Recreate only that service through Compose with pulls and builds
+  disabled. Use the same file list and project settings for subsequent
+  operations so the service continues to use the tested image.
 
 Verify the image ID, Docker health, HTTP health, and relevant app behaviour.
 If verification fails, report the failure and keep the prior image available.
