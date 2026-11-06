@@ -81,8 +81,9 @@ and Chromium on creation.
 To migrate an existing local config, compare it with the example. Replace the
 old `image` entry with the example's `build` settings, remove Docker socket mounts
 and any Docker-outside-of-Docker feature, and adopt the disposable `node_modules`
-volume and setup command. Preserve unrelated local settings and make sure the
-volume targets `node_modules` under your configured workspace folder. Check for
+volume and setup command. Set `remoteUser` to `node` and verify that its UID
+and GID allow it to write to the checkout. Preserve unrelated local settings
+and point the volume at `node_modules` under your workspace folder. Check for
 concurrent use, then rebuild the devcontainer so the new mounts and image take
 effect. When removing a container manually, stop it first and use `docker rm -v`
 to remove its disposable dependency volume.

@@ -622,10 +622,13 @@ When a test is agreed and written, add a row for it in the relevant table above.
    writable storage at `/config`, such as tmpfs or an
    anonymous volume. Use no live data mounts, live integration credentials,
    or restart policy. For a browser outside Docker, use a separate loopback
-   port and forward it as described above. For Playwright in a devcontainer,
-   use the smoke container's address and app port on a shared private bridge
-   when reachable, or use the loopback tunnel from inside the devcontainer.
-   For startup and health checks alone, leave the port unpublished.
+   port and forward it as described above. Use a fresh browser profile or
+   isolated browser context for the smoke instance because cookies can be
+   shared across ports on the same hostname. For Playwright, use a clean
+   context without the live `storageState.json` or `SESSION_COOKIE`. Reach the
+   smoke container on a shared private bridge or through a loopback tunnel
+   inside the devcontainer. For startup and health checks alone, leave the
+   port unpublished.
 3. Wait for Docker health and check that `GET /api/health` returns HTTP 200.
    Verify that the app runs as a non-root user. Exercise the changed behaviour
    where possible with disposable data or mocked integrations. Record which
