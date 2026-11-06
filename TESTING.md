@@ -632,8 +632,8 @@ When a test is agreed and written, add a row for it in the relevant table above.
 2. Start that image ID in a disposable container named `zdev-<app>-smoke-<id>`,
    using the app name and a unique test ID. Use bridge networking and fresh
    writable storage at `/config`, using tmpfs or a uniquely named disposable
-   volume recorded before creation. Use no live data mounts, live integration credentials,
-   or restart policy. For a browser outside Docker, use a separate loopback
+   volume recorded before creation. Use no live data mounts, live integration
+   credentials, or restart policy. For a browser outside Docker, use a separate loopback
    port and forward it as described above. Use a fresh browser profile or
    isolated browser context for the smoke instance because cookies can be
    shared across ports on the same hostname. Limit browser checks here to
@@ -692,11 +692,17 @@ verified, including entries for any resources whose cleanup was deferred.
 
 ### Live replacement and verification
 
-Record the current image ID and runtime settings, including the data mount,
-port mapping, network, restart policy, overrides and deployment method. Tag
-the prior image ID as `<app>:rollback-<id>` before stopping the live container
-and record that tag for recovery. Remove the disposable test containers before
-replacing the live app.
+Before stopping or removing the live container, write a recovery entry in
+the task section of the Docker host checkout's ignored `LOCAL.md`. Record the
+live name, current and candidate image IDs, planned `<app>:rollback-<id>` tag,
+deployment method, and the runtime settings needed to recreate the container.
+Include mounts, ports, networking, restart policy, and overrides. For Compose,
+record the project and service names, working directory, ordered config files,
+and existing overrides. Reference existing secure sources for secrets. If the
+record and those sources cannot recreate the service, stop before removing it.
+
+Apply the rollback tag to the recorded prior image and verify it resolves to
+that ID. Remove the disposable test containers before replacing the live app.
 
 - For a standalone deployment, stop and remove the current live container
   while preserving its data. Start the exact tested image under the original
@@ -720,8 +726,9 @@ failed replacement if it exists, preserving its data. Recreate the live
 container from the recorded rollback tag and settings through the same
 deployment method. For Compose, set the persistent image override to the
 rollback tag before recreating the service. Repeat the health checks. Keep
-the rollback tag until the owner confirms that fallback is no longer needed
-and verify it is unused before removing it.
+the rollback tag and its recovery entry through task closeout. Remove them
+only after the owner confirms fallback is no longer needed and the tag is
+verified unused.
 
 Check configured behaviour separately from disposable startup. When relevant,
 verify that the dashboard and Settings load, that unauthenticated routes return
