@@ -69,7 +69,15 @@ devcontainer. Use the published port from Project Facts or the configured
 reverse proxy. Inside a devcontainer, `localhost` refers to that container.
 Verify connectivity from the devcontainer before running the suite.
 
-Open that same URL in your browser to obtain the session cookie. When the
+For a loopback-only host port, use an existing reachable reverse proxy or
+forward the port over SSH. For a manual browser check, run the SSH local
+forward on your browser machine. For Playwright, the forward must listen
+inside the devcontainer, for example
+`ssh -N -L 127.0.0.1:<local-port>:127.0.0.1:<host-port> <docker-host>`
+from the devcontainer if it already has authorized SSH access. Set
+`BASE_URL` to the forwarded URL. Keep the host port bound to loopback.
+
+Use the same app URL in your browser to obtain the session cookie. When the
 URL changes, clear `tests/playwright/.auth/storageState.json` and set a fresh
 `SESSION_COOKIE` for the new URL before rerunning the auth setup.
 
@@ -613,8 +621,11 @@ When a test is agreed and written, add a row for it in the relevant table above.
    using the app name and a unique test ID. Use bridge networking and fresh
    writable storage at `/config`, such as tmpfs or an
    anonymous volume. Use no live data mounts, live integration credentials,
-   or restart policy. For browser checks, use a separate loopback port. For
-   startup and health checks alone, leave the port unpublished.
+   or restart policy. For a browser outside Docker, use a separate loopback
+   port and forward it as described above. For Playwright in a devcontainer,
+   use the smoke container's address and app port on a shared private bridge
+   when reachable, or use the loopback tunnel from inside the devcontainer.
+   For startup and health checks alone, leave the port unpublished.
 3. Wait for Docker health and check that `GET /api/health` returns HTTP 200.
    Verify that the app runs as a non-root user. Exercise the changed behaviour
    where possible with disposable data or mocked integrations. Record which
@@ -634,16 +645,22 @@ the disposable smoke-test container before replacing the live app.
 - For a standalone deployment, stop and remove the current live container
   while preserving its data. Start the exact tested image under the original
   live name with the recorded settings.
-- For a Compose deployment, update the service's image in the Compose
-  configuration to the tested image's unique local tag and confirm it resolves
-  to the tested image ID. Stop and remove the old service container through
+- For a Compose deployment, record the Compose project, config files and
+  runtime overrides. Set the service image to the tested image's unique local
+  tag in a persistent deployment-local Compose override outside the Git
+  checkout. Add that override last, keeping the existing files and project
+  settings. Check the merged configuration and confirm the tag resolves to
+  the tested image ID. Stop and remove the old service container through
   Compose, preserving its data. Recreate only that service through Compose
-  with pulls and builds disabled so it uses the tested image.
+  with pulls and builds disabled. Keep using the same file list and project
+  settings for subsequent Compose operations.
 
 Verify the image ID, Docker health, HTTP health, and relevant app behaviour.
 If verification fails, report the failure and keep the prior image available.
 For an approved rollback with compatible live data, recreate from the prior
-image and settings through the same deployment method. Repeat the health checks.
+image and settings through the same deployment method. For Compose, update the
+persistent image override to the prior image before recreating the service.
+Repeat the health checks.
 
 Check configured behaviour separately from disposable startup. When relevant,
 verify that the dashboard and Settings load, that unauthenticated routes return
