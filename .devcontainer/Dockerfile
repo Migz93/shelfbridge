@@ -5,3 +5,5 @@ RUN --mount=type=bind,source=package-lock.json,target=/tmp/devcontainer-package-
     playwright_version="$(node -p 'require("/tmp/devcontainer-package-lock.json").packages["node_modules/playwright"].version')" \
     && npm_config_cache=/tmp/playwright-npm npx --yes "playwright@${playwright_version}" install-deps chromium \
     && rm -rf /tmp/playwright-npm /var/lib/apt/lists/*
+
+USER node
