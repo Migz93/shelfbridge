@@ -5,8 +5,6 @@
     "context": ".."
   },
   "runArgs": [
-    "--name",
-    "zdev-shelfbridge",
     "--mount",
     "type=volume,destination=/workspaces/shelfbridge/node_modules,volume-nocopy"
   ],
