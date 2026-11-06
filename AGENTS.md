@@ -409,6 +409,9 @@ removing any task resource, including when a PR closes without merging.
 Defer cleanup for resources another chat or process is using. Read the
 task record in the Docker host checkout's ignored `LOCAL.md` and follow
 [disposable test cleanup](TESTING.md#disposable-test-cleanup) for leftovers.
+Keep the separate `Live recovery` entry and rollback tag until the owner
+releases the fallback and the tag is verified unused. See
+[live replacement and verification](TESTING.md#live-replacement-and-verification).
 
 Remove the devcontainer and its disposable dependency volume with the local
 launcher when available. Otherwise, find it through the Dev Container client

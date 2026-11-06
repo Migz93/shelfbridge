@@ -633,16 +633,16 @@ When a test is agreed and written, add a row for it in the relevant table above.
    using the app name and a unique test ID. Use bridge networking and fresh
    writable storage at `/config`, using tmpfs or a uniquely named disposable
    volume recorded before creation. Use no live data mounts, live integration
-   credentials, or restart policy. For a browser outside Docker, use a separate loopback
-   port and forward it as described above. Use a fresh browser profile or
-   isolated browser context for the smoke instance because cookies can be
-   shared across ports on the same hostname. Limit browser checks here to
-   unauthenticated startup and onboarding routes. For a standalone Playwright
-   smoke script, create a clean context without the live `storageState.json`
-   or `SESSION_COOKIE`. Use the smoke container's IP and app port if the test
-   runner can reach it on the default bridge. Otherwise, use a loopback
-   tunnel as described above. For startup and health checks alone, leave
-   the port unpublished.
+   credentials, or restart policy. For a browser outside Docker, use a
+   separate loopback port and forward it as described above. Use a fresh
+   browser profile or isolated browser context for the smoke instance because
+   cookies can be shared across ports on the same hostname. Limit browser
+   checks here to unauthenticated startup and onboarding routes. For a
+   standalone Playwright smoke script, create a clean context without the
+   live `storageState.json` or `SESSION_COOKIE`. Use the smoke container's IP
+   and app port if the test runner can reach it on the default bridge.
+   Otherwise, use a loopback tunnel as described above. For startup and
+   health checks alone, leave the port unpublished.
 3. Wait for Docker health. From the Docker host, check for HTTP 200 inside
    the smoke container, including when its port is unpublished. Set
    `smoke` to the exact container name and `app_port` to the port in Project
@@ -689,46 +689,56 @@ unused task tags that are no longer needed for a pending deployment or review.
 Preserve resources whose ownership or use is unclear. A shared name prefix
 alone does not establish ownership. Keep the task record until cleanup is
 verified, including entries for any resources whose cleanup was deferred.
+Keep the separate `Live recovery` entry and its rollback tag according to
+[live replacement and verification](#live-replacement-and-verification).
 
 ### Live replacement and verification
 
-Before stopping or removing the live container, write a recovery entry in
-the task section of the Docker host checkout's ignored `LOCAL.md`. Record the
-live name, current and candidate image IDs, planned `<app>:rollback-<id>` tag,
-deployment method, and the runtime settings needed to recreate the container.
-Include mounts, ports, networking, restart policy, and overrides. For Compose,
-record the project and service names, working directory, ordered config files,
-and existing overrides. Reference existing secure sources for secrets. If the
-record and those sources cannot recreate the service, stop before removing it.
+Before stopping or removing the live container, write a separate
+`Live recovery` entry in the Docker host checkout's ignored `LOCAL.md`.
+Link it to the task and record the live name, prior and candidate image IDs,
+the `<app>:rollback-<id>` tag, and the deployment method. Record non-secret
+settings and reference existing secure sources for credentials.
 
-Apply the rollback tag to the recorded prior image and verify it resolves to
-that ID. Remove the disposable test containers before replacing the live app.
+- For a standalone deployment, inspect the current container privately with
+  `docker inspect`. Record the complete recreation settings or an equivalent
+  `docker run` command. Include environment overrides, user, entrypoint,
+  command, labels, healthcheck, mounts, port bindings, network attachments,
+  restart policy, extra hosts, logging, and any other applicable host settings.
+- For a Compose deployment, prepare a persistent deployment-local override
+  outside the Git checkout. Set the service image to the tested image's
+  unique local tag and set `pull_policy: never`. Clear any inherited
+  `build` section with `build: !reset null`. Verify the merged service uses
+  that tag with pulls and builds disabled and that the tag resolves to the
+  tested image ID. Record the tag, the override's absolute path, the complete
+  ordered file list with the override last, the project and service names,
+  working directory, active profiles, any environment file paths, and
+  runtime overrides.
+
+Before stopping live, verify the record and its secure sources can recreate
+the service. Apply the rollback tag to the recorded prior image and verify it
+resolves to that ID. Remove the disposable test containers before replacing
+the live app.
 
 - For a standalone deployment, stop and remove the current live container
   while preserving its data. Start the exact tested image under the original
   live name with the recorded settings.
-- For a Compose deployment, record the Compose project, config files and
-  runtime overrides. In a persistent deployment-local Compose override
-  outside the Git checkout, set the service image to the tested image's
-  unique local tag and set `pull_policy: never`. Clear any inherited
-  `build` section with `build: !reset null`. Add that override last, keeping
-  the existing files and project settings. Check that the merged service has
-  no build configuration and that the local tag resolves to the tested image
-  ID. Stop and remove the old service container through Compose, preserving
-  its data. Recreate only that service through Compose with pulls and builds
-  disabled. Use the same file list and project settings for subsequent
-  operations so the service continues to use the tested image.
+- For a Compose deployment, use the recorded file list and project settings
+  to stop and remove the old service container while preserving its data.
+  Recreate only that service with pulls and builds disabled. Use the same
+  file list and project settings for subsequent operations.
 
 Verify the image ID, Docker health, HTTP health, and relevant app behaviour.
 If verification fails, report the failure and keep the prior image available.
 For an approved rollback with compatible live data, stop and remove the
 failed replacement if it exists, preserving its data. Recreate the live
 container from the recorded rollback tag and settings through the same
-deployment method. For Compose, set the persistent image override to the
-rollback tag before recreating the service. Repeat the health checks. Keep
-the rollback tag and its recovery entry through task closeout. Remove them
-only after the owner confirms fallback is no longer needed and the tag is
-verified unused.
+deployment method. For Compose, set the recorded persistent image override
+to the rollback tag and use the recorded file list and project settings to
+recreate the service. Repeat the health checks. Preserve the recovery entry,
+the settings it references, and the rollback tag during task closeout.
+Remove the entry and tag only after the owner confirms fallback is no longer
+needed and the tag is verified unused.
 
 Check configured behaviour separately from disposable startup. When relevant,
 verify that the dashboard and Settings load, that unauthenticated routes return
