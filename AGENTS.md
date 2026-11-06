@@ -28,7 +28,7 @@ data directory, workspace or version files.
 | Workspace path | `/workspaces/shelfbridge` |
 | Version files | `package.json` and `package-lock.json` |
 | Checks to run before closing out work | `npm run check` |
-| Test suite | Server tests — `npm test` (also run in CI). Playwright end-to-end suite — `npm run test:e2e` (needs a live instance). |
+| Test suite | Server tests — `npm test` (also run in CI). Playwright end-to-end suite — `npm run test:e2e` against a configured disposable test instance (see [TESTING.md](TESTING.md#manual-smoke-test)). |
 | Integrations to flag in review | Audiobookshelf, Hardcover, Grimmory, Chaptarr |
 
 ## Before You Start — What To Read
