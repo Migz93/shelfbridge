@@ -624,11 +624,17 @@ When a test is agreed and written, add a row for it in the relevant table above.
    Docker host, build the production image from that same checkout with a
    unique candidate tag. Before building, record the source revision and
    candidate tag in a task section in the Docker host checkout's ignored
-   `LOCAL.md`. Identify the task by branch or PR and a unique test ID. Create
-   the file if absent and preserve other entries. Record the planned exact
-   container and volume names and SSH forward identifiers before creating
-   them. Add the image ID and actual resource IDs as they become available.
-   Keep credentials out of this record.
+   `LOCAL.md`. Verify that the build context matches the recorded revision
+   after applying the Docker ignore rules. If it differs, record the added,
+   changed, or missing paths, with SHA-256 hashes for changed file contents
+   and any relevant file modes or symlink targets. Include uncommitted,
+   untracked, or Git-ignored files that Docker includes. Exclude credentials
+   from the context and keep it unchanged from verification through the build.
+   Identify the task by branch or PR and a unique test ID. Create the file if
+   absent and preserve other entries. Record the planned exact container and
+   volume names and SSH forward identifiers before creating them. Add the
+   image ID and actual resource IDs as they become available. Keep credentials
+   out of this record.
 2. Start that image ID in a disposable container named `zdev-<app>-smoke-<id>`,
    using the app name and a unique test ID. Use bridge networking and fresh
    writable storage at `/config`, using tmpfs or a uniquely named disposable
@@ -664,13 +670,18 @@ When a test is agreed and written, add a row for it in the relevant table above.
    either case.
 4. When the change needs configured browser validation, start the candidate
    image ID as `zdev-<app>-e2e-<id>` with the same disposable storage rules
-   at `/config` and a test URL reachable by the browser. Complete onboarding
-   with test data and obtain a test session. Get the owner's authorization
-   before connecting real integrations or testing against live data. Run the
-   relevant Playwright tests or the full `npm run test:e2e` suite as needed.
-   Verify the instance's image ID before counting the results. Record any
-   validation gaps and remove the test instance and its disposable storage
-   afterward, including on failure.
+   at `/config` and a test URL reachable by the browser. Get the owner's
+   authorization before connecting real integrations or testing against live
+   data. Use a fresh browser profile or isolated context for onboarding with
+   test data and obtaining a test session, even on the live hostname. For
+   each disposable instance, verify its image ID and use its `BASE_URL` in
+   `.env.playwright`. Clear `tests/playwright/.auth/storageState.json` and set
+   `SESSION_COOKIE` in `.env.playwright` to that instance's test session cookie,
+   even when reusing the URL. Clear any stale exported values for those
+   variables and check for concurrent use before changing shared auth files.
+   Run the relevant Playwright tests or the full `npm run test:e2e` suite as
+   needed. Record any validation gaps and remove the test instance and its
+   disposable storage afterward, including on failure.
 5. After the required checks pass, deploy the exact tested image ID to the
    live app by default for implementation work. Stop at validation when the
    owner requests it. A failed or incomplete required check stops the flow

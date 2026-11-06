@@ -92,9 +92,9 @@ feature, then adopt the disposable `node_modules` volume and setup command.
 Set `remoteUser` to `node` and verify that its UID and GID allow it to write to
 the checkout. Preserve unrelated local settings and point the volume at
 `node_modules` under your workspace folder. Check for
-concurrent use, then rebuild the devcontainer so the new mounts and image take
-effect. When removing a container manually, stop it first and use `docker rm -v`
-to remove its disposable dependency volume.
+concurrent use and follow the [devcontainer removal rules](#close-out-finished-or-cancelled-work)
+before a rebuild that removes the existing container. Then rebuild so the new
+mounts and image take effect.
 
 ## Live Container Conventions
 
@@ -413,12 +413,15 @@ Keep the separate `Live recovery` entry and rollback tag until the owner
 releases the fallback and the tag is verified unused. See
 [live replacement and verification](TESTING.md#live-replacement-and-verification).
 
-Remove the devcontainer and its disposable dependency volume with the local
-launcher when available. Otherwise, find it through the Dev Container client
-or filter by its `devcontainer.local_folder` label using the absolute checkout
-path. Verify the workspace mount, stop that container, and remove it with
-`docker rm -v`. Preserve the checkout and live deployment. Create the
-devcontainer again when starting the next implementation task.
+Identify the task's devcontainer through the local launcher, the Dev Container
+client, or its `devcontainer.local_folder` label using the absolute checkout
+path. Verify the workspace mount and inspect all mounts before removing the
+container. Use the launcher or `docker rm -v` only if every anonymous volume
+is confirmed disposable. Otherwise, stop the container and remove it with
+`docker rm` without `-v`. Separately remove only the exact dependency volume
+if it is confirmed task-owned, disposable, and unused. Preserve the checkout
+and live deployment. Create the devcontainer again when starting the next
+implementation task.
 
 ### Branch Rules Summary
 
