@@ -61,6 +61,18 @@ effects. Sync and Image Cache Refresh are never triggered this way, since they
 write real data back to Hardcover/Audiobookshelf/Grimmory and to those services'
 APIs respectively.
 
+### Reaching the App From a Devcontainer
+
+If the app runs on the Docker host, set `BASE_URL` in `.env.playwright` to
+the app's published URL on a hostname or address reachable from the
+devcontainer. Use the published port from Project Facts or the configured
+reverse proxy. Inside a devcontainer, `localhost` refers to that container.
+Verify connectivity from the devcontainer before running the suite.
+
+Open that same URL in your browser to obtain the session cookie. When the
+URL changes, clear `tests/playwright/.auth/storageState.json` and set a fresh
+`SESSION_COOKIE` for the new URL before rerunning the auth setup.
+
 ### First-time setup
 
 1. Have a running instance. Docker serves on port `9303`. For a bare local run:
@@ -616,16 +628,22 @@ When a test is agreed and written, add a row for it in the relevant table above.
 ### Live replacement and verification
 
 Record the current image ID and runtime settings, including the data mount,
-port mapping, network, restart policy, and overrides. After removing the
-disposable smoke-test container, stop and remove the current live container
-while preserving its data. Start the exact tested image under the live
-container's original name with the recorded settings. Verify the image ID,
-Docker health, HTTP health, and relevant app behaviour.
+port mapping, network, restart policy, overrides and deployment method. Remove
+the disposable smoke-test container before replacing the live app.
 
-If verification fails, report the failure. Keep the prior image available for
-recovery. If rollback is approved and the live data is compatible with the
-prior image, remove the failed replacement and recreate the live container
-from that image with the recorded settings. Repeat the health checks.
+- For a standalone deployment, stop and remove the current live container
+  while preserving its data. Start the exact tested image under the original
+  live name with the recorded settings.
+- For a Compose deployment, update the service's image in the Compose
+  configuration to the tested image's unique local tag and confirm it resolves
+  to the tested image ID. Stop and remove the old service container through
+  Compose, preserving its data. Recreate only that service through Compose
+  with pulls and builds disabled so it uses the tested image.
+
+Verify the image ID, Docker health, HTTP health, and relevant app behaviour.
+If verification fails, report the failure and keep the prior image available.
+For an approved rollback with compatible live data, recreate from the prior
+image and settings through the same deployment method. Repeat the health checks.
 
 Check configured behaviour separately from disposable startup. When relevant,
 verify that the dashboard and Settings load, that unauthenticated routes return

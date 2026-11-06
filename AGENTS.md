@@ -65,7 +65,8 @@ For implementation work, check the branch, dirty state and concurrent use,
 then start the app's devcontainer using the commands in `LOCAL.md` when present.
 Edit source, install dependencies, and run application checks and tests inside
 the devcontainer as its development user. Run authenticated Git operations,
-CodeRabbit, Docker builds and container management on the Docker host.
+CodeRabbit, Docker builds and container management on the Docker host. For
+browser tests, use a [URL reachable from the devcontainer](TESTING.md#reaching-the-app-from-a-devcontainer).
 
 The development image definition is `.devcontainer/Dockerfile`. The devcontainer
 mounts the checkout at the workspace path in Project Facts. Keep machine-specific
@@ -86,7 +87,8 @@ after stopping it to remove its disposable dependency volume.
 - Bind the host data directory as a single mount at the container data directory.
   Keep the data directory flat apart from subdirectories created by the app.
 - Inspect existing runtime settings before live replacement. Preserve the data
-  mount, port mapping, network, restart policy and overrides.
+  mount, port mapping, network, restart policy and overrides. Keep Compose-managed
+  deployments under Compose. See [live replacement](TESTING.md#live-replacement-and-verification).
 - For disposable containers, follow [TESTING.md](TESTING.md) and use fresh
   storage with a unique name.
 
@@ -375,7 +377,7 @@ to `develop`, `main`, or the release PR.
 ### Close Out Finished Or Cancelled Work
 
 After the work PR merges or the owner cancels the work, check that the task
-checkout is clean and that no other chat is using the devcontainer. Switch
+checkout is clean and available for cleanup. Switch
 back to the integration branch and fast-forward it. Delete leftover branches
 for this task on the server, GitHub and available clients once you have
 verified the work was merged or the owner explicitly discarded it. Check
@@ -384,9 +386,11 @@ requires confirmation that its work was discarded before deleting its branch.
 Preserve unrelated branches and unsynchronized work. Report any cleanup that
 needs to happen on a disconnected client.
 
-When the PR closes or the owner cancels, stop and remove the app's
-devcontainer and its disposable dependency volume using the local launcher.
-Preserve the checkout and live deployment.
+When the PR closes or the owner cancels, check for concurrent use before
+stopping or removing the devcontainer, including when a PR closes without
+merging. Defer teardown while another chat or process is using it. Otherwise,
+remove the devcontainer and its disposable dependency volume using the local
+launcher. Preserve the checkout and live deployment.
 Create the devcontainer again when starting the next implementation task.
 
 ### Branch Rules Summary
