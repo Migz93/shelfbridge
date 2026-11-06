@@ -76,8 +76,16 @@ On a fresh checkout without a local launcher, use a Dev Container client on the
 Docker host. If `.devcontainer/devcontainer.json` is absent, copy
 `.devcontainer/devcontainer.json.example` to that path. Open the checkout in the
 container. The example builds the repository's Dockerfile and installs dependencies
-and Chromium on creation. When removing the container manually, use `docker rm -v`
-after stopping it to remove its disposable dependency volume.
+and Chromium on creation.
+
+To migrate an existing local config, compare it with the example. Replace the
+old `image` entry with the example's `build` settings, remove Docker socket mounts
+and any Docker-outside-of-Docker feature, and adopt the disposable `node_modules`
+volume and setup command. Preserve unrelated local settings and make sure the
+volume targets `node_modules` under your configured workspace folder. Check for
+concurrent use, then rebuild the devcontainer so the new mounts and image take
+effect. When removing a container manually, stop it first and use `docker rm -v`
+to remove its disposable dependency volume.
 
 ## Live Container Conventions
 
