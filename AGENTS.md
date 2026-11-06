@@ -64,9 +64,15 @@ are specific to this app.
 For implementation work, check the branch, dirty state and concurrent use,
 then start the app's devcontainer using the commands in `LOCAL.md` when present.
 Edit source, install dependencies, and run application checks and tests inside
-the devcontainer as its development user. Run authenticated Git operations,
-CodeRabbit, Docker builds and container management on the Docker host. For
-browser tests, use a [URL reachable from the devcontainer](TESTING.md#reaching-the-app-from-a-devcontainer).
+the devcontainer as its development user. Run authenticated Git operations
+and CodeRabbit outside the devcontainer from the checkout you are working in.
+Run Docker builds and container management on the intended Docker host.
+
+Before deployment work, identify the deployment host from `LOCAL.md` or the
+owner's instructions. If the host is unclear or its Docker daemon is
+unreachable, stop the affected step and report it. Never create the live data
+directory on another host or count type checking alone as container validation.
+For browser tests, use a [URL reachable from the devcontainer](TESTING.md#reaching-the-app-from-a-devcontainer).
 
 The development image definition is `.devcontainer/Dockerfile`. The devcontainer
 mounts the checkout at the workspace path in Project Facts. Keep machine-specific
@@ -75,15 +81,16 @@ paths and launcher commands in the ignored `LOCAL.md`.
 On a fresh checkout without a local launcher, use a Dev Container client on the
 Docker host. If `.devcontainer/devcontainer.json` is absent, copy
 `.devcontainer/devcontainer.json.example` to that path. Open the checkout in the
-container. The example builds the repository's Dockerfile and installs dependencies
-and Chromium on creation.
+container. The example uses BuildKit to build the repository's Dockerfile and
+installs dependencies and Chromium on creation.
 
 To migrate an existing local config, compare it with the example. Replace the
 old `image` entry with the example's `build` settings. Remove any fixed
 `--name` argument so the Dev Container client can name each checkout's
 container. Remove Docker socket mounts and any Docker-outside-of-Docker
-feature, then adopt the disposable `node_modules` volume and setup command. Set `remoteUser` to `node` and verify that its UID
-and GID allow it to write to the checkout. Preserve unrelated local settings
+feature, then adopt the disposable `node_modules` volume and setup command.
+Set `remoteUser` to `node` and verify that its UID and GID allow it to write to
+the checkout. Preserve unrelated local settings
 and point the volume at `node_modules` under your workspace folder. Check for
 concurrent use, then rebuild the devcontainer so the new mounts and image take
 effect. When removing a container manually, stop it first and use `docker rm -v`
@@ -92,8 +99,9 @@ to remove its disposable dependency volume.
 ## Live Container Conventions
 
 - Use the app name for the image, container and Compose service.
-- Use bridge networking and the port from Project Facts. For Docker builds,
-  use the default build network.
+- Use the default bridge for standalone containers and the port from Project
+  Facts. Preserve existing Compose networking. For Docker builds, use the
+  default build network.
 - Bind the host data directory as a single mount at the container data directory.
   Keep the data directory flat apart from subdirectories created by the app.
 - Inspect existing runtime settings before live replacement. Preserve the data
@@ -387,8 +395,8 @@ to `develop`, `main`, or the release PR.
 ### Close Out Finished Or Cancelled Work
 
 After the work PR merges or the owner cancels the work, check that the task
-checkout is clean and available for cleanup. Switch
-back to the integration branch and fast-forward it. Delete leftover branches
+checkout is clean and available for cleanup. Switch back to the integration
+branch and fast-forward it. Delete leftover branches
 for this task on the server, GitHub and available clients once you have
 verified the work was merged or the owner explicitly discarded it. Check
 squash merges against the reviewed PR head. A PR closed without merging
@@ -397,11 +405,16 @@ Preserve unrelated branches and unsynchronized work. Report any cleanup that
 needs to happen on a disconnected client.
 
 When the PR closes or the owner cancels, check for concurrent use before
-stopping or removing the devcontainer, including when a PR closes without
-merging. Defer teardown while another chat or process is using it. Otherwise,
-remove the devcontainer and its disposable dependency volume using the local
-launcher. Preserve the checkout and live deployment.
-Create the devcontainer again when starting the next implementation task.
+removing any task resource, including when a PR closes without merging.
+Defer cleanup for resources another chat or process is using. Follow
+[disposable test cleanup](TESTING.md#disposable-test-cleanup) for leftovers.
+
+Remove the devcontainer and its disposable dependency volume with the local
+launcher when available. Otherwise, find it through the Dev Container client
+or filter by its `devcontainer.local_folder` label using the absolute checkout
+path. Verify the workspace mount, stop that container, and remove it with
+`docker rm -v`. Preserve the checkout and live deployment. Create the
+devcontainer again when starting the next implementation task.
 
 ### Branch Rules Summary
 

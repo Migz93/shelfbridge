@@ -87,7 +87,9 @@ URL changes, clear `tests/playwright/.auth/storageState.json` and set a fresh
 
 ### First-time setup
 
-1. Have a running instance. Docker serves on port `9303`. For a bare local run:
+1. Have a running configured instance. Docker serves on port `9303`. Use
+   the exact candidate image for deployment validation. For an ad hoc check
+   outside candidate validation, a bare local run can serve on port `3000`:
    ```bash
    npm run build
    NODE_ENV=production npm start   # serves on port 3000
@@ -620,7 +622,9 @@ When a test is agreed and written, add a row for it in the relevant table above.
 1. In the app's devcontainer, run the checks listed in Project Facts in
    [AGENTS.md](AGENTS.md#project-facts) and any relevant server tests. On the
    Docker host, build the production image from that same checkout with a
-   unique candidate tag. Record the source revision and the resulting image ID.
+   unique candidate tag. Record the source revision, candidate tag and image
+   ID. Record task-created containers, disposable storage and SSH forwards in
+   private task notes as you allocate them so closeout can find them.
 2. Start that image ID in a disposable container named `zdev-<app>-smoke-<id>`,
    using the app name and a unique test ID. Use bridge networking and fresh
    writable storage at `/config`, such as tmpfs or an
@@ -631,32 +635,62 @@ When a test is agreed and written, add a row for it in the relevant table above.
    shared across ports on the same hostname. Limit browser checks here to
    unauthenticated startup and onboarding routes. For a standalone Playwright
    smoke script, create a clean context without the live `storageState.json`
-   or `SESSION_COOKIE`. Reach the smoke container on a shared private bridge
-   or through a loopback tunnel inside the devcontainer. For startup and
-   health checks alone, leave the port unpublished.
-3. Wait for Docker health and check that `GET /api/health` returns HTTP 200.
+   or `SESSION_COOKIE`. Use the smoke container's IP and app port if the test
+   runner can reach it on the default bridge. Otherwise, use a loopback
+   tunnel as described above. For startup and health checks alone, leave
+   the port unpublished.
+3. Wait for Docker health. From the Docker host, check for HTTP 200 inside
+   the smoke container, including when its port is unpublished. Set
+   `smoke` to the exact container name and `app_port` to the port in Project
+   Facts:
+
+   ```sh
+   docker exec "$smoke" node -e '
+     const port = process.env.PORT || process.argv[1];
+     fetch("http://127.0.0.1:" + port + "/api/health", {signal: AbortSignal.timeout(5000)})
+       .then(response => { if (response.status !== 200) process.exitCode = 1; })
+       .catch(() => { process.exitCode = 1; });
+   ' "$app_port"
+   ```
+
    Verify that the app runs as a non-root user. Exercise the changed behaviour
    where possible with disposable data or mocked integrations. Record which
    checks require real configuration or data. Collect sanitized failure
    evidence if needed and remove the disposable container and storage in
    either case.
-4. When the change needs configured browser validation, run the relevant
-   Playwright tests or the full `npm run test:e2e` suite against a configured
-   test instance with disposable data and a valid test session. Verify that
-   the instance runs the candidate image ID before counting the results.
-   Obtain the owner's authorization before running tests against live data
-   or real integrations. Record any validation that could not be completed
-   and remove the disposable test instance and its data afterward.
+4. When the change needs configured browser validation, start the candidate
+   image ID as `zdev-<app>-e2e-<id>` with fresh disposable storage at
+   `/config` and a test URL reachable by the browser. Complete onboarding
+   with test data and obtain a test session. Get the owner's authorization
+   before connecting real integrations or testing against live data. Run the
+   relevant Playwright tests or the full `npm run test:e2e` suite as needed.
+   Verify the instance's image ID before counting the results. Record any
+   validation gaps and remove the test instance and its disposable storage
+   afterward, including on failure.
 5. After the required checks pass, deploy the exact tested image ID to the
    live app by default for implementation work. Stop at validation when the
    owner requests it. A failed or incomplete required check stops the flow
    before replacement.
 
+### Disposable test cleanup
+
+Clean up after validation and check for leftovers at PR close or cancellation.
+Check for concurrent use before removing anything. Use the task record to
+identify exact names or IDs. Remove only its disposable smoke and E2E
+containers with `docker rm -fv` and remove any remaining task-owned temporary
+storage and close the SSH forwards opened for the task. At closeout, check
+task candidate tags against the live and rollback image IDs. Remove only
+unused task tags that are no longer needed for a pending deployment or review.
+Preserve resources whose ownership or use is unclear. A shared name prefix
+alone does not establish ownership.
+
 ### Live replacement and verification
 
 Record the current image ID and runtime settings, including the data mount,
-port mapping, network, restart policy, overrides and deployment method. Remove
-the disposable smoke-test container before replacing the live app.
+port mapping, network, restart policy, overrides and deployment method. Tag
+the prior image ID as `<app>:rollback-<id>` before stopping the live container
+and record that tag for recovery. Remove the disposable test containers before
+replacing the live app.
 
 - For a standalone deployment, stop and remove the current live container
   while preserving its data. Start the exact tested image under the original
@@ -675,10 +709,13 @@ the disposable smoke-test container before replacing the live app.
 
 Verify the image ID, Docker health, HTTP health, and relevant app behaviour.
 If verification fails, report the failure and keep the prior image available.
-For an approved rollback with compatible live data, recreate from the prior
-image and settings through the same deployment method. For Compose, update the
-persistent image override to the prior image before recreating the service.
-Repeat the health checks.
+For an approved rollback with compatible live data, stop and remove the
+failed replacement if it exists, preserving its data. Recreate the live
+container from the recorded rollback tag and settings through the same
+deployment method. For Compose, set the persistent image override to the
+rollback tag before recreating the service. Repeat the health checks. Keep
+the rollback tag until the owner confirms that fallback is no longer needed
+and verify it is unused before removing it.
 
 Check configured behaviour separately from disposable startup. When relevant,
 verify that the dashboard and Settings load, that unauthenticated routes return
