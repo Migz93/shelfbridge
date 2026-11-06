@@ -90,8 +90,8 @@ old `image` entry with the example's `build` settings. Remove any fixed
 container. Remove Docker socket mounts and any Docker-outside-of-Docker
 feature, then adopt the disposable `node_modules` volume and setup command.
 Set `remoteUser` to `node` and verify that its UID and GID allow it to write to
-the checkout. Preserve unrelated local settings
-and point the volume at `node_modules` under your workspace folder. Check for
+the checkout. Preserve unrelated local settings and point the volume at
+`node_modules` under your workspace folder. Check for
 concurrent use, then rebuild the devcontainer so the new mounts and image take
 effect. When removing a container manually, stop it first and use `docker rm -v`
 to remove its disposable dependency volume.
@@ -406,7 +406,8 @@ needs to happen on a disconnected client.
 
 When the PR closes or the owner cancels, check for concurrent use before
 removing any task resource, including when a PR closes without merging.
-Defer cleanup for resources another chat or process is using. Follow
+Defer cleanup for resources another chat or process is using. Read the
+task record in the Docker host checkout's ignored `LOCAL.md` and follow
 [disposable test cleanup](TESTING.md#disposable-test-cleanup) for leftovers.
 
 Remove the devcontainer and its disposable dependency volume with the local

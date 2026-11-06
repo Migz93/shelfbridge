@@ -622,13 +622,17 @@ When a test is agreed and written, add a row for it in the relevant table above.
 1. In the app's devcontainer, run the checks listed in Project Facts in
    [AGENTS.md](AGENTS.md#project-facts) and any relevant server tests. On the
    Docker host, build the production image from that same checkout with a
-   unique candidate tag. Record the source revision, candidate tag and image
-   ID. Record task-created containers, disposable storage and SSH forwards in
-   private task notes as you allocate them so closeout can find them.
+   unique candidate tag. Before building, record the source revision and
+   candidate tag in a task section in the Docker host checkout's ignored
+   `LOCAL.md`. Identify the task by branch or PR and a unique test ID. Create
+   the file if absent and preserve other entries. Record the planned exact
+   container and volume names and SSH forward identifiers before creating
+   them. Add the image ID and actual resource IDs as they become available.
+   Keep credentials out of this record.
 2. Start that image ID in a disposable container named `zdev-<app>-smoke-<id>`,
    using the app name and a unique test ID. Use bridge networking and fresh
-   writable storage at `/config`, such as tmpfs or an
-   anonymous volume. Use no live data mounts, live integration credentials,
+   writable storage at `/config`, using tmpfs or a uniquely named disposable
+   volume recorded before creation. Use no live data mounts, live integration credentials,
    or restart policy. For a browser outside Docker, use a separate loopback
    port and forward it as described above. Use a fresh browser profile or
    isolated browser context for the smoke instance because cookies can be
@@ -659,8 +663,8 @@ When a test is agreed and written, add a row for it in the relevant table above.
    evidence if needed and remove the disposable container and storage in
    either case.
 4. When the change needs configured browser validation, start the candidate
-   image ID as `zdev-<app>-e2e-<id>` with fresh disposable storage at
-   `/config` and a test URL reachable by the browser. Complete onboarding
+   image ID as `zdev-<app>-e2e-<id>` with the same disposable storage rules
+   at `/config` and a test URL reachable by the browser. Complete onboarding
    with test data and obtain a test session. Get the owner's authorization
    before connecting real integrations or testing against live data. Run the
    relevant Playwright tests or the full `npm run test:e2e` suite as needed.
@@ -675,14 +679,16 @@ When a test is agreed and written, add a row for it in the relevant table above.
 ### Disposable test cleanup
 
 Clean up after validation and check for leftovers at PR close or cancellation.
-Check for concurrent use before removing anything. Use the task record to
-identify exact names or IDs. Remove only its disposable smoke and E2E
-containers with `docker rm -fv` and remove any remaining task-owned temporary
-storage and close the SSH forwards opened for the task. At closeout, check
+Read the task section in the Docker host checkout's `LOCAL.md` even if a
+different chat created the resources. Check exact names or IDs and concurrent
+use before removing anything. Remove only the task's smoke and E2E containers
+with `docker rm -fv`, then remove its recorded disposable volumes if unused.
+Close only the task's recorded SSH forwards. At closeout, check
 task candidate tags against the live and rollback image IDs. Remove only
 unused task tags that are no longer needed for a pending deployment or review.
 Preserve resources whose ownership or use is unclear. A shared name prefix
-alone does not establish ownership.
+alone does not establish ownership. Keep the task record until cleanup is
+verified, including entries for any resources whose cleanup was deferred.
 
 ### Live replacement and verification
 
