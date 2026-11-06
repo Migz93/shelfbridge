@@ -71,6 +71,13 @@ The development image definition is `.devcontainer/Dockerfile`. The devcontainer
 mounts the checkout at the workspace path in Project Facts. Keep machine-specific
 paths and launcher commands in the ignored `LOCAL.md`.
 
+On a fresh checkout without a local launcher, use a Dev Container client on the
+Docker host. If `.devcontainer/devcontainer.json` is absent, copy
+`.devcontainer/devcontainer.json.example` to that path. Open the checkout in the
+container. The example builds the repository's Dockerfile and installs dependencies
+and Chromium on creation. When removing the container manually, use `docker rm -v`
+after stopping it to remove its disposable dependency volume.
+
 ## Live Container Conventions
 
 - Use the app name for the image, container and Compose service.
