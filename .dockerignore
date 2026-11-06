@@ -19,3 +19,7 @@ coverage
 LOCAL.md
 plans
 .debug
+
+tests/playwright/.auth
+tests/playwright-report
+tests/test-results
