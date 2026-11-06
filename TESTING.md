@@ -69,9 +69,10 @@ APIs respectively.
 
 If the app runs on the Docker host, set `BASE_URL` in `.env.playwright` to
 the app's published URL on a hostname or address reachable from the
-devcontainer. Use the published port from Project Facts or the configured
-reverse proxy. Inside a devcontainer, `localhost` refers to that container.
-Verify connectivity from the devcontainer before running the suite.
+devcontainer. Use the deployment's actual published host port or its
+configured reverse proxy URL. Inside a devcontainer, `localhost` refers to
+that container. Verify connectivity from the devcontainer before running the
+suite.
 
 For a loopback-only host port, use an existing reachable reverse proxy or
 forward the port over SSH. For a manual browser check, run the SSH local
