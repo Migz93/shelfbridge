@@ -635,6 +635,11 @@ When a test is agreed and written, add a row for it in the relevant table above.
    or modified file contents and any relevant file modes or symlink targets.
    Include uncommitted, untracked, or Git-ignored files that Docker includes.
    Exclude credentials from the context and record.
+   Before checks, verify that installed devcontainer dependencies match the
+   recorded `package-lock.json`. If the lockfile changed since installation,
+   or the match cannot be verified, run `npm ci` inside the devcontainer.
+   If the Playwright version changed, recreate the devcontainer so its cached
+   system libraries and installed Chromium also match the recorded lockfile.
    Run the checks listed in Project Facts in [AGENTS.md](AGENTS.md#project-facts)
    and any relevant server tests inside the app's devcontainer. Keep the
    recorded context unchanged through those checks and the build. Recheck it
@@ -706,9 +711,10 @@ Clean up after validation and check for leftovers at PR close or cancellation.
 Read the task section in the Docker host checkout's `LOCAL.md` even if a
 different chat created the resources. Check exact names or IDs and concurrent
 use before removing anything. Before removing a configured E2E instance,
-prevent new scheduled runs on that test instance where supported, then check
-its active integration jobs and wait for them to finish. If job status cannot
-be verified or runs do not finish within a bounded wait, retain the instance,
+confirm new scheduled and manual integration runs are prevented throughout
+the active-job check and container removal. Then check its active integration
+jobs and wait for them to finish. If prevention cannot be confirmed, job
+status cannot be verified, or a bounded wait expires, retain the instance,
 its storage, and the task record, and report the deferred cleanup.
 Otherwise, remove only the task's smoke and E2E containers with
 `docker rm -fv`, then remove its recorded disposable volumes if unused.
@@ -764,9 +770,10 @@ Before stopping live, inspect its startup and scheduled integration settings.
 Confirm the owner's authorization covers automatic external writes when the
 replacement starts. If it does not, prevent those runs before startup or
 obtain authorization first. Record the original settings and any planned
-temporary changes in the recovery entry before applying them. Prevent new
-scheduled and manual integration runs where supported and wait for active
-jobs to finish. If their status is unknown or a bounded wait expires, report
+temporary changes in the recovery entry before applying them. Confirm new
+scheduled and manual integration runs are prevented throughout the active-job
+check and container stop. Wait for active jobs to finish. If prevention
+cannot be confirmed, job status is unknown, or a bounded wait expires, report
 the gap and wait for the owner's decision before stopping live. Apply these
 steps to standalone and Compose deployments. Restore temporary settings
 after verification only when authorization covers the resulting job runs.
@@ -786,12 +793,14 @@ Verify the image ID, Docker health, HTTP health, and relevant app behaviour.
 If verification fails, report the failure and keep the prior image available.
 For an approved rollback with compatible live data, repeat the integration
 authorization and temporary-setting recording steps above. Before stopping
-a running failed replacement, prevent new jobs where supported and wait for
-active jobs to finish within a bounded time. If job status cannot be verified
-or the wait expires, report the risk and obtain the owner's decision before
-proceeding. Stop and remove the failed replacement if it exists, preserving
-its data. Recreate the live container from the recorded rollback tag and
-settings through the same deployment method. For Compose, set the recorded persistent image override
+a running failed replacement, confirm new scheduled and manual integration
+runs are prevented throughout the active-job check and container stop, then
+wait for active jobs to finish within a bounded time. If prevention cannot
+be confirmed, job status cannot be verified, or the wait expires, report the
+risk and obtain the owner's decision before proceeding. Stop and remove
+the failed replacement if it exists, preserving its data. Recreate the live
+container from the recorded rollback tag and settings through the same
+deployment method. For Compose, set the recorded persistent image override
 to the rollback tag and use the recorded file list and project settings to
 recreate the service. Repeat the health checks. Preserve the recovery entry,
 the settings it references, and the rollback tag during task closeout.
