@@ -65,6 +65,12 @@ effects. Sync and Image Cache Refresh are never triggered this way, since they
 write real data back to Hardcover/Audiobookshelf/Grimmory and to those services'
 APIs respectively.
 
+Before live replacement, check `sync.startupSyncEnabled` and
+`sync.scheduleIntervalMinutes`. When startup sync and scheduling are enabled,
+the replacement immediately starts a non-dry-run profile sync. Follow the
+[live replacement authorization and job checks](#live-replacement-and-verification)
+before starting it.
+
 ### Reaching the App From a Devcontainer
 
 If the app runs on the Docker host, set `BASE_URL` in `.env.playwright` to
@@ -723,6 +729,15 @@ Link it to the task and record the live name, prior and candidate image IDs,
 the `<app>:rollback-<id>` tag, and the deployment method. Record non-secret
 settings and reference existing secure sources for credentials.
 
+Before replacement, assess pending database migrations and whether the prior
+image can use the resulting schema. Record that assessment and the owner's
+data recovery policy in the recovery entry. If compatibility is unknown or
+the migration prevents image rollback, record how to identify a compatible
+backup and restore it, including any unverified steps or recovery gaps.
+Follow the owner's selected backup policy from local instructions. Report
+recovery gaps before replacement and obtain the owner's decision if no
+usable recovery path is established. Restoring data requires owner approval.
+
 - For a standalone deployment, inspect the current container privately with
   `docker inspect`. Record the complete recreation settings or an equivalent
   `docker run` command. Include environment overrides, user, entrypoint,
@@ -744,6 +759,17 @@ resolves to that ID. Follow [disposable test cleanup](#disposable-test-cleanup)
 before replacing the live app. If configured E2E cleanup is deferred, preserve
 the instance and storage, report the reason, and wait for the owner's decision
 before live replacement.
+
+Before stopping live, inspect its startup and scheduled integration settings.
+Confirm the owner's authorization covers automatic external writes when the
+replacement starts. If it does not, prevent those runs before startup or
+obtain authorization first. Record the original settings and any planned
+temporary changes in the recovery entry before applying them. Prevent new
+scheduled and manual integration runs where supported and wait for active
+jobs to finish. If their status is unknown or a bounded wait expires, report
+the gap and wait for the owner's decision before stopping live. Apply these
+steps to standalone and Compose deployments. Restore temporary settings
+after verification only when authorization covers the resulting job runs.
 
 - For a standalone deployment, stop and remove the current live container
   while preserving its data. Start the exact tested image under the original
