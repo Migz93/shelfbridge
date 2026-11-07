@@ -23,6 +23,11 @@ and disposable checks, and [Live replacement and verification](../TESTING.md#liv
 for deployment and rollback. [AGENTS.md](../AGENTS.md) covers the host and
 container conventions.
 
+An explicit request to update or replace the live image authorizes stopping
+and recreating the container with its existing startup and scheduled jobs.
+Proceed without separate confirmation about manual jobs or schedule changes.
+An idle window is not required; running jobs may be interrupted.
+
 ## Persistent Data
 
 Everything ShelfBridge keeps — config, SQLite database, image cache, logs — lives in `/config`,

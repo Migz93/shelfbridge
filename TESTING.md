@@ -71,11 +71,6 @@ the replacement immediately starts a non-dry-run profile sync. Follow the
 [live replacement authorization and job checks](#live-replacement-and-verification)
 before starting it.
 
-Disabling a job does not block its Run Now endpoint. Confirm prevention
-only when the owner has confirmed no manual runs will be triggered during
-the check-and-stop window, including browser tests and other automation.
-Otherwise, treat prevention as unconfirmed.
-
 ### Reaching the App From a Devcontainer
 
 If the app runs on the Docker host, set `BASE_URL` in `.env.playwright` to
@@ -773,20 +768,15 @@ before replacing the live app. If configured E2E cleanup is deferred, preserve
 the instance and storage, report the reason, and wait for the owner's decision
 before live replacement.
 
-Before stopping live, inspect its startup and scheduled integration settings.
-Confirm the owner's authorization covers automatic external writes when the
-replacement starts. If it does not, prevent those runs before startup or
-obtain authorization first. Record the original settings and any planned
-temporary changes in the recovery entry before applying them. Confirm new
-scheduled and manual integration runs are prevented throughout the active-job
-check and container stop. Wait for active jobs to finish. If prevention
-cannot be confirmed, job status is unknown, or a bounded wait expires, report
-the gap and wait for the owner's decision before stopping live. Apply these
-steps to standalone and Compose deployments. Restore temporary settings
-after verification only when authorization covers the resulting job runs.
-If they cannot be restored, report the changed settings and their effect,
-keep them in the recovery entry, and wait for the owner's decision. Apply
-the same rule after a rollback.
+An explicit request to deploy, update or replace the live image is sufficient
+authorization to stop and recreate the container and resume its existing
+startup and scheduled integration work. Proceed without a separate
+confirmation about manual jobs, schedule changes or automatic startup work.
+An idle window and prevention of new jobs are not prerequisites. The owner
+accepts that running jobs may be interrupted during an authorized replacement.
+Preserve existing application settings unless the requested change requires
+otherwise, and record any required setting changes in the recovery entry.
+Apply this policy to standalone and Compose deployments.
 
 - For a standalone deployment, stop and remove the current live container
   while preserving its data. Start the exact tested image under the original
@@ -798,18 +788,13 @@ the same rule after a rollback.
 
 Verify the image ID, Docker health, HTTP health, and relevant app behaviour.
 If verification fails, report the failure and keep the prior image available.
-For an approved rollback with compatible live data, repeat the integration
-authorization and temporary-setting recording steps above. Before stopping
-a running failed replacement, confirm new scheduled and manual integration
-runs are prevented throughout the active-job check and container stop, then
-wait for active jobs to finish within a bounded time. If prevention cannot
-be confirmed, job status cannot be verified, or the wait expires, report the
-risk and obtain the owner's decision before proceeding. Stop and remove
-the failed replacement if it exists, preserving its data. Recreate the live
-container from the recorded rollback tag and settings through the same
-deployment method. For Compose, set the recorded persistent image override
-to the rollback tag and use the recorded file list and project settings to
-recreate the service. Repeat the health checks. Preserve the recovery entry,
+For an approved rollback with compatible live data, apply the same deployment
+authorization policy above. Stop and remove the failed replacement if it
+exists, preserving its data. Recreate the live container from the recorded
+rollback tag and settings through the same deployment method. For Compose,
+set the recorded persistent image override to the rollback tag and use the
+recorded file list and project settings to recreate the service. Repeat the
+health checks. Preserve the recovery entry,
 the settings it references, and the rollback tag during task closeout.
 Remove the entry and tag only after the owner confirms fallback is no longer
 needed and the tag is verified unused.
