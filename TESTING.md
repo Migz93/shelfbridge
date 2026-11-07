@@ -770,6 +770,9 @@ jobs to finish. If their status is unknown or a bounded wait expires, report
 the gap and wait for the owner's decision before stopping live. Apply these
 steps to standalone and Compose deployments. Restore temporary settings
 after verification only when authorization covers the resulting job runs.
+If they cannot be restored, report the changed settings and their effect,
+keep them in the recovery entry, and wait for the owner's decision. Apply
+the same rule after a rollback.
 
 - For a standalone deployment, stop and remove the current live container
   while preserving its data. Start the exact tested image under the original
