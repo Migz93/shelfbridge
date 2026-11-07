@@ -1,7 +1,7 @@
 # Base image pinned by digest so a rebuild can't silently pull a different
 # toolchain under the same tag. Bump deliberately: resolve the new digest with
 # `docker buildx imagetools inspect node:22-trixie-slim` and replace all four.
-FROM node:22-trixie-slim@sha256:8eb619e402eaede1748a3c8173bffab391592812e85136452f781741c7242ddf AS deps
+FROM node:22-trixie-slim@sha256:2117f713a417f3aff682ac8f5bc2ebbdf1beed51f36e67ab1e0fd3866b6d2d8f AS deps
 WORKDIR /app
 COPY package.json package-lock.json* ./
 # better-sqlite3 has no install/postinstall script of its own, so npm falls
@@ -14,13 +14,13 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 RUN npm ci
 
-FROM node:22-trixie-slim@sha256:8eb619e402eaede1748a3c8173bffab391592812e85136452f781741c7242ddf AS build
+FROM node:22-trixie-slim@sha256:2117f713a417f3aff682ac8f5bc2ebbdf1beed51f36e67ab1e0fd3866b6d2d8f AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
 
-FROM node:22-trixie-slim@sha256:8eb619e402eaede1748a3c8173bffab391592812e85136452f781741c7242ddf AS production-deps
+FROM node:22-trixie-slim@sha256:2117f713a417f3aff682ac8f5bc2ebbdf1beed51f36e67ab1e0fd3866b6d2d8f AS production-deps
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN apt-get update \
@@ -28,7 +28,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 RUN npm ci --omit=dev
 
-FROM node:22-trixie-slim@sha256:8eb619e402eaede1748a3c8173bffab391592812e85136452f781741c7242ddf AS runtime
+FROM node:22-trixie-slim@sha256:2117f713a417f3aff682ac8f5bc2ebbdf1beed51f36e67ab1e0fd3866b6d2d8f AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=9303
