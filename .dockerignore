@@ -1,5 +1,6 @@
 node_modules
 dist
+.test-data
 data
 .env
 .env.*
@@ -19,3 +20,7 @@ coverage
 LOCAL.md
 plans
 .debug
+
+tests/playwright/.auth
+tests/playwright-report
+tests/test-results

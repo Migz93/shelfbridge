@@ -18,10 +18,10 @@ server in `dist/server`, and production dependencies only. The server command is
 
 ## Running It
 
-Build, run, and rebuild commands live in `AGENTS.md` under "Rebuilding The
-Container After Code Changes", alongside the container and environment
-conventions they have to stay consistent with. This file covers what the
-deployment *is*, not how to drive it.
+See [Manual Smoke Test](../TESTING.md#manual-smoke-test) for candidate builds
+and disposable checks, and [Live replacement and verification](../TESTING.md#live-replacement-and-verification)
+for deployment and rollback. [AGENTS.md](../AGENTS.md) covers the host and
+container conventions.
 
 ## Persistent Data
 
