@@ -740,8 +740,10 @@ settings and reference existing secure sources for credentials.
 
 Before stopping live, verify the record and its secure sources can recreate
 the service. Apply the rollback tag to the recorded prior image and verify it
-resolves to that ID. Remove the disposable test containers before replacing
-the live app.
+resolves to that ID. Follow [disposable test cleanup](#disposable-test-cleanup)
+before replacing the live app. If configured E2E cleanup is deferred, preserve
+the instance and storage, report the reason, and wait for the owner's decision
+before live replacement.
 
 - For a standalone deployment, stop and remove the current live container
   while preserving its data. Start the exact tested image under the original
