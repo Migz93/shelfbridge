@@ -324,6 +324,12 @@ periodic review below is the only broad `develop`-against-`main` CLI review;
 the `develop` → `main` release PR instead follows the narrow
 [Release PR Review](#release-pr-review).
 
+When reviewing coordinated changes across Hubarr, Pacearr and Shelfbridge,
+run one CLI review at a time. Move to the next repo after the current review
+has no applicable findings. If a fix is needed, apply it to every affected
+repo and complete the cross-AI delta and full review cycle before resuming
+the CLI sequence. Review results apply only to their recorded revisions.
+
 **Runs are slow and silent.** A review can take 10–15 minutes with no output —
 it looks stuck, but it's working. Check in every 5 minutes; if nothing has
 happened after 30 minutes, tell the user.
@@ -421,11 +427,14 @@ Identify the task's devcontainer through the local launcher, the Dev Container
 client, or its `devcontainer.local_folder` label using the absolute checkout
 path. Verify the workspace mount and inspect all mounts before removing the
 container. Stop it before removal. Use the launcher or `docker rm -v` only
-if every anonymous volume is confirmed disposable. Otherwise, remove it with
-`docker rm` without `-v`. Separately remove only the exact dependency volume
-if it is confirmed task-owned, disposable, and unused. Preserve the checkout
-and live deployment. Create the devcontainer again when starting the next
-implementation task.
+if every anonymous volume is confirmed disposable. Otherwise, before removal,
+record each retained non-disposable anonymous volume's exact Docker name,
+mount path, and options in a retained-volume section of the ignored `LOCAL.md`.
+Keep that section available for the next devcontainer setup. Remove the
+container with `docker rm` without `-v`. Separately remove only the exact
+dependency volume if it is confirmed task-owned, disposable, and unused.
+Preserve the checkout and live deployment. Create the devcontainer again
+when starting the next implementation task.
 
 ### Branch Rules Summary
 

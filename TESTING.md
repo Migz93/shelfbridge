@@ -784,10 +784,14 @@ the same rule after a rollback.
 
 Verify the image ID, Docker health, HTTP health, and relevant app behaviour.
 If verification fails, report the failure and keep the prior image available.
-For an approved rollback with compatible live data, stop and remove the
-failed replacement if it exists, preserving its data. Recreate the live
-container from the recorded rollback tag and settings through the same
-deployment method. For Compose, set the recorded persistent image override
+For an approved rollback with compatible live data, repeat the integration
+authorization and temporary-setting recording steps above. Before stopping
+a running failed replacement, prevent new jobs where supported and wait for
+active jobs to finish within a bounded time. If job status cannot be verified
+or the wait expires, report the risk and obtain the owner's decision before
+proceeding. Stop and remove the failed replacement if it exists, preserving
+its data. Recreate the live container from the recorded rollback tag and
+settings through the same deployment method. For Compose, set the recorded persistent image override
 to the rollback tag and use the recorded file list and project settings to
 recreate the service. Repeat the health checks. Preserve the recovery entry,
 the settings it references, and the rollback tag during task closeout.
