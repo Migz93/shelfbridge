@@ -2,7 +2,8 @@
 
 # Agent Guidelines
 
-Read this file before doing any work in this repo.
+Read applicable ancestor/workspace instructions and this file before doing
+any work in this repo.
 
 Everything here is **always relevant** — environment, conventions, and the gates
 you have to stop at. Material that only matters at a particular moment (opening
@@ -169,8 +170,9 @@ type/branch-name branch → PR into develop → develop → chore/bump-version �
    - Branch naming: `feat/short-description`, `fix/short-description`,
      `chore/short-description`, `ci/short-description`, `docs/short-description`
 2. **Do the work** on that branch. Commit as many times as needed.
-3. **Stop at the review gate.** When the work is complete, do not open the PR —
-   go to "The Review Gate" below and ask the user how they want to proceed.
+3. **Complete the review gate.** Pass the required checks and complete the
+   independent cross-AI review first. Once a full pass is clean, offer the
+   optional CodeRabbit review as described in "The Review Gate" below.
 4. **Open a PR** from that branch into `develop`. This is what feeds the release
    notes — the PR title becomes the changelog entry. Use a semantic title
    (`feat:`, `fix:`, `chore:`, etc.). Open it as a draft; see
@@ -201,62 +203,62 @@ type/branch-name branch → PR into develop → develop → chore/bump-version �
 
 ### The Review Gate (Mandatory)
 
-Work is written and iterated on locally. When the implementer believes the work
-is complete **and** the user has confirmed they're happy with it, the agent must
-stop and ask the user which way to go. It must never pick on the user's behalf,
-and must never open the PR without asking.
+Implement and validate the work on its task branch, commit the intended changes,
+and complete the independent cross-AI review before offering CodeRabbit. Follow
+applicable workspace instructions to arrange the reviewer. If those instructions
+authorize automated review, use it without requiring manual prompt relaying.
+The repository defines the review sequence; local CLI orchestration, account
+setup and session handling belong in workspace instructions or ignored local
+documentation.
 
-For a work-branch PR, the prompt offers three options:
+Once a full cross-AI pass is clean, offer these choices:
 
-> Everything's implemented. Do you want to:
-> 1. Go to the cross-AI review (the other agent reviews this diff)
-> 2. Run a CodeRabbit CLI review
-> 3. Push and open the PR now
+> 1. Run a CodeRabbit CLI review
+> 2. Skip CodeRabbit and open the draft PR
 
-Option 3 is always available and always legitimate. Review budgets are finite
-and the user is the one who knows what's left — the gate exists so they can
-choose, not so reviews become compulsory.
+CodeRabbit is optional. An explicit owner instruction to run or skip it already
+supplies that choice; do not ask again for the same step. After a clean
+CodeRabbit result on unchanged cross-reviewed commits, or an explicit owner
+decision to skip or accept the CodeRabbit result, open the PR as a draft.
+Review clearance does not authorize marking it ready or merging it.
 
-**This gate applies to:** the work-branch PR (step 3 above).
-
-The `develop` → `main` release PR follows the [Release PR
-Review](#release-pr-review) after it is opened as a draft (step 8), because the
-narrow review runs on that PR.
-
-**This gate does not apply to:** the version-bump PR in step 7. It's a version
-number in two files with no logic to review — open it directly.
+**This gate applies to:** ordinary work-branch PRs, including documentation.
+The version-bump exception in step 7 remains unchanged. The `develop` to `main`
+release PR follows the separate [Release PR Review](#release-pr-review) after
+it is opened as a draft.
 
 #### Ordering rules
 
-- The cross-AI review is the cheap, repeatable one. For work branches,
-  CodeRabbit CLI is the expensive, rate-limited option; prefer cross-AI review
-  first and use CodeRabbit sparingly. Release PRs use the narrow release PR
-  review instead.
-- Any CodeRabbit CLI review for a work branch that results in code changes sends
-  the work **back to the cross-AI review**, which must reach a clean full pass
-  again before another CodeRabbit CLI review is considered.
-- After any review completes, re-prompt with the options that still make sense —
-  never silently proceed to the next step.
+- Cross-AI review comes first. Use CodeRabbit sparingly after a clean full pass.
+- Code or documentation edits made after CodeRabbit return to the cross-AI
+  fix/delta/full cycle, which must reach a clean full pass again before another
+  CodeRabbit review is offered.
+- After a CodeRabbit run, report its outcome and run count. If edits were
+  needed, finish cross-review and offer another CodeRabbit run or proceeding
+  with an owner-approved disposition; do not silently run another CLI review.
+- Failed, incomplete, rate-limited and stale reviews never count as clean.
+  Follow workspace limits and obtain the owner's direction if clearance cannot
+  be reached. Do not reset review counts to evade limits.
 
 ---
 
 #### The Cross-AI Review
 
-The app is worked on by two AI agents — Claude and Codex — usually in separate
-chat sessions, with the user relaying messages between them. The changeset goes
-through a review pass by the *other* agent.
+The implementer and reviewer must be different people or agents. Use the
+independent reviewer and review mechanism configured by applicable workspace
+instructions or agreed with the project owner. If none is available, arrange
+one with the owner rather than treating self-review as independent review.
 
-**Roles are relative, not fixed to a specific AI.** Whichever agent wrote the
-code is "the implementer"; the other agent is "the reviewer." If Codex
-implemented, Claude reviews, and vice versa — this section applies symmetrically
-regardless of which agent is reading it right now.
+The implementer makes changes; the reviewer assesses the changeset. These
+roles do not require a particular vendor, CLI, host or manual copy-and-paste
+process. Keep those local arrangements outside repository documentation.
 
 **The review loop** (the implementer drives this state machine — never wait for
 the user to ask "what's next" or "can you do a full review"):
 
 | Last review was... | Result | Next step |
 |---|---|---|
-| Full | Clean | The changeset is cleared — return to the review gate and offer the remaining options |
+| Full | Clean | The changeset is cleared — offer CodeRabbit or open the draft PR if the owner already declined it |
 | Full | Findings | Resolve each finding (see below), then request a **delta review** scoped to just the fix/disposition |
 | Delta | Clean | Automatically request a new **full review** from scratch — a clean delta is never the finish line |
 | Delta | Findings | Resolve each finding (see below), then request another **delta review** |
@@ -298,14 +300,15 @@ other. Whatever the outcome — a code change or a deliberate no-change — send
 through the next delta review like any other resolved finding, so the reviewer
 confirms the final state before the next full pass.
 
-**Minimal effort for the user:** their job is only to paste the prompt into the
-other agent's chat and paste the response back here. The implementer tracks
-review state (was the last request a delta or a full pass? did it come back
-clean?) and always produces the next prompt proactively.
+**Review coordination:** the implementer tracks review state and proactively
+drives the next delta or full pass using the workspace's review mechanism.
+Manual relay is only needed when the chosen arrangement requires it; do not
+make the owner copy prompts when local automation is available. Record exact
+reviewed revisions and outcomes, keeping host-specific records private.
 
-Push the branch to GitHub whenever the reviewer needs to see it — the diff can
-also be pasted directly into the prompt. Pushing early is fine. What matters is
-that the **PR itself** is not opened until the gate says so.
+Push the task branch when the reviewer needs remote access. Open its draft PR
+only after the review gate is satisfied. Pushing a branch does not authorize
+merging it.
 
 ---
 
@@ -315,12 +318,14 @@ Run from the host checkout with `--agent`, which produces structured output inte
 rather than the interactive terminal UI:
 
 ```bash
-coderabbit review --agent --base develop
+coderabbit review --agent --committed --base origin/develop -c AGENTS.md docs/workflow.md
 ```
 
-This CLI review is for work-branch changes against `develop`. Pass `-c
-AGENTS.md` to give the reviewer this file as context. The separate manual
-periodic review below is the only broad `develop`-against-`main` CLI review;
+This CLI review is for committed work-branch changes against the intended
+`develop` base. Fetch and verify that base first. Require a clean checkout and
+ensure the explicit `-c` context files match the reviewed head, because they
+are read from the working tree. Record the exact base and head. The separate
+manual periodic review below is the only broad `develop`-against-`main` CLI review;
 the `develop` → `main` release PR instead follows the narrow
 [Release PR Review](#release-pr-review).
 
@@ -345,8 +350,11 @@ Never run a third without an explicit yes. Track the count and state it when
 reporting results. The counter resets when a new changeset or periodic review
 starts.
 
-**After a CodeRabbit review that changed code**, go back to the cross-AI review
-and take it to a clean full pass before offering CodeRabbit again. CodeRabbit is
+**After a CodeRabbit review that changed code or documentation**, go back to
+cross-AI review and take it to a clean full pass before offering CodeRabbit
+again. After a clean CodeRabbit result on unchanged reviewed commits, open the
+draft PR; otherwise obtain an owner decision before proceeding without another
+CodeRabbit pass. CodeRabbit is
 the scarce resource — the cross-AI loop should have caught everything cheap
 first, so a CodeRabbit run finding a lot usually means the cross-AI loop was cut
 short.
@@ -359,10 +367,11 @@ This is a manual, broad review of the accumulated `develop` changes against
 `main`. It is **not** scheduled, automated, a release gate, or a replacement
 for the normal review gate above. Only start it when the project owner asks.
 
-Run it with the shared guidance as context:
+Fetch and verify the intended base, require a clean checkout, and ensure the
+shared guidance used as context matches the reviewed head:
 
 ```bash
-coderabbit review --agent --base main -c AGENTS.md
+coderabbit review --agent --committed --base origin/main -c AGENTS.md
 ```
 
 The two-review target in [The CodeRabbit CLI Review](#the-coderabbit-cli-review)
@@ -454,8 +463,8 @@ when starting the next implementation task.
 
 The user will not always use precise git terminology. They may say things like:
 
-- *"that's ready, push it"* — this means push the current branch to GitHub if
-  not already pushed, then go to the review gate
+- *"that's ready, push it"* — push the task branch, complete any outstanding
+  checks and cross-AI review, then follow the CodeRabbit/draft PR gate
 - *"commit that to develop"* — this means open a PR into `develop`, not a direct
   commit
 - *"let's get this into develop"* — same as above, open a PR
@@ -528,8 +537,11 @@ gap — a UI test standing in for a logic test proves much less than it appears 
 Actively guide the workflow rather than waiting for perfect instructions:
 
 - When the user starts new work: create a branch from `develop` automatically
-- When the work is complete: stop at the review gate and offer the three options
-- When a review pass finishes: report the result and re-prompt with what's left
+- When the work is complete: run required checks and independent cross-AI
+  review using workspace guidance, then offer CodeRabbit or a draft PR
+- When a review pass finishes: drive the delta/full loop and report the exact
+  reviewed revisions; after CodeRabbit is clean or explicitly skipped/accepted,
+  open the draft PR
 - When the user asks about releasing: confirm whether they mean prep, tag, or
   both
 - When the user asks for a version bump: confirm patch/minor/major if not stated

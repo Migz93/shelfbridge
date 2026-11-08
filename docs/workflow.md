@@ -16,6 +16,7 @@ moment rather than up front.
 | [AI Sign-Off For GitHub Text](#ai-sign-off-for-github-text) | Writing anything that lands on GitHub |
 | [Pull Request Description Format](#pull-request-description-format) | Opening a PR |
 | [Pull Request Conventions](#pull-request-conventions) | Opening or merging a PR |
+| [Independent Review and Draft PR Gate](#independent-review-and-draft-pr-gate) | Completing ordinary task work |
 | [CodeRabbit Review Process](#coderabbit-review-process) | Reviewing development changes or a release PR |
 | [Release Process](#release-process) | Cutting a release |
 | [Release Notes](#release-notes) | Editing a release-drafter draft before publication |
@@ -134,15 +135,59 @@ both check names in the repository's branch rules.
 
 ---
 
+## Independent Review and Draft PR Gate
+
+Follow the [review gate](../AGENTS.md#the-review-gate-mandatory) and
+[cross-AI review loop](../AGENTS.md#the-cross-ai-review) in `AGENTS.md`:
+implement, pass checks, commit, independent full review, fixes/dispositions,
+delta review and a fresh full review until a full pass is clean. Only then
+offer CodeRabbit or let the owner skip it and open the draft PR.
+
+Use applicable workspace guidance for arranging the independent reviewer;
+repository policy does not require a particular reviewer CLI or manual prompt
+relay. Keep local commands, authentication and session handling in workspace
+instructions. Record review scope and results against exact base/head commits.
+
+After a clean CodeRabbit result on unchanged reviewed commits, or an explicit
+owner decision to skip or accept it, open the draft PR. CodeRabbit-driven edits
+return to the independent delta/full cycle first. A clean delta, incomplete
+review or stale result never clears the changeset. The version-bump exception
+and separate release PR review in `AGENTS.md` remain unchanged.
+
+---
+
 ## CodeRabbit Review Process
 
-CodeRabbit serves two distinct purposes. The existing two-branch workflow and
+CodeRabbit has three review scopes. The existing two-branch workflow and
 release mechanics remain unchanged.
 
 | Review | Purpose | Outcome |
 |---|---|---|
+| Work-branch CLI review | Optional review after clean cross-AI clearance | Clean result or owner-approved skip/acceptance, then draft PR |
 | Periodic CLI review | Broad review of accumulated `develop` changes | Initially triaged recommendations, then owner-approved normal issues and accepted findings |
 | Release PR review | Critical release-safety check | Fix blockers only |
+
+### Work-Branch CLI Review
+
+Offer this only after a clean independent full review. Run it when the owner
+chooses it; an explicit instruction already supplies that choice. From the
+host checkout, fetch and verify the intended `develop` base, require a clean
+checkout and ensure the explicit context files match the reviewed head:
+
+```bash
+coderabbit review --agent --committed --base origin/develop -c AGENTS.md docs/workflow.md
+```
+
+Record the exact reviewed base/head, findings/dispositions and CLI run count.
+The [two-review target](../AGENTS.md#the-coderabbit-cli-review) applies to each
+changeset; never run a third without the owner's explicit approval. Fix commits
+do not reset the count. After CodeRabbit-driven changes, rerun affected checks
+and obtain a clean independent delta/full cycle before offering another CLI
+review. Do not silently start another CodeRabbit run. Open the draft after a
+clean result or an owner-approved decision to skip or accept it. Automated
+CodeRabbit GitHub PR reviews are separate; a missing or skipped bot review is
+not a clean result. Later valid PR findings return through checks and the
+cross-AI review loop before the new head is cleared.
 
 ### Periodic CLI Review
 
@@ -151,10 +196,11 @@ The project owner manually requests this review when a broad check of
 frozen testing phase, or a release gate. Do not create release branches or
 release candidates for it.
 
-Run:
+Fetch and verify the intended base, require a clean checkout and ensure the
+context file matches the reviewed head. Run:
 
 ```bash
-coderabbit review --agent --base main -c AGENTS.md
+coderabbit review --agent --committed --base origin/main -c AGENTS.md
 ```
 
 Aim for two CLI reviews for each periodic review; this is not a hard cap, but
