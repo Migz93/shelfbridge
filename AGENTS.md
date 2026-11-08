@@ -186,7 +186,8 @@ type/branch-name branch → PR into develop → develop → chore/bump-version �
    merged PRs.
 7. **When ready to release**, create a `chore/bump-version-X.Y.Z` branch from
    `develop`, bump the version files, open a PR into `develop`, and squash-merge
-   it. A version bump does not go through the review gate — see below.
+   it. A version-only bump skips the review gate; a bump with logic changes
+   follows the ordinary gate. See the explicit exception below.
 8. **Open a draft PR** from `develop` into `main`, then take it through the
    narrow [Release PR Review](#release-pr-review). Mark it ready only once
    release-safety blockers are resolved or accepted and no further fixes are
