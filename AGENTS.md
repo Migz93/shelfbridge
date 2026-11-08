@@ -223,9 +223,13 @@ decision to skip or accept the CodeRabbit result, open the PR as a draft.
 Review clearance does not authorize marking it ready or merging it.
 
 **This gate applies to:** ordinary work-branch PRs, including documentation.
-The version-bump exception in step 7 remains unchanged. The `develop` to `main`
-release PR follows the separate [Release PR Review](#release-pr-review) after
-it is opened as a draft.
+
+**Version-only bump PRs in step 7 skip this gate:** run the required checks and
+open their draft PR directly, because they only update version values. A bump
+that includes logic changes must follow the ordinary work-branch review gate.
+
+The `develop` to `main` release PR follows the separate
+[Release PR Review](#release-pr-review) after it is opened as a draft.
 
 #### Ordering rules
 

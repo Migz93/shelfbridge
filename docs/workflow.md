@@ -151,15 +151,17 @@ instructions. Record review scope and results against exact base/head commits.
 After a clean CodeRabbit result on unchanged reviewed commits, or an explicit
 owner decision to skip or accept it, open the draft PR. CodeRabbit-driven edits
 return to the independent delta/full cycle first. A clean delta, incomplete
-review or stale result never clears the changeset. The version-bump exception
-and separate release PR review in `AGENTS.md` remain unchanged.
+review or stale result never clears the changeset. Version-only bump PRs skip
+this ordinary gate: run required checks and open their draft directly. Bumps
+with logic changes follow the ordinary gate. A `develop` to `main` release PR
+receives the separate release-safety review described in `AGENTS.md`.
 
 ---
 
 ## CodeRabbit Review Process
 
-CodeRabbit has three review scopes. The existing two-branch workflow and
-release mechanics remain unchanged.
+CodeRabbit has three review scopes. Use the two-branch workflow and release
+mechanics described in `AGENTS.md`.
 
 | Review | Purpose | Outcome |
 |---|---|---|
