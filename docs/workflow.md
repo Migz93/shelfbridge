@@ -440,8 +440,14 @@ directly: `feat` selects Features and a minor increment, `fix` selects Fixes,
 `docs` selects Documentation, and the other accepted types select Maintenance
 with a patch increment. Breaking titles such as `feat(api)!: change response`
 select Breaking Changes and a major increment. The highest matching increment
-wins. Automatic PR labeling is not used. Existing category labels remain as a
-fallback for historical PRs and Dependabot; `major` and `skip-changelog` retain
-their manual override/exclusion behavior. Unmatched changes go under Other
-Changes with a patch increment. Draft suggestions do not publish releases or
-change the version files; review the draft before publication.
+wins. Automatic PR labeling is not used. Existing category labels also match
+for historical PRs and Dependabot. Categories are evaluated in order: Breaking
+Changes, Features, Fixes, Documentation, then Maintenance. The first matching
+category wins, so a label can override a title: a `fix:` PR with `enhancement`
+goes under Features and contributes a minor increment. Check category labels on
+open PRs and merged PRs since the last tag before the first migrated release,
+especially labels retained after a PR title changed. The `major` and
+`skip-changelog` labels retain their manual override/exclusion behavior.
+Unmatched changes go under Other Changes with a patch increment. Draft
+suggestions do not publish releases or change the version files; review the
+draft before publication.
