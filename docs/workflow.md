@@ -430,6 +430,11 @@ types are `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`, `refactor`,
 `revert`, `style` and `test`; optional scopes and a breaking-change `!` are
 supported. Keep the title accurate when reviewing and merging a PR.
 
+The check runs the workflow from the PR merge ref, so a PR can change its own
+formatting check. Review workflow edits and the final title before merging;
+this check is a formatting aid, not a trusted approval boundary. Fork PRs may
+wait for GitHub's normal contributor approval before checks run.
+
 Release Drafter runs only on pushes to `main`. It reads merged PR titles
 directly: `feat` selects Features and a minor increment, `fix` selects Fixes,
 `docs` selects Documentation, and the other accepted types select Maintenance
