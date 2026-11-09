@@ -420,3 +420,23 @@ introduce broad style-only rule churn as part of unrelated feature work.
 - When a future maintainer might reasonably ask "why is this written this way?",
   prefer a short comment that answers that question at the point of
   implementation
+
+## PR Title And Release Automation
+
+The Semantic PR check runs on `pull_request` events (opened, edited,
+synchronize and reopened). It validates the title from the event payload without
+checking out PR code, accessing secrets or requesting token permissions. Accepted
+types are `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`, `refactor`,
+`revert`, `style` and `test`; optional scopes and a breaking-change `!` are
+supported. Keep the title accurate when reviewing and merging a PR.
+
+Release Drafter runs only on pushes to `main`. It reads merged PR titles
+directly: `feat` selects Features and a minor increment, `fix` selects Fixes,
+`docs` selects Documentation, and the other accepted types select Maintenance
+with a patch increment. Breaking titles such as `feat(api)!: change response`
+select Breaking Changes and a major increment. The highest matching increment
+wins. Automatic PR labeling is not used. Existing category labels remain as a
+fallback for historical PRs and Dependabot; `major` and `skip-changelog` retain
+their manual override/exclusion behavior. Unmatched changes go under Other
+Changes with a patch increment. Draft suggestions do not publish releases or
+change the version files; review the draft before publication.
