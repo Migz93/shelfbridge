@@ -281,6 +281,10 @@ so all tests start already authenticated.
 | Hashed session storage | The database contains only a SHA-256 session-token hash with a numeric expiry |
 | Secure cookie | HTTPS requests receive a `Secure` session cookie |
 
+### `tests/server/rate-limit-logging.test.ts` — Concurrent warning logs
+
+Covers pipelined requests at and beyond the limit, one warning per client/window, independent clients, and warning eligibility after the window resets.
+
 ### `tests/server/rate-limit.test.ts` — Rate limiting
 
 | Test | What it checks |
