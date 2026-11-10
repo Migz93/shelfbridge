@@ -42,22 +42,42 @@ export function isRateLimitExempt(path: string): boolean {
 }
 
 /**
- * Only the first rejection for a client in each window is logged. A runaway
- * client would otherwise write one warning per blocked request.
+ * Deduplicate synchronously by the client's actual store window. Hit counts can
+ * skip limit + 1 (or repeat it) when pipelined requests await the same mutable
+ * store record, so counts cannot identify the first rejected request.
  */
-function isFirstRejectionInWindow(req: Request): boolean {
-  const { used, limit } = (req as AugmentedRequest).rateLimit;
-  return used === limit + 1;
+function createRejectionLogGate(windowMs: number): (req: Request) => boolean {
+  const reportedWindows = new Map<string, number>();
+  let nextCleanupAt = 0;
+  return req => {
+    const now = Date.now();
+    if (now >= nextCleanupAt) {
+      // Keep one expired window for delayed handlers; prune older client entries
+      // during traffic without creating cleanup timers.
+      for (const [key, resetAt] of reportedWindows) {
+        if (resetAt + windowMs <= now) reportedWindows.delete(key);
+      }
+      nextCleanupAt = now + Math.min(windowMs, 60_000);
+    }
+    const { key, resetTime } = (req as AugmentedRequest).rateLimit;
+    const previous = reportedWindows.get(key);
+    const resetAt = resetTime?.getTime() ?? (previous !== undefined && previous > now ? previous : now + windowMs);
+    // An older delayed rejection must not overwrite a newer reported window.
+    if (previous !== undefined && previous >= resetAt) return false;
+    reportedWindows.set(key, resetAt);
+    return true;
+  };
 }
 
 export function createGlobalRateLimiter(logger: RateLimitLogger): RequestHandler {
+  const shouldLog = createRejectionLogGate(GLOBAL_RATE_LIMIT.windowMs);
   return rateLimit({
     ...GLOBAL_RATE_LIMIT,
     standardHeaders: "draft-8",
     legacyHeaders: false,
     skip: (req) => isRateLimitExempt(req.path),
     handler: (req, res, _next, options) => {
-      if (isFirstRejectionInWindow(req)) {
+      if (shouldLog(req)) {
         logger.warn("Rate limit exceeded", {
           method: req.method,
           path: req.baseUrl + req.path,
@@ -71,6 +91,7 @@ export function createGlobalRateLimiter(logger: RateLimitLogger): RequestHandler
 }
 
 export function createSignInRateLimiter(logger: RateLimitLogger): RequestHandler {
+  const shouldLog = createRejectionLogGate(SIGN_IN_RATE_LIMIT.windowMs);
   return rateLimit({
     ...SIGN_IN_RATE_LIMIT,
     // Only failed sign-ins (4xx/5xx responses) count, so signing in normally,
@@ -79,7 +100,7 @@ export function createSignInRateLimiter(logger: RateLimitLogger): RequestHandler
     standardHeaders: "draft-8",
     legacyHeaders: false,
     handler: (req, res, _next, options) => {
-      if (isFirstRejectionInWindow(req)) {
+      if (shouldLog(req)) {
         logger.warn("Sign-in rate limit exceeded", {
           path: req.baseUrl + req.path,
           limit: SIGN_IN_RATE_LIMIT.limit,
