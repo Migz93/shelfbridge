@@ -11,47 +11,47 @@ template: |
   - `ghcr.io/$OWNER/$REPOSITORY:v$RESOLVED_VERSION`
 
 categories:
+  - type: pre-exclude
+    when:
+      label: skip-changelog
+  - title: Breaking Changes
+    semver-increment: major
+    exclusive: true
+    when:
+      conventional:
+        breaking: true
   - title: Features
-    labels:
-      - feature
-      - enhancement
+    semver-increment: minor
+    exclusive: true
+    when:
+      - conventional:
+          type: feat
+      - labels: [feature, enhancement]
   - title: Fixes
-    labels:
-      - fix
-      - bug
-      - bugfix
+    exclusive: true
+    when:
+      - conventional:
+          type: fix
+      - labels: [fix, bug, bugfix]
   - title: Documentation
-    labels:
-      - documentation
-      - docs
+    exclusive: true
+    when:
+      - conventional:
+          type: docs
+      - labels: [documentation, docs]
   - title: Maintenance
-    labels:
-      - chore
-      - dependencies
-      - ci
+    exclusive: true
+    when:
+      - conventional:
+          types: [build, chore, ci, perf, refactor, revert, style, test]
+      - labels: [chore, dependencies, ci, github_actions]
+  - title: Other Changes
+  - type: version-resolver
+    semver-increment: major
+    when:
+      label: major
 
 change-template: "- $TITLE (#$NUMBER) @$AUTHOR"
 change-title-escapes: '\<*_&'
-version-resolver:
-  major:
-    labels:
-      - major
-  minor:
-    labels:
-      - feature
-      - enhancement
-  patch:
-    labels:
-      - fix
-      - bug
-      - bugfix
-      - documentation
-      - docs
-      - chore
-      - dependencies
-      - ci
-  default: patch
-exclude-labels:
-  - skip-changelog
 template-footer: |
   **Full Changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION

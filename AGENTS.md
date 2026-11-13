@@ -1,12 +1,13 @@
-<!-- shared: content — keep in sync across Migz93 self-hosted apps; only the Project Facts table differs -->
+<!-- shared: content — keep in sync across Migz93 self-hosted apps; only Project Facts values differ -->
 
 # Agent Guidelines
 
-Read this file before doing any work in this repo.
+Read applicable ancestor/workspace instructions and this file before doing
+any work in this repo.
 
 Everything here is **always relevant** — environment, conventions, and the gates
 you have to stop at. Material that only matters at a particular moment (opening
-a PR, cutting a release, triaging a Snyk finding) lives in `docs/` instead, and
+a PR, cutting a release, triaging a security finding) lives in `docs/` instead, and
 the table below says when to go and read it.
 
 > If a `LOCAL.md` file exists in this directory, read it — it contains
@@ -15,9 +16,9 @@ the table below says when to go and read it.
 
 ## Project Facts
 
-Everything below this table is identical across shelfbridge, hubarr and pacearr.
-This table is the only place the projects differ — when a rule below refers to
-"the port" or "the version files", it means the value here.
+The guidance in this file is shared across Hubarr, Pacearr and Shelfbridge.
+Use the values in this table wherever a rule refers to the app name, port,
+data directory, workspace or version files.
 
 | | |
 |---|---|
@@ -25,10 +26,10 @@ This table is the only place the projects differ — when a rule below refers to
 | Port | `9303` |
 | Host data directory | `/opt/shelfbridge` |
 | Container data directory | `/config` |
-| Workspace path | `/workspaces/shelfbridge` (same as `app/` on the host at `/opt/vscode/node/shelfbridge/app/`) |
+| Workspace path | `/workspaces/shelfbridge` |
 | Version files | `package.json` and `package-lock.json` |
 | Checks to run before closing out work | `npm run check` |
-| Test suite | Server tests — `npm test` (also run in CI). Playwright end-to-end suite — `npm run test:e2e` (needs a live instance). |
+| Test suite | Server tests — `npm test` (also run in CI). Playwright end-to-end suite — `npm run test:e2e` against a configured disposable test instance (see [TESTING.md](TESTING.md#manual-smoke-test)). |
 | Integrations to flag in review | Audiobookshelf, Hardcover, Grimmory, Chaptarr |
 
 ## Before You Start — What To Read
@@ -40,7 +41,7 @@ Don't guess at these — they contain conventions you will otherwise get wrong.
 |---|---|
 | Open a PR, or write PR/issue text | [docs/workflow.md](docs/workflow.md) |
 | Cut a release or bump a version | [docs/workflow.md](docs/workflow.md) |
-| Act on a Snyk finding | [docs/workflow.md](docs/workflow.md) |
+| Act on a security finding (code scanning or Dependabot) | [docs/workflow.md](docs/workflow.md) |
 | Add logging or comments to new code | [docs/workflow.md](docs/workflow.md) |
 | Add or change tests | [TESTING.md](TESTING.md) |
 | Change the database schema | [docs/architecture.md](docs/architecture.md) |
@@ -61,167 +62,79 @@ are specific to this app.
 
 ## Where You're Running
 
-This repo is worked on from two different places, and they are **not equally
-capable**. Check which one you're in before doing anything Docker-related:
+For implementation work, check the branch, dirty state and concurrent use,
+then start the app's devcontainer using the commands in `LOCAL.md` when present.
+Edit source, install dependencies, and run application checks and tests inside
+the devcontainer as its development user. Run authenticated Git operations
+and CodeRabbit outside the devcontainer from the checkout you are working in.
+Run Docker builds and container management on the intended Docker host.
 
-```bash
-uname -s
-docker info >/dev/null 2>&1 && echo "docker: available" || echo "docker: unavailable"
-```
+Before deployment work, identify the deployment host from `LOCAL.md` or the
+owner's instructions. If the host is unclear or its Docker daemon is
+unreachable, stop the affected step and report it. Never create the live data
+directory on another host or count type checking alone as container validation.
+For browser tests, use a [URL reachable from the devcontainer](TESTING.md#reaching-the-app-from-a-devcontainer).
 
-| | Devcontainer (Linux, DooD) | Mac (Claude/Codex desktop app) |
-|---|---|---|
-| `uname -s` | `Linux` | `Darwin` |
-| Docker build / run / logs | Yes | **No** |
-| `/opt/shelfbridge` bind mount | On the Docker host | **Absent — never create it** |
-| `npm ci`, build, checks | Yes | Yes |
-| Server tests | Yes | Yes |
-| Playwright | Yes | Only against a remote `BASE_URL` |
-| Docs, refactors, review, git, `gh` | Yes | Yes |
+The development image definition is `.devcontainer/Dockerfile`. The devcontainer
+mounts the checkout at the workspace path in Project Facts. Keep machine-specific
+paths and launcher commands in the ignored `LOCAL.md`.
 
-**If a task needs a container built, run, or inspected and Docker is
-unavailable, stop and say so.** Do not improvise a workaround, do not try to
-install or configure Docker, and do not report a change as verified when it was
-only type-checked. Name the step that needs the devcontainer and let the user
-decide how to proceed.
+On a fresh checkout without a local launcher, use a Dev Container client on the
+Docker host. If `.devcontainer/devcontainer.json` is absent, copy
+`.devcontainer/devcontainer.json.example` to that path. Open the checkout in the
+container. The example uses BuildKit to build the repository's Dockerfile and
+installs dependencies and Chromium on creation.
 
-The line falls at *"does this need a running container to verify?"* — Dockerfile
-changes, entrypoint changes, and anything touching startup or the bind mount
-need the devcontainer. Docs, refactors, server tests, and review do not.
+To migrate an existing local config, compare it with the example. Replace the
+old `image` entry with the example's `build` settings. Remove any fixed
+`--name` argument so the Dev Container client can name each checkout's
+container. Remove Docker socket mounts and any Docker-outside-of-Docker
+feature, then adopt the disposable `node_modules` volume and setup command.
+Set `remoteUser` to `node` and verify that its UID and GID allow it to write to
+the checkout. Preserve unrelated local settings and point the volume at
+`node_modules` under your workspace folder. Check for
+concurrent use and follow the [devcontainer removal rules](#close-out-finished-or-cancelled-work)
+before a rebuild that removes the existing container. Before removal,
+record each retained non-disposable volume's exact Docker name, mount path,
+and options in the ignored `LOCAL.md`. Configure the replacement to mount
+those same volumes explicitly, preserving their contents. If the launcher cannot express
+those mounts, use a Dev Container client with the local config instead.
+Verify the retained mounts after rebuilding.
 
-## Docker Outside Of Docker
+## Live Container Conventions
 
-In the devcontainer you have access to the host's Docker daemon via
-Docker-outside-of-Docker (DooD). `docker` and `docker compose` work normally,
-with two constraints:
-
-- You **cannot** browse the host filesystem. Paths like `/opt/...` exist on the
-  host, not inside this container. Do not `ls`, `cat`, or browse them — just
-  reference them correctly in Docker configuration.
-- Always use **bridge networking**. It is the only mode that works reliably with
-  DooD on this host.
-  - `docker run`: include `--network bridge`
-  - Compose services: set `network_mode: bridge`
-  - `docker build`: do **not** pass `--network`
-
-  Do not use `host`, `none`, or custom named networks unless explicitly asked.
-
-## Host Filesystem Conventions
-
-Everything for ShelfBridge lives under a single directory on the host:
-
-```
-/opt/shelfbridge/
-```
-
-All files the app needs — config, database, logs, whatever — go directly in
-there. Do not create subdirectories like `config/` or `data/` unless the app
-itself requires a specific path inside the container. Keep it flat, except for
-`logs/`, which the app requires (matching hubarr/pacearr) and creates itself.
-
-## Docker Naming Conventions
-
-When building images or creating containers for this app, use the app name
-directly — do not suffix with `-app`, `-container`, `-service`, or similar.
-
-| Thing | Correct | Incorrect |
-|---|---|---|
-| Image name | `shelfbridge` | `shelfbridge-app`, `shelfbridge-image` |
-| Container name | `shelfbridge` | `shelfbridge-app`, `shelfbridge-container` |
-| Compose service name | `shelfbridge` | `app`, `shelfbridge-service` |
-
-If the app gains multiple distinct services (e.g. a frontend and an API), use
-`shelfbridge-frontend`, `shelfbridge-api` etc.
-
-## Bind Mounts
-
-Bind-mount the entire app directory from the host into the container as a single
-volume. Do not use named Docker volumes — the user needs to be able to inspect
-and edit files directly on the host.
-
-Map `/opt/shelfbridge` on the host to `/config` inside the container (the app
-reads `DATA_DIR=/config`).
-
-Example docker-compose service:
-
-```yaml
-services:
-  shelfbridge:
-    image: shelfbridge
-    container_name: shelfbridge
-    network_mode: bridge
-    ports:
-      - "9303:9303"
-    volumes:
-      - /opt/shelfbridge:/config
-    restart: unless-stopped
-```
-
-## Where Your App Code Is
-
-Your workspace is mounted at `/workspaces/shelfbridge` inside the devcontainer.
-This is the same directory as `app/` on the host at
-`/opt/vscode/node/shelfbridge/app/`.
-
-## Port
-
-ShelfBridge runs on port **9303**. Always map `9303:9303` — do not
-change the port unless the user explicitly asks.
-
-## Checklist Before Creating Any Container
-
-- [ ] Image name matches the app name
-- [ ] Container name matches the app name
-- [ ] `/opt/shelfbridge` on the host bind-mounted as a single volume
-- [ ] Host directory documented or created in setup steps
-- [ ] `--network bridge` / `network_mode: bridge` set
+- Use the app name for the image, container and Compose service.
+- Use the default bridge for standalone containers and the port from Project
+  Facts. Preserve existing Compose networking. For Docker builds, use the
+  default build network.
+- Bind the host data directory as a single mount at the container data directory.
+  Keep the data directory flat apart from subdirectories created by the app.
+- Inspect existing runtime settings before live replacement. Preserve the data
+  mount, port mapping, network, restart policy and overrides. Keep Compose-managed
+  deployments under Compose. See [live replacement](TESTING.md#live-replacement-and-verification).
+- For disposable containers, follow [TESTING.md](TESTING.md) and use fresh
+  storage with a unique name.
 
 ## Rebuilding The Container After Code Changes
 
-Any change to source code requires rebuilding the Docker image and recreating
-the container. The app is not hot-reloaded inside the container — the image
-bakes in a production build at `docker build` time.
+For implementation changes to the running app or image, use the
+[Manual Smoke Test](TESTING.md#manual-smoke-test) procedure. Build a uniquely
+tagged candidate on the Docker host and verify it in a disposable container
+with fresh storage. After the required checks and disposable startup and health
+checks pass, the owner's default is to replace the running app with the
+**exact tested image** and verify it. An instruction to stop at validation or skip deployment
+takes precedence. Preserve live data and runtime settings.
 
-Workspace checks are useful, but they do not verify the running deployment.
-Whenever implementation changes need end-to-end verification, rebuild from the
-current workspace and recreate the live container from it.
-
-Standard rebuild sequence (run from `/workspaces/shelfbridge`):
-
-```bash
-docker build -t shelfbridge .
-docker stop shelfbridge && docker rm shelfbridge
-docker run -d \
-  --name shelfbridge \
-  --network bridge \
-  -p 9303:9303 \
-  -v /opt/shelfbridge:/config \
-  --restart unless-stopped \
-  shelfbridge
-```
-
-Keep the image and container name as `shelfbridge`, use bridge networking, and
-preserve the `/opt/shelfbridge:/config` bind mount so configuration, database, and
-logs remain intact while the container is recreated.
-
-After the container starts, confirm it is healthy with:
-
-```bash
-docker logs shelfbridge 2>&1 | tail -5
-```
-
-You should see: `ShelfBridge listening on port 9303`.
-
-This whole section needs Docker. On a machine where it is unavailable, say so
-rather than substituting a workspace check for a real rebuild.
+Documentation-only and review-only tasks do not trigger this deployment flow.
+The PR and review gates below still apply.
 
 ---
 
 ## GitHub Workflow
 
 The gates below are mandatory and apply on every piece of work. The mechanical
-detail — PR body format, `gh` commands, release steps, Snyk handling — lives in
-[docs/workflow.md](docs/workflow.md).
+detail — PR body format, `gh` commands, release steps, security findings —
+lives in [docs/workflow.md](docs/workflow.md).
 
 ### Before Starting Any Work — Branch Check (Mandatory)
 
@@ -251,31 +164,39 @@ type/branch-name branch → PR into develop → develop → chore/bump-version �
 **Step by step:**
 
 1. **Start a new branch** from `develop` for every piece of work — features, bug
-   fixes, chores, CI changes, everything. Never commit new work directly to
+   fixes, chores, CI changes, everything — unless the branch check above found
+   you already on this work's branch. Never commit new work directly to
    `develop` or `main`.
    - Branch naming: `feat/short-description`, `fix/short-description`,
      `chore/short-description`, `ci/short-description`, `docs/short-description`
 2. **Do the work** on that branch. Commit as many times as needed.
-3. **Stop at the review gate.** When the work is complete, do not open the PR —
-   go to "The Review Gate" below and ask the user how they want to proceed.
+3. **Complete the review gate.** Pass the required checks and complete the
+   independent cross-AI review first. Once a full pass is clean, offer the
+   optional CodeRabbit review as described in "The Review Gate" below.
 4. **Open a PR** from that branch into `develop`. This is what feeds the release
    notes — the PR title becomes the changelog entry. Use a semantic title
    (`feat:`, `fix:`, `chore:`, etc.). Open it as a draft; see
    [docs/workflow.md](docs/workflow.md)'s Pull Request Conventions for when to
    mark it ready for review.
-5. **Merge the PR** into `develop`. Delete the branch after merging.
+5. **Merge an ordinary work PR** into `develop` with a squash merge
+   (`gh pr merge --squash --delete-branch`). Delete the branch after merging.
+   Use a merge commit for ancestry-reconciliation PRs; do not delete their
+   branch automatically.
 6. **Repeat** steps 1–5 for each piece of work. `develop` accumulates all the
    merged PRs.
 7. **When ready to release**, create a `chore/bump-version-X.Y.Z` branch from
-   `develop`, bump the version files, open a PR into `develop`, and merge it. A
-   version bump does not go through the review gate — see below.
-8. **Open a PR** from `develop` into `main`. This one **does** go through the
-   review gate first. Open it as a draft too, marking it ready per the same
-   conventions once the review gate is satisfied and no further fixes are
-   pending. Merge it. This triggers the release-drafter to generate release
-   notes from all the PR titles since the last release.
-9. **Tag `main`** with `vX.Y.Z` and push the tag. This triggers the Docker build
-   workflow.
+   `develop`, bump the version files, open a PR into `develop`, and squash-merge
+   it. A version-only bump skips the review gate; a bump with logic changes
+   follows the ordinary gate. See the explicit exception below.
+8. **Open a draft PR** from `develop` into `main`, then take it through the
+   narrow [Release PR Review](#release-pr-review). Mark it ready only once
+   release-safety blockers are resolved or accepted and no further fixes are
+   pending. Merge it with a merge commit (`gh pr merge --merge`),
+   never a squash merge. This preserves `develop` ancestry on `main` and avoids
+   future release conflicts. This triggers the release-drafter to generate
+   release notes from all the PR titles since the last release.
+9. **Tag the resulting release merge commit on `main`** with `vX.Y.Z` and push
+   the tag. This triggers the Docker build workflow.
 10. **Publish the GitHub release** — review the auto-generated draft and publish
     it.
 
@@ -283,59 +204,66 @@ type/branch-name branch → PR into develop → develop → chore/bump-version �
 
 ### The Review Gate (Mandatory)
 
-Work is written and iterated on locally. When the implementer believes the work
-is complete **and** the user has confirmed they're happy with it, the agent must
-stop and ask the user which way to go. It must never pick on the user's behalf,
-and must never open the PR without asking.
+Implement and validate the work on its task branch, commit the intended changes,
+and complete the independent cross-AI review before offering CodeRabbit. Follow
+applicable workspace instructions to arrange the reviewer. If those instructions
+authorize automated review, use it without requiring manual prompt relaying.
+The repository defines the review sequence; local CLI orchestration, account
+setup and session handling belong in workspace instructions or ignored local
+documentation.
 
-The prompt offers three options every time:
+Once a full cross-AI pass is clean, offer these choices:
 
-> Everything's implemented. Do you want to:
-> 1. Go to the cross-AI review (the other agent reviews this diff)
-> 2. Run a CodeRabbit CLI review
-> 3. Push and open the PR now
+> 1. Run a CodeRabbit CLI review
+> 2. Skip CodeRabbit and open the draft PR
 
-Option 3 is always available and always legitimate. Review budgets are finite
-and the user is the one who knows what's left — the gate exists so they can
-choose, not so reviews become compulsory.
+CodeRabbit is optional. An explicit owner instruction to run or skip it already
+supplies that choice; do not ask again for the same step. After a clean
+CodeRabbit result on unchanged cross-reviewed commits, or an explicit owner
+decision to skip or accept the CodeRabbit result, open the PR as a draft.
+Review clearance does not authorize marking it ready or merging it.
 
-**This gate applies to:** the work-branch PR (step 3 above) and the
-`develop` → `main` release PR (step 8, where the changeset is everything
-accumulated on `develop` since the last release).
+**This gate applies to:** ordinary work-branch PRs, including documentation.
 
-**This gate does not apply to:** the version-bump PR in step 7. It's a version
-number in two files with no logic to review — open it directly.
+**Version-only bump PRs in step 7 skip this gate:** run the required checks and
+open their draft PR directly, because they only update version values. A bump
+that includes logic changes must follow the ordinary work-branch review gate.
+
+The `develop` to `main` release PR follows the separate
+[Release PR Review](#release-pr-review) after it is opened as a draft.
 
 #### Ordering rules
 
-- The cross-AI review is the cheap, repeatable one. CodeRabbit CLI is the
-  expensive, rate-limited one. Prefer the cross-AI review first and use
-  CodeRabbit sparingly.
-- Any CodeRabbit review that results in code changes sends the work **back to
-  the cross-AI review**, which must reach a clean full pass again before
-  CodeRabbit is considered a second time.
-- After any review completes, re-prompt with the options that still make sense —
-  never silently proceed to the next step.
+- Cross-AI review comes first. Use CodeRabbit sparingly after a clean full pass.
+- Code or documentation edits made after CodeRabbit return to the cross-AI
+  fix/delta/full cycle, which must reach a clean full pass again before another
+  CodeRabbit review is offered.
+- After a CodeRabbit run, report its outcome and run count. If edits were
+  needed, finish cross-review and offer another CodeRabbit run or proceeding
+  with an owner-approved disposition; do not silently run another CLI review.
+- Failed, incomplete, rate-limited and stale reviews never count as clean.
+  Follow workspace limits and obtain the owner's direction if clearance cannot
+  be reached. Do not reset review counts to evade limits.
 
 ---
 
 #### The Cross-AI Review
 
-ShelfBridge is worked on by two AI agents — Claude and Codex — usually in separate
-chat sessions, with the user relaying messages between them. The changeset goes
-through a review pass by the *other* agent.
+The implementer and reviewer must be different people or agents. Use the
+independent reviewer and review mechanism configured by applicable workspace
+instructions or agreed with the project owner. If none is available, arrange
+one with the owner rather than treating self-review as independent review.
 
-**Roles are relative, not fixed to a specific AI.** Whichever agent wrote the
-code is "the implementer"; the other agent is "the reviewer." If Codex
-implemented, Claude reviews, and vice versa — this section applies symmetrically
-regardless of which agent is reading it right now.
+The implementer makes changes; the reviewer assesses the changeset. These
+roles do not require a particular vendor, CLI, host or manual copy-and-paste
+process. Keep those local arrangements outside repository documentation.
 
 **The review loop** (the implementer drives this state machine — never wait for
 the user to ask "what's next" or "can you do a full review"):
 
 | Last review was... | Result | Next step |
 |---|---|---|
-| Full | Clean | The changeset is cleared — return to the review gate and offer the remaining options |
+| Full | Clean | The changeset is cleared — offer CodeRabbit or open the draft PR if the owner already declined it |
 | Full | Findings | Resolve each finding (see below), then request a **delta review** scoped to just the fix/disposition |
 | Delta | Clean | Automatically request a new **full review** from scratch — a clean delta is never the finish line |
 | Delta | Findings | Resolve each finding (see below), then request another **delta review** |
@@ -377,49 +305,150 @@ other. Whatever the outcome — a code change or a deliberate no-change — send
 through the next delta review like any other resolved finding, so the reviewer
 confirms the final state before the next full pass.
 
-**Minimal effort for the user:** their job is only to paste the prompt into the
-other agent's chat and paste the response back here. The implementer tracks
-review state (was the last request a delta or a full pass? did it come back
-clean?) and always produces the next prompt proactively.
+**Review coordination:** the implementer tracks review state and proactively
+drives the next delta or full pass using the workspace's review mechanism.
+Manual relay is only needed when the chosen arrangement requires it; do not
+make the owner copy prompts when local automation is available. Record exact
+reviewed revisions and outcomes, keeping host-specific records private.
 
-Push the branch to GitHub whenever the reviewer needs to see it — the diff can
-also be pasted directly into the prompt. Pushing early is fine. What matters is
-that the **PR itself** is not opened until the gate says so.
+Push the task branch when the reviewer needs remote access. Open its draft PR
+only after the review gate is satisfied. Pushing a branch does not authorize
+merging it.
 
 ---
 
 #### The CodeRabbit CLI Review
 
-Run with `--agent`, which produces structured output intended for an AI agent
+Run from the host checkout with `--agent`, which produces structured output intended for an AI agent
 rather than the interactive terminal UI:
 
 ```bash
-coderabbit review --agent --base develop
+coderabbit review --agent --committed --base origin/develop -c AGENTS.md docs/workflow.md
 ```
 
-For the `develop` → `main` release PR, use `--base main`. Pass `-c AGENTS.md` to
-give the reviewer this file as context.
+This CLI review is for committed work-branch changes against the intended
+`develop` base. Fetch and verify that base first. Require a clean checkout and
+ensure the explicit `-c` context files match the reviewed head, because they
+are read from the working tree. Record the exact base and head. The separate
+manual periodic review below is the only broad `develop`-against-`main` CLI review;
+the `develop` → `main` release PR instead follows the narrow
+[Release PR Review](#release-pr-review).
+
+When reviewing coordinated changes across Hubarr, Pacearr and Shelfbridge,
+run one CLI review at a time. Move to the next repo after the current review
+has no applicable findings. If a fix is needed, apply it to every affected
+repo and complete the cross-AI delta and full review cycle before resuming
+the CLI sequence. Review results apply only to their recorded revisions.
 
 **Runs are slow and silent.** A review can take 10–15 minutes with no output —
 it looks stuck, but it's working. Check in every 5 minutes; if nothing has
 happened after 30 minutes, tell the user.
 
-**Budget: two CLI reviews per changeset.** After the second one on the same
-branch, the agent must stop and ask before running another:
+**Budget: aim for two CLI reviews per changeset or manually requested periodic
+review.** This is not a hard cap. After the second review, the agent must stop
+and ask before running another:
 
-> You've used 2 CodeRabbit CLI reviews on this branch. Do you want me to run
-> another, or push to the PR?
+> You've used 2 CodeRabbit CLI reviews for this changeset or periodic review.
+> Do you want me to run another, or proceed without one?
 
 Never run a third without an explicit yes. Track the count and state it when
-reporting results. The counter resets when a new changeset starts.
+reporting results. The counter resets when a new changeset or periodic review
+starts.
 
-**After a CodeRabbit review that changed code**, go back to the cross-AI review
-and take it to a clean full pass before offering CodeRabbit again. CodeRabbit is
+**After a CodeRabbit review that changed code or documentation**, go back to
+cross-AI review and take it to a clean full pass before offering CodeRabbit
+again. After a clean CodeRabbit result on unchanged reviewed commits, open the
+draft PR; otherwise obtain an owner decision before proceeding without another
+CodeRabbit pass. CodeRabbit is
 the scarce resource — the cross-AI loop should have caught everything cheap
 first, so a CodeRabbit run finding a lot usually means the cross-AI loop was cut
 short.
 
 ---
+
+### Periodic Develop-to-Main Review
+
+This is a manual, broad review of the accumulated `develop` changes against
+`main`. It is **not** scheduled, automated, a release gate, or a replacement
+for the normal review gate above. Only start it when the project owner asks.
+
+Fetch and verify the intended base, require a clean checkout, and ensure the
+shared guidance used as context matches the reviewed head:
+
+```bash
+coderabbit review --agent --committed --base origin/main -c AGENTS.md
+```
+
+The two-review target in [The CodeRabbit CLI Review](#the-coderabbit-cli-review)
+also applies to each periodic review.
+
+Initially triage the findings and report recommendations to the project owner
+before creating any GitHub issues. Identify important findings, group related
+ones, suggest which should become normal issues, and distinguish minor or
+optional findings from intentional, irrelevant, false-positive, or unsuitable
+ones. Explain the reasoning for each disposition.
+
+Do not create issues automatically. After the owner approves the proposed
+follow-up work, create normal GitHub issues using the repository's existing
+labels. Do not add review-specific labels. Intentional or unwanted findings may
+be accepted without an issue; record that disposition in the triage report.
+
+---
+
+### Release PR Review
+
+The CodeRabbit review on a normal `develop` → `main` release PR is a separate,
+narrow release-safety check. Trigger it on the PR when necessary, and only act
+on findings that could make the release unsafe: application failure, failed
+startup or deployment, data loss or corruption, a broken database migration, a
+serious security problem, or a serious failure in a core integration listed in
+the `Integrations to flag in review` row of the Project Facts table.
+
+Non-critical findings are not release blockers. After project-owner approval,
+turn them into normal future-work issues or explicitly accept them; do not
+automatically open additional release PRs for them.
+
+If a release-safety blocker requires code changes, use the normal work-branch
+flow: create a fix branch from `develop`, take its PR through the review gate,
+and merge it into `develop`. The draft release PR then includes the fix; repeat
+the release PR review before marking it ready. Do not commit the fix directly
+to `develop`, `main`, or the release PR.
+
+---
+
+### Close Out Finished Or Cancelled Work
+
+After the work PR merges or the owner cancels the work, check that the task
+checkout is clean and available for cleanup. Switch back to the integration
+branch and fast-forward it. Delete leftover branches
+for this task on the server, GitHub and available clients once you have
+verified the work was merged or the owner explicitly discarded it. Check
+squash merges against the reviewed PR head. A PR closed without merging
+requires confirmation that its work was discarded before deleting its branch.
+Preserve unrelated branches and unsynchronized work. Report any cleanup that
+needs to happen on a disconnected client.
+
+When the PR closes or the owner cancels, check for concurrent use before
+removing any task resource, including when a PR closes without merging.
+Defer cleanup for resources another chat or process is using. Read the
+task record in the Docker host checkout's ignored `LOCAL.md` and follow
+[disposable test cleanup](TESTING.md#disposable-test-cleanup) for leftovers.
+Keep the separate `Live recovery` entry and rollback tag until the owner
+releases the fallback and the tag is verified unused. See
+[live replacement and verification](TESTING.md#live-replacement-and-verification).
+
+Identify the task's devcontainer through the local launcher, the Dev Container
+client, or its `devcontainer.local_folder` label using the absolute checkout
+path. Verify the workspace mount and inspect all mounts before removing the
+container. Stop it before removal. Use the launcher or `docker rm -v` only
+if every anonymous volume is confirmed disposable. Otherwise, before removal,
+record each retained non-disposable anonymous volume's exact Docker name,
+mount path, and options in a retained-volume section of the ignored `LOCAL.md`.
+Keep that section available for the next devcontainer setup. Remove the
+container with `docker rm` without `-v`. Separately remove only the exact
+dependency volume if it is confirmed task-owned, disposable, and unused.
+Preserve the checkout and live deployment. Create the devcontainer again
+when starting the next implementation task.
 
 ### Branch Rules Summary
 
@@ -439,8 +468,8 @@ short.
 
 The user will not always use precise git terminology. They may say things like:
 
-- *"that's ready, push it"* — this means push the current branch to GitHub if
-  not already pushed, then go to the review gate
+- *"that's ready, push it"* — push the task branch, complete any outstanding
+  checks and cross-AI review, then follow the CodeRabbit/draft PR gate
 - *"commit that to develop"* — this means open a PR into `develop`, not a direct
   commit
 - *"let's get this into develop"* — same as above, open a PR
@@ -475,7 +504,7 @@ without re-litigating, but say what you're doing.
 - Keep `docs/` files to operational facts — tables, short steps, commands.
   Detailed rationale belongs in code comments next to the code, not in prose
 - A doc whose first line carries a `shared: content` marker is kept identical
-  across hubarr and pacearr — change it in all of them, or not at all
+  across hubarr, pacearr and shelfbridge — change it in all of them, or not at all
 
 ---
 
@@ -513,8 +542,11 @@ gap — a UI test standing in for a logic test proves much less than it appears 
 Actively guide the workflow rather than waiting for perfect instructions:
 
 - When the user starts new work: create a branch from `develop` automatically
-- When the work is complete: stop at the review gate and offer the three options
-- When a review pass finishes: report the result and re-prompt with what's left
+- When the work is complete: run required checks and independent cross-AI
+  review using workspace guidance, then offer CodeRabbit or a draft PR
+- When a review pass finishes: drive the delta/full loop and report the exact
+  reviewed revisions; after CodeRabbit is clean or explicitly skipped/accepted,
+  open the draft PR
 - When the user asks about releasing: confirm whether they mean prep, tag, or
   both
 - When the user asks for a version bump: confirm patch/minor/major if not stated

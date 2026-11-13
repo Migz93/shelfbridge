@@ -2,7 +2,7 @@
 
 All routes are prefixed with `/api`. The server runs on port **9303** by default.
 
-Except for `/api/health` and `/api/auth/*`, API routes require a valid
+Except for `/api/health` and the public authentication routes below, API routes require a valid
 ShelfBridge session cookie. The first browser session must create the admin
 password through `/api/auth/setup`; later sessions sign in through
 `/api/auth/login`.
@@ -36,6 +36,44 @@ Creates a signed session cookie for the admin password.
 ```json
 { "password": "string" }
 ```
+
+### `POST /api/auth/change-password`
+
+Requires a valid admin session and the current password. Available in
+**Settings → General → Change password**.
+
+```json
+{
+  "currentPassword": "current admin password",
+  "newPassword": "at least 8 characters",
+  "confirmPassword": "same as newPassword"
+}
+```
+
+| Status | Meaning |
+|---|---|
+| 200 | Password changed; returns `{ "authenticated": false }` and clears the session cookie |
+| 400 | Missing/incorrect current password, new password shorter than 8 characters, or mismatched confirmation |
+| 401 | Missing/expired session, or session/credentials changed while the request was running |
+| 503 | Authentication has not been configured |
+| 429 | Rejected sign-in/password-change requests exceeded the shared allowance (10 per IP per 15 minutes) |
+
+If a password-change request returns 401, the form returns to sign-in with a
+session-ended notice. A successful change instead shows a password-changed
+notice. Both notices receive keyboard focus when sign-in appears.
+
+The shared limiter counts all 4xx/5xx responses from sign-in and password-change
+handlers, including field-validation errors, incorrect passwords, stale credentials
+and server failures. Successful requests do not consume the allowance.
+Password-change requests rejected by the authentication gate (401/503) before
+reaching the limiter do not count.
+
+Passwords are used exactly as entered (no trimming). The replacement uses a fresh
+salt and scrypt hash. Credential replacement and deletion of **all** sessions
+commit in one database transaction. Concurrent sign-ins using replaced credentials
+are rejected. Profiles, integration credentials and other settings are preserved;
+password values, salts and hashes are never returned or logged. The new password
+persists across restarts; no container restart is needed to apply it.
 
 ### `POST /api/auth/logout`
 

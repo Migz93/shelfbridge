@@ -51,7 +51,7 @@ test.describe("Live refresh — Jobs", () => {
 
 async function getJob(request: APIRequestContext, jobId: string): Promise<JobInfo | null> {
   const response = await request.get("/api/settings/jobs");
-  expect(response.ok()).toBe(true);
+  await expect(response).toBeOK();
   const jobs = await response.json() as JobInfo[];
   return jobs.find((job) => job.id === jobId) ?? null;
 }

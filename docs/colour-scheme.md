@@ -50,7 +50,7 @@ keeps resting contrast above WCAG AAA (7:1 against `on-surface`).
 
 | Variable | Hex | Role |
 |---|---|---|
-| `outline-variant` | `#47484c` | Borders and dividers; used at reduced opacity (`/15`, `/20`, `/30`) |
+| `outline-variant` | `#47484c` | Borders and dividers at reduced opacity; inactive toggle tracks at full opacity |
 
 ### Status
 
@@ -96,6 +96,17 @@ Status colours have specific jobs across the app:
 - Status colours (`success`, `warning`, `error`) are for text and subtle tinted
   backgrounds (`/10` opacity) only — do not use them as solid filled button
   backgrounds.
-- `outline-variant` is a border colour only, never used for text.
+- `outline-variant` is used for borders and inactive toggle tracks, never for text.
 - Animate-pulse on the warning dot is reserved for actively running syncs only —
   don't use it for static warning indicators.
+- Settings form rows use `SettingsField`, `SettingsNumber` and `SettingsToggle`
+  from `src/client/components/SettingsControls.tsx`, matching Pacearr's row
+  layout. Wide inputs stack below 820px; compact fields stack below 480px; toggles stay on the right. Hints wrap at roughly 65 characters.
+  Labels name controls and hints are linked through `aria-describedby`.
+  Card bodies use grid gaps of 20px so negative row margins do not override
+  spacing. Rows highlight with `background-container-high` on hover, except
+  when a control is disabled. Settings toggles use a borderless 40×24px track,
+  a 16px knob, and a `primary` keyboard-focus outline; the unchecked track
+  uses `outline-variant` for consistency with Pacearr and shared toggles.
+  Shared `Field` and `ToggleField` retain their layout for dialogs and other
+  pages.

@@ -24,21 +24,57 @@ export default function App() {
 
 function MainApp() {
   const navigate = useNavigate();
+  const [signInReason, setSignInReason] = useState<"password-changed" | "session-ended" | null>(null);
   const [auth, setAuth] = useState<AuthStatus | null>(null);
+  const [authCheckFailed, setAuthCheckFailed] = useState(false);
+  const [checkingAuth, setCheckingAuth] = useState(false);
 
   async function refreshAuth() {
     const status = await apiGet<AuthStatus>("/api/auth/status");
     setAuth(status);
+    if (status.authenticated) setSignInReason(null);
     return status;
   }
 
+  // /api/auth/status answers 200 with authenticated: false for a signed-out
+  // user, so a rejection here is a 429, 5xx or network failure — not a logout.
+  // Show a retryable error instead of the login screen so a valid session
+  // isn't treated as ended.
+  function checkAuth() {
+    setAuthCheckFailed(false);
+    setCheckingAuth(true);
+    refreshAuth()
+      .catch(() => setAuthCheckFailed(true))
+      .finally(() => setCheckingAuth(false));
+  }
+
   useEffect(() => {
-    void refreshAuth().catch(() => setAuth({ configured: true, authenticated: false }));
+    checkAuth();
   }, []);
 
   async function handleAuthenticated() {
-    const status = await refreshAuth();
-    if (status.authenticated) navigate("/dashboard", { replace: true });
+    let status: AuthStatus;
+    try {
+      status = await refreshAuth();
+    } catch {
+      setAuthCheckFailed(true);
+      return;
+    }
+    if (status.authenticated) {
+      navigate("/dashboard", { replace: true });
+    }
+  }
+
+  function handlePasswordChanged() {
+    setSignInReason("password-changed");
+    setAuth({ configured: true, authenticated: false });
+    navigate("/login", { replace: true });
+  }
+
+  function handleSessionEnded() {
+    setSignInReason("session-ended");
+    setAuth({ configured: true, authenticated: false });
+    navigate("/login", { replace: true });
   }
 
   async function handleLogout() {
@@ -47,7 +83,26 @@ function MainApp() {
     navigate("/login", { replace: true });
   }
 
-  if (!auth) {
+  // Also covers a check that fails straight after sign-in, when auth is already
+  // set from the first check but still reads as signed out.
+  if (authCheckFailed) {
+    return (
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-4 px-4 text-center">
+        <div className="text-sm text-error">Unable to load ShelfBridge. Please try again.</div>
+        <button
+          type="button"
+          onClick={checkAuth}
+          className="rounded-xl bg-primary-dim px-4 py-2 text-sm font-bold text-on-surface transition-colors hover:bg-primary"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  // A retry after a failed check can find auth still holding the stale
+  // signed-out status, so keep the loading screen up until it resolves.
+  if (!auth || checkingAuth) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-sm text-on-surface-variant">Loading ShelfBridge...</div>
@@ -67,7 +122,7 @@ function MainApp() {
   if (!auth.authenticated) {
     return (
       <Routes>
-        <Route path="/login" element={<Login mode="login" onAuthenticated={() => void handleAuthenticated()} />} />
+        <Route path="/login" element={<Login mode="login" notice={signInReason === "password-changed" ? "Password changed. Sign in with your new password." : signInReason === "session-ended" ? "Your session ended. Please sign in again." : undefined} noticeTone={signInReason === "session-ended" ? "warning" : "success"} onAuthenticated={() => void handleAuthenticated()} />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     );
@@ -85,7 +140,7 @@ function MainApp() {
           <Route path="/users" element={<Users />} />
           <Route path="/users/:id" element={<UserDetailPage />} />
           <Route path="/history" element={<SyncHistory />} />
-          <Route path="/settings" element={<Settings />} />
+          <Route path="/settings" element={<Settings onPasswordChanged={handlePasswordChanged} onSessionEnded={handleSessionEnded} />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Route>
       </Routes>

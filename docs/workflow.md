@@ -16,8 +16,11 @@ moment rather than up front.
 | [AI Sign-Off For GitHub Text](#ai-sign-off-for-github-text) | Writing anything that lands on GitHub |
 | [Pull Request Description Format](#pull-request-description-format) | Opening a PR |
 | [Pull Request Conventions](#pull-request-conventions) | Opening or merging a PR |
+| [Independent Review and Draft PR Gate](#independent-review-and-draft-pr-gate) | Completing ordinary task work |
+| [CodeRabbit Review Process](#coderabbit-review-process) | Reviewing development changes or a release PR |
 | [Release Process](#release-process) | Cutting a release |
-| [Snyk Findings](#snyk-findings) | Triaging a Snyk result |
+| [Release Notes](#release-notes) | Editing a release-drafter draft before publication |
+| [Security Findings](#security-findings) | Triaging a code-scanning or Dependabot alert |
 | [Implementation Expectations](#implementation-expectations) | Writing new code |
 
 ---
@@ -27,8 +30,11 @@ moment rather than up front.
 Use `gh` for all GitHub operations:
 
 - `gh pr create --draft --base develop --title "..." --body "..."`
-- `gh pr merge --squash --delete-branch`
-- `gh release create vX.Y.Z --generate-notes`
+- Ordinary PRs into `develop`: `gh pr merge --squash --delete-branch`
+- Release and ancestry-reconciliation PRs: `gh pr merge --merge`
+- Edit the release-drafter draft into the [Release Notes](#release-notes)
+  format, then publish it once the tag is pushed:
+  `gh release edit vX.Y.Z --draft=false`
 - `gh issue create --title "..." --body "..."`
 
 PRs are opened as drafts and only marked ready-for-review once finished (see
@@ -74,10 +80,34 @@ Keep it factual. Describe what changed and how it was checked, not how
 significant it is.
 
 Call out explicitly if the change affects: release behaviour, Docker publishing,
-auth, database schema, Audiobookshelf/Hardcover/Grimmory/Chaptarr integrations, or user-visible setup.
+auth, database schema, the integrations listed under "Integrations to flag in
+review" in the `AGENTS.md` Project Facts table, or user-visible setup.
 
 If the work was done somewhere Docker was unavailable, say so in the test plan
 rather than implying the container was rebuilt and verified.
+
+---
+
+## Docker Pull Request Checks
+
+Every pull request runs two Docker jobs in `.github/workflows/ci.yml`:
+
+| Check | Coverage |
+|---|---|
+| Docker AMD64 build and startup | Builds and loads the production image; starts an unconfigured instance with a fresh root-owned `/config` bind mount; waits for Docker health; checks HTTP, SQLite, data-directory writes, and the non-root app process |
+| Docker ARM64 build | Builds the production image for `linux/arm64` using QEMU; does not run it |
+
+Both jobs use GitHub-hosted runners and publish no images. They need no registry
+credentials, external-service configuration, or access to a deployed instance.
+AMD64 failures print container logs and inspection details before cleanup. Each
+architecture has its own build-cache scope and can fall back to the existing
+publishing cache to warm its first PR build. The existing npm checks still run
+independently.
+
+These checks cover fresh startup, not configured integrations or upgrades using
+existing data. They run on pull requests only; Docker publishing remains in the
+separate develop and release workflows. To require them before merging, select
+both check names in the repository's branch rules.
 
 ---
 
@@ -86,8 +116,13 @@ rather than implying the container was rebuilt and verified.
 - PR titles are semantic and become changelog entries: `feat: add poster
   caching`, `fix: correct sync ordering`, `chore: bump to 1.2.0`
 - One logical change per PR. Split unrelated work.
-- Squash-merge into `develop` so each PR is one commit in the history.
-- Delete the branch after merging.
+- Squash-merge feature, fix, chore, docs, CI, and version-bump PRs into
+  `develop` so each PR is one commit in the history.
+- Exception: use a merge commit for an ancestry-reconciliation PR and for every
+  `develop` → `main` release PR: `gh pr merge --merge`. Never
+  squash a release PR. The merge commit preserves `develop` ancestry on `main`,
+  avoiding overlapping, non-identical history and future release conflicts.
+- Delete the branch after merging an ordinary work PR.
 - PRs are opened as drafts (`gh pr create --draft`). Mark ready for review only
   once the changeset is actually finished — no more fix commits expected — via
   `gh pr ready`. This includes staying in draft through any post-open fix
@@ -100,6 +135,112 @@ rather than implying the container was rebuilt and verified.
 
 ---
 
+## Independent Review and Draft PR Gate
+
+Follow the [review gate](../AGENTS.md#the-review-gate-mandatory) and
+[cross-AI review loop](../AGENTS.md#the-cross-ai-review) in `AGENTS.md`:
+implement, pass checks, commit, independent full review, fixes/dispositions,
+delta review and a fresh full review until a full pass is clean. Only then
+offer CodeRabbit or let the owner skip it and open the draft PR.
+
+Use applicable workspace guidance for arranging the independent reviewer;
+repository policy does not require a particular reviewer CLI or manual prompt
+relay. Keep local commands, authentication and session handling in workspace
+instructions. Record review scope and results against exact base/head commits.
+
+After a clean CodeRabbit result on unchanged reviewed commits, or an explicit
+owner decision to skip or accept it, open the draft PR. CodeRabbit-driven edits
+return to the independent delta/full cycle first. A clean delta, incomplete
+review or stale result never clears the changeset. Version-only bump PRs skip
+this ordinary gate: run required checks and open their draft directly. Bumps
+with logic changes follow the ordinary gate. A `develop` to `main` release PR
+receives the separate release-safety review described in `AGENTS.md`.
+
+---
+
+## CodeRabbit Review Process
+
+CodeRabbit has three review scopes. Use the two-branch workflow and release
+mechanics described in `AGENTS.md`.
+
+| Review | Purpose | Outcome |
+|---|---|---|
+| Work-branch CLI review | Optional review after clean cross-AI clearance | Clean result or owner-approved skip/acceptance, then draft PR |
+| Periodic CLI review | Broad review of accumulated `develop` changes | Initially triaged recommendations, then owner-approved normal issues and accepted findings |
+| Release PR review | Critical release-safety check | Fix blockers only |
+
+### Work-Branch CLI Review
+
+Offer this only after a clean independent full review. Run it when the owner
+chooses it; an explicit instruction already supplies that choice. From the
+host checkout, fetch and verify the intended `develop` base, require a clean
+checkout and ensure the explicit context files match the reviewed head:
+
+```bash
+coderabbit review --agent --committed --base origin/develop -c AGENTS.md docs/workflow.md
+```
+
+Record the exact reviewed base/head, findings/dispositions and CLI run count.
+The [two-review target](../AGENTS.md#the-coderabbit-cli-review) applies to each
+changeset; never run a third without the owner's explicit approval. Fix commits
+do not reset the count. After CodeRabbit-driven changes, rerun affected checks
+and obtain a clean independent delta/full cycle before offering another CLI
+review. Do not silently start another CodeRabbit run. Open the draft after a
+clean result or an owner-approved decision to skip or accept it. Automated
+CodeRabbit GitHub PR reviews are separate; a missing or skipped bot review is
+not a clean result. Later valid PR findings return through checks and the
+cross-AI review loop before the new head is cleared.
+
+### Periodic CLI Review
+
+The project owner manually requests this review when a broad check of
+`develop` against `main` would be useful. It is not scheduled, automated, a
+frozen testing phase, or a release gate. Do not create release branches or
+release candidates for it.
+
+Fetch and verify the intended base, require a clean checkout and ensure the
+context file matches the reviewed head. Run:
+
+```bash
+coderabbit review --agent --committed --base origin/main -c AGENTS.md
+```
+
+Aim for two CLI reviews for each periodic review; this is not a hard cap, but
+ask the project owner before running a third.
+
+First triage the output for the owner: identify important findings, group
+related findings, recommend which should become normal issues, and call out
+minor or optional suggestions. Clearly explain findings that are intentional,
+irrelevant, false positives, or unsuitable for the project.
+
+Do not create issues automatically. Only after the owner approves the proposed
+findings, create normal GitHub issues with existing repository labels; never
+introduce review-specific labels. Intentional or unwanted findings can be
+accepted without an issue; record that disposition in the triage report.
+
+### Release PR Review
+
+When a normal `develop` → `main` release PR has been opened as a draft,
+trigger CodeRabbit's PR review if necessary. Its purpose is limited to
+release safety.
+Address only findings that could break the application, startup or deployment,
+cause data loss or corruption, break a database migration, introduce a serious
+security problem, seriously break a core integration listed in the
+`Integrations to flag in review` row of `AGENTS.md`'s Project Facts table, or
+otherwise make the release unsafe.
+
+Non-critical findings should become normal future-work issues only after the
+project owner approves, or be explicitly accepted. They must not automatically
+create more release PRs.
+
+If a release-safety blocker requires code changes, create a normal fix branch
+from `develop` and take its PR through the normal review gate before merging it
+into `develop`. The draft release PR then includes the fix and must go through
+the release PR review again before it is marked ready. Do not commit the fix
+directly to `develop`, `main`, or the release PR.
+
+---
+
 ## Release Process
 
 When the user says it's time to release:
@@ -108,10 +249,15 @@ When the user says it's time to release:
 2. Create `chore/bump-version-X.Y.Z` from `develop`
 3. Update the version files listed in the Project Facts table in `AGENTS.md`
 4. Open a PR from that branch into `develop` and merge it
-5. Open a PR from `develop` into `main`, take it through the review gate, and
-   merge it
-6. Push the tag `vX.Y.Z` from `main`
-7. Review the release-drafter draft on GitHub and publish it
+5. Open a draft PR from `develop` into `main`, take it through the narrow
+   [release PR review](#release-pr-review), mark it ready (`gh pr ready`) once
+   release-safety blockers are resolved or accepted, then merge it with a merge
+   commit: `gh pr merge --merge`
+6. Create and push the tag `vX.Y.Z` from the resulting merge commit on `main`
+7. Edit the release-drafter draft into the user-facing format in
+   [Release Notes](#release-notes), then publish it
+   (`gh release edit vX.Y.Z --draft=false`). Don't use `gh release create`,
+   which makes a second release instead of publishing the draft.
 
 Do not invent the version — always confirm with the user if ambiguous.
 
@@ -119,27 +265,113 @@ Do not invent the version — always confirm with the user if ambiguous.
 
 ---
 
-## Snyk Findings
+## Release Notes
 
-When working through Snyk findings:
+Release Drafter output is a starting point, not the finished release note. For
+each future release, edit the draft into a concise explanation for users and
+operators before publishing it. Do not rewrite releases that have already been
+published.
 
-1. **Always explain the finding first** — describe what Snyk flagged, why it
-   flagged it, and whether it is a genuine issue or a false positive before
-   suggesting any action.
-2. **Recommend Fix or Won't Fix honestly** — if fixing the issue would require
+Use this order, including a section only when it contains useful content:
+
+1. A human-written opening summary.
+2. Upgrade notes, when needed.
+3. Features, when needed.
+4. Fixes and reliability, when needed.
+5. Security and maintenance, when needed.
+6. Documentation, when genuinely useful.
+7. Docker information.
+8. A collapsed complete pull request list.
+
+### Opening Summary
+
+Start with one or two plain-English paragraphs that explain what the release is
+mainly about, the important user-visible improvements, and any broad
+operational or reliability improvement that matters. It should be useful to
+someone who does not want to inspect every pull request. Avoid repeating the
+same detail in the later sections.
+
+### Upgrade Notes
+
+Include this section only when existing users need to know about database
+migrations, changed defaults, Docker permissions or startup changes,
+configuration changes, surprising behaviour changes, or required manual
+actions.
+
+### Features, Fixes and Reliability
+
+Describe new user-facing functionality in plain language. Describe important
+bug fixes, reliability improvements, and meaningful behaviour corrections;
+group related changes into meaningful entries rather than copying raw pull
+request titles.
+
+### Security and Maintenance
+
+Include meaningful security fixes, runtime-image changes, rate limiting,
+dependency updates, CI or security scanning, authentication hardening, and
+similar operational changes. Put Docker health checks and runtime-image changes
+here rather than under Features. Do not turn this into a detailed dependency
+changelog.
+
+### Documentation
+
+Include documentation changes only when they matter to users or operators.
+Minor internal documentation changes can remain in the complete pull request
+list.
+
+### Docker
+
+Include all of the following near the end of every release note:
+
+- A versioned `docker pull` command.
+- The `latest` and versioned image tags.
+- Supported architectures.
+- Any important image-specific note.
+
+### Complete Pull Request List
+
+Put the complete pull request list last, inside a collapsed `<details>` block.
+It is the release audit trail and must include every pull request in the
+release: release and version-bump pull requests, test-only pull requests,
+internal review-fix pull requests, documentation pull requests, and dependency
+pull requests. Group the list consistently under headings such as Features,
+Fixes, Maintenance, Documentation, and Dependencies.
+
+Check the list against GitHub's compare range from the previous tag to
+`vX.Y.Z`; Release Drafter omits pull requests labelled `skip-changelog`.
+
+Do not add empty sections or a permanent "Known issues" section. Mention a
+known limitation only when it is relevant to that specific release.
+
+---
+
+## Security Findings
+
+Findings come from GitHub Security — Trivy and CodeQL raise code-scanning
+alerts, Dependabot raises Dependabot alerts. Nothing is scanned locally; don't
+suggest installing or running a scanner to "verify" a finding. When working
+through a finding:
+
+1. **Always explain the finding first** — describe what the scanner flagged,
+   why it flagged it, and whether it is a genuine issue or a false positive
+   before suggesting any action.
+2. **Recommend fix or dismiss honestly** — if fixing the issue would require
    writing worse code (less readable, against best practice, or purely to
-   satisfy static analysis), say so clearly and recommend Won't Fix instead.
-3. **When recommending Won't Fix**, always provide:
-   - A plain-English comment the user can paste into the Snyk GUI, explaining
-     why the code is safe
-   - The correct Snyk category to select: **Won't Fix** for false positives or
-     deliberate decisions, **Ignore Temporarily** only if there is a genuine
-     plan to revisit
-4. **Never suggest a change purely to appease Snyk** if it doesn't improve
+   satisfy static analysis), say so clearly and recommend dismissing instead.
+   A base-image or package vulnerability with no fixed version available is
+   usually a wait, not a code change.
+3. **When recommending a dismissal**, always provide:
+   - The dismissal reason to select in GitHub — for code scanning: **False
+     positive**, **Won't fix**, **Used in tests** or **Mitigated**; for Dependabot:
+     **Inaccurate**, **Not used**, **No bandwidth to fix**, **Risk is
+     tolerable** or **Fix has already been started**
+   - A plain-English comment the user can paste into the dismissal comment
+     box, explaining why the code is safe or why the risk is accepted
+4. **Never suggest a change purely to appease a scanner** if it doesn't improve
    actual security or code quality.
 
-See [SECURITY.md](../SECURITY.md) for the scan commands and the fix-vs-ignore
-philosophy.
+See [SECURITY.md](../SECURITY.md) for what is scanned, where alerts appear, and
+the fix-vs-dismiss philosophy.
 
 ---
 
@@ -188,3 +420,34 @@ introduce broad style-only rule churn as part of unrelated feature work.
 - When a future maintainer might reasonably ask "why is this written this way?",
   prefer a short comment that answers that question at the point of
   implementation
+
+## PR Title And Release Automation
+
+The Semantic PR check runs on `pull_request` events (opened, edited,
+synchronize and reopened). It validates the title from the event payload without
+checking out PR code, accessing secrets or requesting token permissions. Accepted
+types are `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`, `refactor`,
+`revert`, `style` and `test`; optional scopes and a breaking-change `!` are
+supported. Keep the title accurate when reviewing and merging a PR.
+
+The check runs the workflow from the PR merge ref, so a PR can change its own
+formatting check. Review workflow edits and the final title before merging;
+this check is a formatting aid, not a trusted approval boundary. Fork PRs may
+wait for GitHub's normal contributor approval before checks run.
+
+Release Drafter runs only on pushes to `main`. It reads merged PR titles
+directly: `feat` selects Features and a minor increment, `fix` selects Fixes,
+`docs` selects Documentation, and the other accepted types select Maintenance
+with a patch increment. Breaking titles such as `feat(api)!: change response`
+select Breaking Changes and a major increment. The highest matching increment
+wins. Automatic PR labeling is not used. Existing category labels also match
+for historical PRs and Dependabot. Categories are evaluated in order: Breaking
+Changes, Features, Fixes, Documentation, then Maintenance. The first matching
+category wins, so a label can override a title: a `fix:` PR with `enhancement`
+goes under Features and contributes a minor increment. Check category labels on
+open PRs and merged PRs since the last tag before the first migrated release,
+especially labels retained after a PR title changed. The `major` and
+`skip-changelog` labels retain their manual override/exclusion behavior.
+Unmatched changes go under Other Changes with a patch increment. Draft
+suggestions do not publish releases or change the version files; review the
+draft before publication.

@@ -1,8 +1,8 @@
 import crypto from "node:crypto";
 import type { NextFunction, Request, Response, Router } from "express";
-import rateLimit from "express-rate-limit";
 import { getDb, getSetting, setSetting } from "./db/index.js";
 import { logger } from "./logger.js";
+import { createSignInRateLimiter } from "./rate-limit.js";
 
 const SESSION_COOKIE_NAME = "shelfbridge_session";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 14;
@@ -147,18 +147,7 @@ export function sessionMiddleware(req: Request, _res: Response, next: NextFuncti
   next();
 }
 
-const loginIpLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: 20,
-  skipSuccessfulRequests: true,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "Too many login attempts. Try again later." },
-  handler: (_req, res, _next, options) => {
-    logger.warn("ShelfBridge login rate limit exceeded", { limiter: "ip" });
-    res.status(options.statusCode).send(options.message);
-  },
-});
+const signInRateLimiter = createSignInRateLimiter(logger);
 
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
   if (!authConfigured()) {
@@ -202,7 +191,7 @@ export function registerAuthRoutes(router: Router): void {
     res.json({ authenticated: true });
   });
 
-  router.post("/auth/login", loginIpLimiter, async (req, res) => {
+  router.post("/auth/login", signInRateLimiter, async (req, res) => {
     const passwordHash = getSetting("auth.passwordHash", "");
     const passwordSalt = getSetting("auth.passwordSalt", "");
     const password = typeof req.body?.password === "string" ? req.body.password : "";
@@ -218,10 +207,66 @@ export function registerAuthRoutes(router: Router): void {
       return;
     }
 
+    // A password change can finish while scrypt is running. Never issue a
+    // session for credentials that were replaced during verification.
+    if (getSetting("auth.passwordHash", "") !== passwordHash || getSetting("auth.passwordSalt", "") !== passwordSalt) {
+      res.status(401).json({ error: "Password changed. Please sign in again." });
+      return;
+    }
+
     const sessionId = createSession();
     setSessionCookie(req, res, sessionId);
     logger.info("ShelfBridge login succeeded");
     res.json({ authenticated: true });
+  });
+
+  router.post("/auth/change-password", requireAuth, signInRateLimiter, async (req, res) => {
+    const currentPassword = typeof req.body?.currentPassword === "string" ? req.body.currentPassword : "";
+    const newPassword = typeof req.body?.newPassword === "string" ? req.body.newPassword : "";
+    const confirmPassword = typeof req.body?.confirmPassword === "string" ? req.body.confirmPassword : "";
+
+    if (!currentPassword) {
+      res.status(400).json({ error: "Current password is required." });
+      return;
+    }
+    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+      res.status(400).json({ error: `New password must be at least ${MIN_PASSWORD_LENGTH} characters.` });
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      res.status(400).json({ error: "Passwords do not match." });
+      return;
+    }
+
+    const passwordHash = getSetting("auth.passwordHash", "");
+    const passwordSalt = getSetting("auth.passwordSalt", "");
+    if (!(await verifyPassword(currentPassword, passwordHash, passwordSalt))) {
+      logger.warn("ShelfBridge password change rejected: invalid current password");
+      res.status(400).json({ error: "Current password is incorrect." });
+      return;
+    }
+
+    const replacement = await hashPassword(newPassword);
+    // Keep credentials and revocation atomic. Recheck after both async hashes
+    // so concurrent changes/logout cannot authorize a stale request.
+    const changed = getDb().transaction(() => {
+      if (!req.sessionId || !getValidSession(req.sessionId)
+        || getSetting("auth.passwordHash", "") !== passwordHash
+        || getSetting("auth.passwordSalt", "") !== passwordSalt) return false;
+      setSetting("auth.passwordHash", replacement.passwordHash);
+      setSetting("auth.passwordSalt", replacement.passwordSalt);
+      getDb().prepare("DELETE FROM auth_sessions").run();
+      return true;
+    })();
+
+    if (!changed) {
+      res.status(401).json({ error: "Session or password changed. Please sign in again." });
+      return;
+    }
+
+    clearSessionCookie(res);
+    logger.info("ShelfBridge admin password changed; all sessions signed out");
+    res.json({ authenticated: false });
   });
 
   router.post("/auth/logout", (req, res) => {
