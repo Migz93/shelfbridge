@@ -38,8 +38,10 @@ ARG BUILD_CHANNEL=custom
 ARG COMMIT_SHA=local
 ENV BUILD_CHANNEL=$BUILD_CHANNEL
 ENV COMMIT_SHA=$COMMIT_SHA
+# Require Debian's zlib fix for CVE-2026-85091 and CVE-2026-76844.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends gosu python3 tzdata \
+  && apt-get install -y --no-install-recommends gosu python3 tzdata zlib1g \
+  && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' zlib1g)" ge "1:1.3.dfsg+really1.3.1-1+deb13u1" \
   && rm -rf /var/lib/apt/lists/*
 # The runtime image never invokes a package manager (CMD runs node directly) —
 # the npm, corepack and yarn CLIs bundled by the base image just sit there
